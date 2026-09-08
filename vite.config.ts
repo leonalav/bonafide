@@ -1,0 +1,429 @@
+import { defineConfig, type HtmlTagDescriptor, type Plugin } from 'vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import path from 'node:path'
+
+import siteConfiguration from './.figma/make/site.json'
+import { monacoWorkersPlugin } from './src/ide/vite-plugin-monaco-workers'
+
+// Vite config — https://vitejs.dev/config/
+export default defineConfig(({ mode }) => {
+  // .figma/make/deploy-preview passes `--mode development` for cached-preview builds.
+  const emitSourcemaps = mode === 'development'
+  // Figma Make sets FIGMA_PUBLIC_URL for hosted previews. Anything not on Figma
+  // and not in dev mode is treated as a desktop build (relative base for
+  // tauri:// loading under tauri-builder).
+  const isFigmaHosted = !!process.env.FIGMA_PUBLIC_URL
+  const isTauriBuild = mode !== 'development' && !isFigmaHosted
+
+  const base = isFigmaHosted
+    ? `${process.env.FIGMA_PUBLIC_URL}/`
+    : isTauriBuild
+      ? './'
+      : '/'
+
+  return {
+    base,
+    build: {
+      sourcemap: emitSourcemaps ? 'inline' : false,
+      minify: !emitSourcemaps,
+    },
+    plugins: [
+      react(),
+      tailwindcss(),
+      // The Monaco worker loader — see src/ide/monaco-env.ts. The plugin
+      // resolves bare specifiers like `monaco-editor/esm/vs/.../X.worker`
+      // (which sit outside the package's exports map and so fail under
+      // Rolldown) and serves them as virtual modules containing the
+      // worker source as a JSON-encoded string.
+      monacoWorkersPlugin(),
+      // Figma-specific plugins should not run in a packaged desktop build.
+      ...(isTauriBuild ? [] : [figmaSiteConfiguration(siteConfiguration)]),
+      figmaErrorOverlayReplay(),
+      figmaReactRefreshBoundaryFallback(),
+      figmaMakeKitPlugin({ storiesGlob: '/src/**/*.stories.{ts,tsx,js,jsx}' }),
+    ],
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, './src'),
+      },
+    },
+    // Pre-bundle Monaco so dev startup is fast. We don't pre-bundle the
+    // deep `monaco-editor/esm/vs/editor/editor.api` path because it's
+    // outside the package's `exports` map; `@monaco-editor/react`
+    // imports Monaco from the top-level entry, which is handled
+    // automatically.
+    //
+    // **`optimizeDeps.entries`** is the key fix: by default, Vite's
+    // dependency scanner walks the entire project tree looking for
+    // `import ...` statements. On Bonafide that means it traverses the
+    // whole `refs/vscode-main/` tree (~50k files) and generates
+    // spurious errors for VSCode's unresolved telemetry deps. Setting
+    // `entries` to our actual entry points limits scanning to just
+    // `src/main.tsx` and its explicit deps — `refs/`, `src-tauri/`,
+    // `release/`, and everything else in the project root is skipped
+    // entirely.
+    //
+    // **`include`** is the second key fix: explicitly listing Monaco
+    // and the loader here forces Vite to pre-bundle them with esbuild
+    // into a single dev-time chunk. Without this, Vite's on-demand
+    // dev server serves Monaco's ~5,000 internal AMD modules one
+    // HTTP request at a time — that's 5,000 round-trips on first
+    // editor mount, which took 30+ seconds on Tauri+Windows+WebView2.
+    // With pre-bundling, Monaco loads in a single chunk and the editor
+    // mounts in well under a second.
+    optimizeDeps: {
+      entries: ['src/main.tsx'],
+      include: [
+        'monaco-editor',
+        '@monaco-editor/react',
+        'react',
+        'react-dom',
+        'react-dom/client',
+      ],
+    },
+    worker: {
+      format: 'es',
+    },
+    // Tauri 2 has stricter CSP for desktop builds. In dev, it serves
+    // the renderer through http://tauri.localhost; in prod, via the
+    // tauri:// scheme. Both allow Web Workers from same-origin.
+    server: {
+      host: process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0',
+      port: parseInt(process.env.PORT || '8443'),
+      strictPort: true,
+      watch: {
+        // The VSCode reference clone (refs/vscode-main) is ~50k
+        // files — Vite would otherwise walk every one of them on
+        // every startup. Same for the Tauri Rust tree, which never
+        // has anything the renderer cares about.
+        ignored: [
+          '**/.figma/**',
+          '**/refs/**',
+          '**/src-tauri/**',
+          '**/release/**',
+          '**/target/**',
+          '**/node_modules/.cache/**',
+        ],
+      },
+    },
+    preview: {
+      host: process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0',
+      port: parseInt(process.env.PORT || '8443'),
+    },
+    clearScreen: false,
+  }
+})
+
+type FigmaSiteConfiguration = {
+  title?: string
+  description?: string
+  language?: string
+  robots?: {
+    index?: boolean
+  }
+  icons?: {
+    icon?: string
+  }
+  openGraph?: {
+    image?: string
+  }
+  analytics?: {
+    googleAnalyticsId?: string
+  }
+  customScripts?: {
+    headStart?: string
+    headEnd?: string
+    bodyStart?: string
+    bodyEnd?: string
+  }
+  accessibility?: {
+    addBypassLinks?: boolean
+  }
+}
+
+/** Applies /.figma/make/site.json to the generated document shell. */
+function figmaSiteConfiguration(config: FigmaSiteConfiguration): Plugin {
+  function sanitizeHtmlValue(value: string | undefined): string {
+    return value?.replace(/[^a-zA-Z0-9_-]/g, '') || ''
+  }
+  function escapeHtmlText(value: string): string {
+    return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  }
+  function replaceHtmlCommentSlot(html: string, slotName: string, content: string): string {
+    return html.replace(`<!-- ${slotName} -->`, content)
+  }
+
+  const title = config.title ?? "Figma Make App"
+  const description = config.description ?? ''
+  const favicon = config.icons?.icon ?? ''
+  const socialImage = config.openGraph?.image ?? ''
+  const language = sanitizeHtmlValue(config.language) || 'en'
+  const googleAnalyticsId = sanitizeHtmlValue(config.analytics?.googleAnalyticsId)
+  const headStart = config.customScripts?.headStart ?? ''
+  const headEnd = config.customScripts?.headEnd ?? ''
+  const bodyStart = config.customScripts?.bodyStart ?? ''
+  const bodyEnd = config.customScripts?.bodyEnd ?? ''
+  const robotsTxt = config.robots?.index === false ? 'User-agent: *\nDisallow: /\n' : ''
+
+  return {
+    name: 'figma-site-configuration',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!robotsTxt || req.url?.split('?')[0] !== '/robots.txt') return next()
+
+        res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+        res.end(robotsTxt)
+      })
+    },
+    generateBundle() {
+      if (!robotsTxt) return
+
+      this.emitFile({
+        type: 'asset',
+        fileName: 'robots.txt',
+        source: robotsTxt,
+      })
+    },
+    transformIndexHtml: {
+      order: 'pre',
+      handler(html) {
+        let result = html
+        result = replaceHtmlCommentSlot(result, 'figma:lang', language)
+        result = replaceHtmlCommentSlot(result, 'figma:title', escapeHtmlText(title))
+        result = replaceHtmlCommentSlot(result, 'figma:head-start', headStart)
+        result = replaceHtmlCommentSlot(result, 'figma:head-end', headEnd)
+        result = replaceHtmlCommentSlot(result, 'figma:body-start', bodyStart)
+        result = replaceHtmlCommentSlot(result, 'figma:body-end', bodyEnd)
+
+        const tags: HtmlTagDescriptor[] = []
+        if (description) {
+          tags.push({ tag: 'meta', attrs: { name: 'description', content: description }, injectTo: 'head' })
+        }
+        if (config.robots?.index === false) {
+          tags.push({ tag: 'meta', attrs: { name: 'robots', content: 'noindex, nofollow' }, injectTo: 'head' })
+        }
+        if (favicon) {
+          tags.push({ tag: 'link', attrs: { rel: 'icon', href: favicon }, injectTo: 'head' })
+        }
+        if (title) {
+          tags.push({ tag: 'meta', attrs: { property: 'og:title', content: title }, injectTo: 'head' })
+        }
+        if (description) {
+          tags.push({ tag: 'meta', attrs: { property: 'og:description', content: description }, injectTo: 'head' })
+        }
+        if (socialImage) {
+          tags.push(
+            { tag: 'meta', attrs: { property: 'og:image', content: socialImage }, injectTo: 'head' },
+            { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' }, injectTo: 'head' },
+            { tag: 'meta', attrs: { name: 'twitter:image', content: socialImage }, injectTo: 'head' },
+          )
+        }
+
+        if (googleAnalyticsId) {
+          tags.push(
+            {
+              tag: 'script',
+              attrs: {
+                async: true,
+                src: `https://www.googletagmanager.com/gtag/js?id=${googleAnalyticsId}`,
+              },
+              injectTo: 'head',
+            },
+            {
+              tag: 'script',
+              children: `
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+  gtag('js', new Date());
+  gtag('config', ${JSON.stringify(googleAnalyticsId)});
+`,
+              injectTo: 'head',
+            },
+          )
+        }
+
+        if (config.accessibility?.addBypassLinks) {
+          tags.push(
+            {
+              tag: 'style',
+              children: `
+  .figma-bypass-link {
+    position: fixed;
+    top: 8px;
+    left: 8px;
+    z-index: 2147483647;
+    transform: translateY(-150%);
+    border-radius: 6px;
+    background: #111827;
+    color: #fff;
+    padding: 8px 12px;
+    font: 600 14px/1.2 system-ui, sans-serif;
+    text-decoration: none;
+  }
+  .figma-bypass-link:focus {
+    transform: translateY(0);
+  }
+`,
+              injectTo: 'head',
+            },
+            {
+              tag: 'a',
+              attrs: { class: 'figma-bypass-link', href: '#root' },
+              children: 'Skip to content',
+              injectTo: 'body-prepend',
+            },
+          )
+        }
+
+        return {
+          html: result,
+          tags,
+        }
+      },
+    },
+  }
+}
+
+/**
+ * Replay the most recent build error to clients that connect after
+ * it was first broadcast. Vite buffers an error payload only while
+ * no clients are connected and clears the buffer on the first
+ * reconnect (see `bufferedMessage` in `createWebSocketServer`), so
+ * if the preview iframe reloads after Vite already delivered an
+ * error to a live socket, the new socket misses the payload and
+ * the overlay stays hidden even though the build is still broken.
+ * We intercept `ws.send` to remember the latest error and replay
+ * it on every new connection; the cache clears on a successful
+ * `update` or `full-reload` so a stale overlay can't survive a
+ * fixed build.
+ */
+function figmaErrorOverlayReplay(): Plugin {
+  return {
+    name: 'figma-error-overlay-replay',
+    apply: 'serve',
+    configureServer(server) {
+      let lastError: object | null = null
+
+      const origSend = server.ws.send.bind(server.ws) as (...args: any[]) => void
+      server.ws.send = ((...args: any[]) => {
+        const payload = args[0]
+        if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+          const type = (payload as { type?: string }).type
+          if (type === 'error') {
+            lastError = payload as object
+          } else if (type === 'update' || type === 'full-reload') {
+            lastError = null
+          }
+        }
+        return origSend(...args)
+      }) as typeof server.ws.send
+
+      server.ws.on('connection', (socket) => {
+        if (lastError !== null) {
+          socket.send(JSON.stringify(lastError))
+        }
+      })
+    },
+  }
+}
+
+/**
+ * Reload when a module that previously defined a React Refresh boundary stops
+ * defining one. This happens when an agent moves a component into a new file
+ * and replaces the old module with a re-export:
+ *
+ *   export { default } from './app/App'
+ *
+ * Vite otherwise accepts the update using the previous module's HMR boundary,
+ * but the re-export-only transform no longer registers a replacement for the
+ * mounted component family. React reports a successful refresh while leaving
+ * the old tree mounted until the page is reloaded.
+ */
+function figmaReactRefreshBoundaryFallback(): Plugin {
+  const hadRefreshBoundary = new Map<string, boolean>()
+  let sendFullReload: (() => void) | null = null
+
+  return {
+    name: 'figma-react-refresh-boundary-fallback',
+    apply: 'serve',
+    enforce: 'post',
+    configureServer(server) {
+      sendFullReload = () => server.ws.send({ type: 'full-reload', path: '*' })
+    },
+    transform(code, id) {
+      if (!/\.[jt]sx?(?:\?|$)/.test(id) || id.includes('/node_modules/')) return null
+
+      const moduleId = id.split('?')[0] ?? id
+      const hasRefreshBoundary = code.includes('registerExportsForReactRefresh')
+      const previousHadRefreshBoundary = hadRefreshBoundary.get(moduleId)
+      hadRefreshBoundary.set(moduleId, hasRefreshBoundary)
+
+      if (previousHadRefreshBoundary && !hasRefreshBoundary) {
+        queueMicrotask(() => sendFullReload?.())
+      }
+
+      return null
+    },
+  }
+}
+
+/**
+ * Serves a blank render-target page at /.figma/make/kit.html that
+ * the Figma preview script drives directly. The page exposes a
+ * registry of every file matching `storiesGlob` on
+ * window.__FIGMA__.stories so the design surface can dynamically
+ * import + mount each entry into its own grid view.
+ *
+ * Dev-only: `apply: 'serve'` gates the plugin to `vite dev`. Prod
+ * builds (`vite build`) skip it entirely so the route doesn't leak
+ * into shipped bundles.
+ */
+function figmaMakeKitPlugin(options: { storiesGlob: string | string[] }): Plugin {
+  const storiesGlob = Array.isArray(options.storiesGlob) ? options.storiesGlob : [options.storiesGlob]
+  const ROUTE = '/.figma/make/kit.html'
+  const VIRTUAL_ID = 'virtual:figma-stories'
+  const RESOLVED_ID = '\0' + VIRTUAL_ID
+  const STORIES_MODULE = `export const stories = import.meta.glob(${JSON.stringify(storiesGlob)})`
+  const HTML_BOOTSTRAP = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+</head>
+<body>
+<div id="figma-make-kit-root"></div>
+<script type="module">
+  import { stories } from 'virtual:figma-stories'
+  window.__FIGMA__ = Object.assign(window.__FIGMA__ ?? {}, { stories })
+  window.dispatchEvent(new CustomEvent('figma.ready'))
+</script>
+</body>
+</html>`
+
+  return {
+    name: 'figma-make-kit',
+    apply: 'serve',
+    resolveId(id) {
+      if (id === VIRTUAL_ID) return RESOLVED_ID
+      return null
+    },
+    load(id) {
+      if (id !== RESOLVED_ID) return null
+      return STORIES_MODULE
+    },
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        const url = req.url || ''
+        if (url.split('?')[0] !== ROUTE) return next()
+
+        try {
+          res.setHeader('Content-Type', 'text/html')
+          res.end(await server.transformIndexHtml(url, HTML_BOOTSTRAP))
+        } catch (err) {
+          next(err as Error)
+        }
+      })
+    },
+  }
+}
