@@ -104,6 +104,13 @@ export type TerminalSession = {
   status: "spawning" | "ready" | "exited" | "error";
 };
 
+// Palette state (command palette)
+export type PaletteState = {
+  open: boolean;
+  query: string;
+  selected: number;
+};
+
 export type IdeState = {
   /** Absolute path of the open workspace root, or null if none is open. */
   workspaceRoot: string | null;
@@ -141,6 +148,8 @@ export type IdeState = {
     /** Currently focused terminal session (drives which xterm is shown). */
     activeTerminalId: string | null;
   };
+  /** Command palette state. */
+  palette: PaletteState;
 };
 
 export type MergeReview = {
@@ -214,7 +223,12 @@ export type IdeAction =
   | { type: "ADD_TERMINAL_SESSION"; session: TerminalSession }
   | { type: "REMOVE_TERMINAL_SESSION"; id: string }
   | { type: "ACTIVATE_TERMINAL_SESSION"; id: string }
-  | { type: "SET_TERMINAL_STATUS"; id: string; status: TerminalSession["status"] };
+  | { type: "SET_TERMINAL_STATUS"; id: string; status: TerminalSession["status"] }
+  // Command palette
+  | { type: "OPEN_PALETTE" }
+  | { type: "CLOSE_PALETTE" }
+  | { type: "SET_PALETTE_QUERY"; query: string }
+  | { type: "SET_PALETTE_SELECTION"; selected: number };
 
 // Toast helper
 let toastCounter = 0;
@@ -246,6 +260,11 @@ export function makeInitialState(): IdeState {
       outputLogs: [],
       terminalSessions: [],
       activeTerminalId: null,
+    },
+    palette: {
+      open: false,
+      query: "",
+      selected: 0,
     },
   };
 }
@@ -772,6 +791,7 @@ function _reduce(state: IdeState, action: IdeAction): IdeState {
         closedTabsStack: [],
         treeEmpty: true,
         mergeReviews: [],
+        palette: { open: false, query: "", selected: 0 },
       };
     }
 
@@ -988,6 +1008,35 @@ function _reduce(state: IdeState, action: IdeAction): IdeState {
             s.id === action.id ? { ...s, status: action.status } : s,
           ),
         },
+      };
+    }
+
+    // Command palette
+    case "OPEN_PALETTE": {
+      return {
+        ...state,
+        palette: { open: true, query: "", selected: 0 },
+      };
+    }
+
+    case "CLOSE_PALETTE": {
+      return {
+        ...state,
+        palette: { ...state.palette, open: false },
+      };
+    }
+
+    case "SET_PALETTE_QUERY": {
+      return {
+        ...state,
+        palette: { ...state.palette, query: action.query, selected: 0 },
+      };
+    }
+
+    case "SET_PALETTE_SELECTION": {
+      return {
+        ...state,
+        palette: { ...state.palette, selected: action.selected },
       };
     }
 

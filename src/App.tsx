@@ -28,6 +28,7 @@ import {
   useWorkspaceName,
 } from "./ide/hooks"
 import type { FileNode } from "./ide/fileTree"
+import CommandPalette from "./components/CommandPalette"
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state: { error: Error | null } = { error: null };
@@ -161,6 +162,31 @@ function AppInner() {
     }
   }, [dispatch, pushToast]);
 
+  // ── Real-time file watcher ─────────────────────────────────────────────
+  // Start the Rust watcher when a workspace is opened, stop it when closed.
+  // We also subscribe to `fs:watcher` events and dispatch them to the store
+  // as `APPLY_FS_EVENTS` actions so the file tree updates in real-time.
+  useEffect(() => {
+    if (!workspaceRoot) return;
+
+    // Subscribe to file-system change events and pipe them into the store.
+    // The Rust watcher batches rapid bursts (e.g. `git checkout` touching
+    // 50 files) into a single emission, so we receive one array per
+    // batch rather than 50 individual events.
+    const unsubscribe = bonafide.watcher.onEvent((events) => {
+      dispatch({ type: "APPLY_FS_EVENTS", events });
+    });
+
+    // Start the Rust-side watcher for this workspace root.
+    void bonafide.watcher.start(workspaceRoot);
+
+    // Stop the watcher when the component unmounts or workspace changes.
+    return () => {
+      unsubscribe();
+      void bonafide.watcher.stop();
+    };
+  }, [workspaceRoot, dispatch]);
+
   function openRun(id: string) {
     setSelectedRun(id);
     setInspectorOpen(true);
@@ -235,6 +261,10 @@ function AppInner() {
           id,
           profileId: pick.id,
           profileLabel: pick.label,
+          // Land the new terminal in the open workspace folder. When
+          // no folder is open the backend falls back to the inherited
+          // cwd rather than rejecting the request.
+          cwd: workspaceRoot,
           status: "spawning",
         },
       });
@@ -242,7 +272,7 @@ function AppInner() {
       console.error("[App] launchDefaultTerminal failed", err);
       pushToast("Failed to launch terminal", "error");
     }
-  }, [dispatch, pushToast]);
+  }, [dispatch, pushToast, workspaceRoot]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -308,12 +338,68 @@ function AppInner() {
       if (e.key === "Escape" && modal) {
         dispatch({ type: "CLOSE_MODAL" });
       }
+
+      // Ctrl+Shift+P — Command palette
+      if (cmd && e.shiftKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        dispatch({ type: "OPEN_PALETTE" });
+        return;
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [activeTab, dispatch, modal, pushToast, openFolder, launchDefaultTerminal]);
 
-  // ── Workspace empty state ────────────────────────────────────────────
+  // ── Custom event listeners ──────────────────────────────────────────────
+  // These handle events fired by the command palette and other components.
+
+  // ide:open-file — open an arbitrary file by absolute path.
+  // Adds it to the file tree (or activates existing tab) and loads its content.
+  useEffect(() => {
+    async function onOpenFile(e: Event) {
+      const path = (e as CustomEvent<{ path: string }>).detail?.path;
+      if (!path) return;
+
+      const state = store.getState();
+
+      // If the file is already in the tree, just open its tab.
+      const existing = state.fileTree.find((n) => n.id === path);
+      if (existing && existing.kind === "file") {
+        dispatch({ type: "OPEN_FILE", fileId: existing.id });
+        return;
+      }
+
+      // Not in tree — read the file content and add it as a new node.
+      try {
+        const { content } = await bonafide.fs.readFile(path);
+        const name = path.split(/[/\\]/).pop() ?? path;
+        const parentId = state.workspaceRoot ?? null;
+
+        // ADD_FILE creates the node and opens a tab for it.
+        dispatch({ type: "ADD_FILE", parentId, name });
+        // Now set the content we just read.
+        const newState = store.getState();
+        const newNode = newState.fileTree.find((n) => n.name === name && n.parentId === parentId);
+        if (newNode) {
+          dispatch({ type: "SET_CONTENT", fileId: newNode.id, content });
+        }
+      } catch {
+        pushToast("Failed to open file", "error");
+      }
+    }
+
+    // ide:toggle-sidebar — dispatches to the UtilityDock's visible signal.
+    function onToggleSidebar() {
+      window.dispatchEvent(new CustomEvent("bonafide:toggle-sidebar"));
+    }
+
+    window.addEventListener("ide:open-file", onOpenFile);
+    window.addEventListener("ide:toggle-sidebar", onToggleSidebar);
+    return () => {
+      window.removeEventListener("ide:open-file", onOpenFile);
+      window.removeEventListener("ide:toggle-sidebar", onToggleSidebar);
+    };
+  }, [dispatch, store, pushToast]);
   // Rendered behind the main UI when no folder is open.
   // The Sidebar and editor stay mounted so keyboard shortcuts keep working.
   const showEmptyState = !workspaceRoot;
@@ -435,6 +521,9 @@ function AppInner() {
 
       {prefs && <PreferencesWindow initialSection={prefs} onClose={() => setPrefs(null)} />}
       {workflowOpen && <WorkflowPanel onClose={() => setWorkflowOpen(false)} />}
+
+      {/* Command palette (Ctrl+Shift+P) */}
+      <CommandPalette />
     </div>
   );
 }

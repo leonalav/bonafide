@@ -75,6 +75,15 @@ export type DirListing = {
 
 export type OpResult = { ok: boolean; path?: string };
 
+/**
+ * A file-system change event emitted by the Rust watcher. The shape
+ * is a tagged union; the renderer's event listener switches on `type`.
+ */
+export type FsEvent =
+  | { type: "created"; path: string; is_dir: boolean }
+  | { type: "modified"; path: string }
+  | { type: "removed"; path: string };
+
 // ── IPC functions ──────────────────────────────────────────────────────────
 
 async function pickFolder(): Promise<string | null> {
@@ -95,6 +104,25 @@ async function pickFolder(): Promise<string | null> {
     // registered, or CSP blocking the IPC. Log for devtools, return null so
     // the caller (openFolder in App.tsx) can show its own error toast.
     console.error("[bonafide] pickFolder failed:", err);
+    return null;
+  }
+}
+
+async function pickFile(): Promise<string | null> {
+  if (!tauriIsTauri()) {
+    console.warn("[bonafide] pickFile called outside Tauri — returning null");
+    return null;
+  }
+  try {
+    const result = await openDialog({
+      directory: false,
+      multiple: false,
+      title: "Open file",
+    });
+    if (Array.isArray(result)) return result[0] ?? null;
+    return result ?? null;
+  } catch (err) {
+    console.error("[bonafide] pickFile failed:", err);
     return null;
   }
 }
@@ -215,6 +243,43 @@ async function shellOpenExternal(url: string): Promise<boolean> {
   return true;
 }
 
+// ── File watcher (real-time file tree updates) ────────────────────────────
+
+/** Start watching a workspace directory for file-system changes. */
+async function startWatcher(path: string): Promise<void> {
+  if (!tauriIsTauri()) return;
+  return invoke<void>("start_watcher", { path });
+}
+
+/** Stop watching the current workspace. */
+async function stopWatcher(): Promise<void> {
+  if (!tauriIsTauri()) return;
+  return invoke<void>("stop_watcher");
+}
+
+/**
+ * Subscribe to file-system events for the current workspace. Returns
+ * an unsubscribe function. The renderer uses this to update the file
+ * tree in real-time when files are created, modified, renamed, or
+ * deleted on disk.
+ *
+ * Events arrive in batches (debounced to ~150ms by the Rust watcher)
+ * and each batch is a typed union of `created`, `modified`, or
+ * `removed` events.
+ */
+function onFsEvent(cb: (events: FsEvent[]) => void): () => void {
+  if (!tauriIsTauri()) return () => {};
+  let unlisten: (() => void) | null = null;
+  void import("@tauri-apps/api/event").then(({ listen }) => {
+    void listen<FsEvent[]>("fs:watcher", (e) => cb(e.payload)).then((fn) => {
+      unlisten = fn;
+    });
+  });
+  return () => {
+    unlisten?.();
+  };
+}
+
 // ── LSP bridge + ruff CLI ──────────────────────────────────────────────────
 
 /** Get the WebSocket URL of the LSP bridge hosted by the Tauri backend. */
@@ -302,6 +367,7 @@ export const bonafide = {
   },
   fs: {
     pickFolder,
+    pickFile,
     readDirectory,
     readFile,
     writeFile,
@@ -309,6 +375,11 @@ export const bonafide = {
     createFolder,
     rename,
     delete: deletePath,
+  },
+  watcher: {
+    start: startWatcher,
+    stop: stopWatcher,
+    onEvent: onFsEvent,
   },
   lsp: {
     getBridgeUrl: getLspBridgeUrl,
@@ -336,6 +407,7 @@ export type BonafideAPI = {
   app: { getInfo: () => Promise<AppInfo> };
   fs: {
     pickFolder: () => Promise<string | null>;
+    pickFile: () => Promise<string | null>;
     readDirectory: (path: string) => Promise<DirListing>;
     readFile: (path: string) => Promise<{ content: string }>;
     writeFile: (path: string, content: string) => Promise<OpResult>;
@@ -343,6 +415,11 @@ export type BonafideAPI = {
     createFolder: (parentDir: string, name: string) => Promise<OpResult>;
     rename: (src: string, newName: string) => Promise<OpResult>;
     delete: (target: string) => Promise<OpResult>;
+  };
+  watcher: {
+    start: (path: string) => Promise<void>;
+    stop: () => Promise<void>;
+    onEvent: (cb: (events: FsEvent[]) => void) => () => void;
   };
   lsp: {
     getBridgeUrl: () => Promise<string>;

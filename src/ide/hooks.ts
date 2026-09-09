@@ -283,3 +283,34 @@ export function useToast() {
     [dispatch],
   );
 }
+
+// ── Command palette ─────────────────────────────────────────────────────────
+
+/** True when the command palette is open. */
+export function usePaletteOpen() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.palette.open);
+}
+
+/** Current palette search query. */
+export function usePaletteQuery() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.palette.query);
+}
+
+/** Currently selected command index (into the filtered command list). */
+export function usePaletteSelected() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.palette.selected);
+}
+
+/**
+ * Current palette selected command index.
+ * Use this with the command registry to resolve the selected command.
+ * The component builds the filtered command list from the store state;
+ * this hook exposes the selected index so callers can track the selection.
+ */
+export function usePaletteCommand() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.palette.selected);
+}
