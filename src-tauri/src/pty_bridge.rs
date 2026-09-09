@@ -87,15 +87,36 @@ pub fn detect_profiles() -> ProfileRegistry {
 }
 
 /// Client → server control messages (JSON text frames).
+///
+/// Two important conventions:
+///
+/// 1. **Field naming is camelCase** (`profileId`, not `profile_id`).
+///    The renderer sends camelCase JSON; `rename_all = "camelCase"`
+///    makes serde match. (Note: `rename_all = "lowercase"` on the
+///    container only renames the *tag* of internally tagged enums —
+///    it does NOT change field names.)
+///
+/// 2. **Raw keystrokes are NOT JSON.** The renderer sends user
+///    keystrokes as **binary** WebSocket frames — not as text frames
+///    containing a JSON object — so a single printable character
+///    doesn't require parsing. This means the receiver must look at
+///    the frame type (`Message::Binary` vs `Message::Text`) and route
+///    accordingly: binary → PTY stdin, text → JSON control only.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 enum ClientMessage {
-    /// Handshake sent as the FIRST frame by the renderer, indicating which
-    /// shell profile this session should spawn. We use a handshake rather
-    /// than encoding profile in the WS URL because tungstenite consumes
-    /// the request path during `accept_async` — by the time we have a
-    /// `WebSocketStream`, the URL is gone.
-    Hello { profile_id: String, cols: Option<u16>, rows: Option<u16> },
+    /// Handshake sent as the FIRST text frame by the renderer,
+    /// identifying which shell profile to spawn.
+    Hello {
+        #[serde(rename = "profileId")]
+        profile_id: String,
+        cols: Option<u16>,
+        rows: Option<u16>,
+        /// Optional working directory. If omitted, the shell inherits
+        /// Tauri's cwd (usually `C:\Users\<user>`).
+        #[serde(rename = "cwd")]
+        cwd: Option<String>,
+    },
     /// Resize the PTY to the given character grid.
     Resize { cols: u16, rows: u16 },
 }
@@ -110,10 +131,16 @@ enum ServerMessage {
 
 /// Spawn a shell + master PTY pair at the initial size from the URL
 /// query string (or 80×24 if absent).
+///
+/// `cwd` sets the shell's initial working directory. We validate the
+/// path exists and is a directory before passing it to `CommandBuilder` —
+/// `CommandBuilder::cwd` doesn't error on a missing path, so a typo
+/// would silently spawn the shell in the wrong place with no warning.
 fn spawn_shell(
     profile: &TerminalProfile,
     cols: u16,
     rows: u16,
+    cwd: Option<&str>,
 ) -> Result<
     (
         Box<dyn MasterPty + Send>,
@@ -144,6 +171,20 @@ fn spawn_shell(
     // Force UTF-8 IO on Windows — without this, conhost shells output
     // Latin-1 and produce mojibake for non-ASCII characters.
     cmd.env("PYTHONIOENCODING", "utf-8");
+
+    // Apply working directory. We strip a trailing separator on Windows
+    // because some shells complain about paths like "A:\foo\".
+    if let Some(cwd) = cwd.filter(|c| !c.is_empty()) {
+        let normalized = cwd.trim_end_matches(['\\', '/']).to_string();
+        if std::path::Path::new(&normalized).is_dir() {
+            log::info!("[pty] spawning {} in {normalized}", profile.program);
+            cmd.cwd(normalized);
+        } else {
+            log::warn!(
+                "[pty] cwd {normalized:?} is not a directory — falling back to inherited cwd"
+            );
+        }
+    }
 
     let child = pair
         .slave
@@ -195,12 +236,13 @@ async fn relay_ws_to_pty(stream: TcpStream, profiles: ProfileRegistry) {
     };
 
     // ── Step 1: read the hello handshake ──────────────────────────────────
-    // The renderer sends `{"type":"hello","profileId":"powershell",...}` as
-    // the first frame. If we don't receive one within 3 seconds (or the
+    // The renderer sends `{"type":"hello","profileId":"powershell","cwd":"A:/..."}`
+    // as the first frame. If we don't receive one within 3 seconds (or the
     // frame is malformed), fall back to PowerShell — VS Code does the
     // same thing: it never leaves a terminal unspawned for long.
     let mut initial_cols = 80u16;
     let mut initial_rows = 24u16;
+    let mut initial_cwd: Option<String> = None;
     let profile = tokio::time::timeout(std::time::Duration::from_secs(3), async {
         match ws_stream.next().await {
             Some(Ok(Message::Text(text))) => {
@@ -208,15 +250,22 @@ async fn relay_ws_to_pty(stream: TcpStream, profiles: ProfileRegistry) {
                     profile_id,
                     cols,
                     rows,
+                    cwd,
                 }) = serde_json::from_str::<ClientMessage>(&text)
                 {
                     if let Some(c) = cols { initial_cols = c; }
                     if let Some(r) = rows { initial_rows = r; }
+                    if let Some(c) = cwd { initial_cwd = Some(c); }
                     if let Some(p) =
                         profiles.iter().find(|p| p.id == profile_id && p.available)
                     {
                         return p.clone();
                     }
+                    log::warn!(
+                        "[pty] unknown profile {profile_id:?} — using default"
+                    );
+                } else {
+                    log::warn!("[pty] malformed hello frame — using default");
                 }
                 pick_default_profile(&profiles)
             }
@@ -228,7 +277,12 @@ async fn relay_ws_to_pty(stream: TcpStream, profiles: ProfileRegistry) {
 
     let (mut ws_sender, ws_receiver) = ws_stream.split();
 
-    let (master, reader, writer, child) = match spawn_shell(&profile, initial_cols, initial_rows) {
+    let (master, reader, writer, child) = match spawn_shell(
+        &profile,
+        initial_cols,
+        initial_rows,
+        initial_cwd.as_deref(),
+    ) {
         Ok(parts) => parts,
         Err(e) => {
             log::error!("[pty] spawn failed for {}: {e}", profile.program);
@@ -325,8 +379,14 @@ async fn relay_ws_to_pty(stream: TcpStream, profiles: ProfileRegistry) {
     });
 
     // ── Task 4: Inbound pump (WS → PTY) ───────────────────────────────────
-    // Owns the writer half. Reads binary frames + JSON control frames,
-    // writes raw bytes to PTY and resizes on demand.
+    // Reads frames from the browser and routes them by type:
+    //   - Binary  → raw PTY input (every keystroke from xterm).
+    //   - Text    → JSON control message (resize, etc).
+    //
+    // Earlier versions routed text frames as PTY input AND parsed them
+    // as JSON, dropping everything that wasn't a valid control message.
+    // That made it impossible to type — keystrokes were silently
+    // discarded. Now binary is the only path for PTY input.
     let inbound = {
         let master = master.clone();
         let writer = Arc::new(std::sync::Mutex::new(writer));
@@ -352,28 +412,31 @@ async fn relay_ws_to_pty(stream: TcpStream, profiles: ProfileRegistry) {
                         .await;
                     }
                     Message::Text(text) => {
-                        if let Ok(parsed) = serde_json::from_str::<ClientMessage>(&text) {
-                            match parsed {
-                                ClientMessage::Hello { .. } => {
-                                    // Hello is only valid as the FIRST frame;
-                                    // we've already parsed it before spawning
-                                    // the PTY. If we receive another one,
-                                    // it's a duplicate — ignore it.
-                                }
-                                ClientMessage::Resize { cols, rows } => {
-                                    let master = master.clone();
-                                    let _ = tokio::task::spawn_blocking(move || {
-                                        if let Ok(m) = master.lock() {
-                                            let _ = m.resize(PtySize {
-                                                rows: rows.max(2),
-                                                cols: cols.max(2),
-                                                pixel_width: 0,
-                                                pixel_height: 0,
-                                            });
-                                        }
-                                    })
-                                    .await;
-                                }
+                        match serde_json::from_str::<ClientMessage>(&text) {
+                            Ok(ClientMessage::Hello { .. }) => {
+                                // Hello is only valid as the FIRST frame;
+                                // we've already parsed it before spawning
+                                // the PTY. If we receive another one,
+                                // it's a duplicate — ignore it.
+                            }
+                            Ok(ClientMessage::Resize { cols, rows }) => {
+                                let master = master.clone();
+                                let _ = tokio::task::spawn_blocking(move || {
+                                    if let Ok(m) = master.lock() {
+                                        let _ = m.resize(PtySize {
+                                            rows: rows.max(2),
+                                            cols: cols.max(2),
+                                            pixel_width: 0,
+                                            pixel_height: 0,
+                                        });
+                                    }
+                                })
+                                .await;
+                            }
+                            Err(e) => {
+                                log::warn!(
+                                    "[pty] malformed control frame: {e} — payload={text:?}"
+                                );
                             }
                         }
                     }

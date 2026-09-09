@@ -741,7 +741,7 @@ export function Sidebar({
       ) : view === "artifacts" ? (
         <ArtifactsView />
       ) : view === "git" ? (
-        <SourceControlView />
+        <SourceControlView workspaceRoot={workspaceRoot} />
       ) : (
         <>
           <Header title={TITLES[view] ?? "Panel"} />

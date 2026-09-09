@@ -1,23 +1,22 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Manrope:wght@400;500;600;700&display=swap');
 @import 'tailwindcss';
 
-/* xterm.js row-height overrides.
-   xterm.js computes row height internally from font metrics. On Windows
-   (especially in WebView2 / Tauri) font metrics can be unreliable, causing
-   the default lineHeight fallback of 1.2 to produce rows that are too tall —
-   visually: text spaced further apart than it should be.
-   These overrides set the character dimensions explicitly so xterm always
-   renders at exactly 13px × 19px per cell regardless of font metric
-   availability. */
-.xterm {
-  --xterm-char-width: 7.8125px;
-  --xterm-char-height: 19px;
-  --xterm-char-baseline: 15px;
-}
+/* xterm.js row-spacing fix.
+   xterm.js defaults to a 1.2 lineHeight, which on WebView2 (Tauri's
+   renderer) produces rows that are visibly too tall — text floats
+   inside each row with empty space above and below. We already pass
+   `lineHeight: 1` to the Terminal constructor in
+   PanelTerminalTab.tsx; we don't override anything here so the JS
+   settings take effect. */
 
-/* Also ensure the viewport scrollbar matches the dark theme */
-.xterm .xterm-viewport::-webkit-scrollbar {
-  width: 8px;
+/* Top padding on the terminal body shifts text rows down from the panel
+   tab strip (matching VS Code's terminal). The outer wrapper in
+   PanelTerminalTab.tsx adds `pt-[3px]` so the viewport (which fills
+   the full container via `position: absolute`) has its scrollable
+   content offset by 3px. The canvas sits 3px below the tab strip,
+   and the scrollbar aligns to the right edge of the full container. */
+.xterm-viewport {
+  padding-top: 3px;
 }
 
 @theme {
@@ -80,6 +79,7 @@
   /* Type families */
   --font-sans: 'Geist', ui-sans-serif, system-ui, sans-serif;
   --font-body: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Cascadia Code', 'Fira Code', Consolas, ui-monospace, monospace;
 
   /* Motion */
   --animate-dot-pulse: dot-pulse 1.6s ease-in-out infinite;
@@ -172,6 +172,31 @@ body {
 :where(button, a, input, [tabindex]):focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
+}
+
+/* ── Find/Replace widget match highlights ──────────────────────────────
+   The FindReplaceWidget uses a CodeMirror Decoration.mark to underline
+   every match in the document. The active match gets a stronger
+   background tint to distinguish it from the secondary matches. We
+   pick tokens that won't collide with any of CodeMirror's built-in
+   themes — `cm-find-match` and `cm-find-active` — and color them with
+   Bonafide's `tertiary` (amber) for the secondary tint and a more
+   saturated version of `tertiary` for the active tint. The amber tint
+   is intentional: it mirrors VS Code's find-match color while staying
+   distinct from the syntax-highlight palette. */
+.cm-find-match {
+  background-color: color-mix(in oklab, var(--color-tertiary) 22%, transparent);
+  border-radius: 2px;
+}
+.cm-find-active {
+  background-color: color-mix(in oklab, var(--color-tertiary) 45%, transparent);
+  border: 1px solid color-mix(in oklab, var(--color-tertiary) 80%, transparent);
+  border-radius: 2px;
+  box-sizing: border-box;
+  /* The border adds 2px on each axis; offset the padding-equivalent so
+     the highlight still aligns with the underlying character box. */
+  margin: -1px 0;
+  padding: 0;
 }
 
 @media (prefers-reduced-motion: reduce) {

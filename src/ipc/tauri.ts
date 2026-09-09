@@ -349,6 +349,154 @@ async function listTerminalProfiles(): Promise<TerminalProfile[]> {
   return invoke<TerminalProfile[]>("list_terminal_profiles");
 }
 
+// ── Git / source-control ──────────────────────────────────────────────────
+//
+// All commands are thin wrappers over the Rust git_service module. Each
+// takes a `workspace: string` path so the commands run against the
+// user's currently-open folder regardless of the process CWD. When not
+// running in Tauri (browser preview), every command falls back to a
+// graceful "not available" error rather than throwing — that lets the
+// React panel render an offline message instead of crashing.
+
+export type GitStatusEntry = {
+  path: string;
+  /** M = modified, A = added, D = deleted, R = renamed, C = copied,
+   *  T = type-change, U = untracked, I = ignored. */
+  status: string;
+  staged: boolean;
+  /** Original path when status === "R"; empty otherwise. */
+  originalPath: string;
+};
+
+export type GitStatus = {
+  branch: string;
+  upstream: string;
+  ahead: number;
+  /** -1 when no upstream is configured. */
+  behind: number;
+  staged: GitStatusEntry[];
+  unstaged: GitStatusEntry[];
+  untracked: GitStatusEntry[];
+};
+
+export type GitBranch = {
+  name: string;
+  shortHash: string;
+  subject: string;
+  isoDate: string;
+  isCurrent: boolean;
+  isRemote: boolean;
+  upstream: string;
+  ahead: number;
+  behind: number;
+};
+
+export type GitCommit = {
+  hash: string;
+  shortHash: string;
+  subject: string;
+  author: string;
+  isoDate: string;
+  isHead: boolean;
+};
+
+export type GitDiffFile = {
+  path: string;
+  oldText: string;
+  newText: string;
+};
+
+export type GitDiffResult = {
+  /** Raw unified diff text (empty when there are no changes). */
+  diff: string;
+  /** Per-file old/new text pairs ready for MergeViewEditor. */
+  files: GitDiffFile[];
+};
+
+export type GitOpResult = {
+  ok: boolean;
+  stdout: string;
+  stderr: string;
+  message: string;
+};
+
+async function gitStatus(workspace: string): Promise<GitStatus> {
+  if (!tauriIsTauri()) return emptyGitStatus();
+  return invoke<GitStatus>("git_status", { workspace });
+}
+
+async function gitListBranches(workspace: string): Promise<GitBranch[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<GitBranch[]>("git_list_branches", { workspace });
+}
+
+async function gitLog(workspace: string, maxCount = 50): Promise<GitCommit[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<GitCommit[]>("git_log", { workspace, maxCount });
+}
+
+async function gitDiff(workspace: string, path?: string): Promise<GitDiffResult> {
+  if (!tauriIsTauri()) return { diff: "", files: [] };
+  return invoke<GitDiffResult>("git_diff", { workspace, path });
+}
+
+async function gitAdd(workspace: string, paths: string[]): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_add", { workspace, paths });
+}
+
+async function gitUnstage(workspace: string, paths: string[]): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_unstage", { workspace, paths });
+}
+
+async function gitDiscard(workspace: string, paths: string[]): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_discard", { workspace, paths });
+}
+
+async function gitCommit(workspace: string, message: string): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_commit", { workspace, message });
+}
+
+async function gitCheckout(workspace: string, branch: string, create = false): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_checkout", { workspace, branch, create });
+}
+
+async function gitPull(workspace: string): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_pull", { workspace });
+}
+
+async function gitPush(workspace: string): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_push", { workspace });
+}
+
+async function gitFetch(workspace: string): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_fetch", { workspace });
+}
+
+async function gitInit(workspace: string): Promise<GitOpResult> {
+  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
+  return invoke<GitOpResult>("git_init", { workspace });
+}
+
+function emptyGitStatus(): GitStatus {
+  return {
+    branch: "",
+    upstream: "",
+    ahead: 0,
+    behind: -1,
+    staged: [],
+    unstaged: [],
+    untracked: [],
+  };
+}
+
 // ── Public API — same shape as the old electronAPI ────────────────────────
 
 export const bonafide = {
@@ -393,6 +541,21 @@ export const bonafide = {
     getWsUrl: getPtyWsUrl,
     listProfiles: listTerminalProfiles,
   },
+  git: {
+    status: gitStatus,
+    listBranches: gitListBranches,
+    log: gitLog,
+    diff: gitDiff,
+    add: gitAdd,
+    unstage: gitUnstage,
+    discard: gitDiscard,
+    commit: gitCommit,
+    checkout: gitCheckout,
+    pull: gitPull,
+    push: gitPush,
+    fetch: gitFetch,
+    init: gitInit,
+  },
 };
 
 export type BonafideAPI = {
@@ -428,4 +591,19 @@ export type BonafideAPI = {
   };
   linters: { ruffCheck: (filePath: string) => Promise<string> };
   pty: { getWsUrl: () => Promise<string>; listProfiles: () => Promise<TerminalProfile[]> };
+  git: {
+    status: (workspace: string) => Promise<GitStatus>;
+    listBranches: (workspace: string) => Promise<GitBranch[]>;
+    log: (workspace: string, maxCount?: number) => Promise<GitCommit[]>;
+    diff: (workspace: string, path?: string) => Promise<GitDiffResult>;
+    add: (workspace: string, paths: string[]) => Promise<GitOpResult>;
+    unstage: (workspace: string, paths: string[]) => Promise<GitOpResult>;
+    discard: (workspace: string, paths: string[]) => Promise<GitOpResult>;
+    commit: (workspace: string, message: string) => Promise<GitOpResult>;
+    checkout: (workspace: string, branch: string, create?: boolean) => Promise<GitOpResult>;
+    pull: (workspace: string) => Promise<GitOpResult>;
+    push: (workspace: string) => Promise<GitOpResult>;
+    fetch: (workspace: string) => Promise<GitOpResult>;
+    init: (workspace: string) => Promise<GitOpResult>;
+  };
 };

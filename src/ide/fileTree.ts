@@ -366,3 +366,120 @@ export function nameExists(tree: FileNode[], parentId: string | null, name: stri
     (n) => n.parentId === parentId && n.name.toLowerCase() === name.toLowerCase(),
   );
 }
+
+/**
+ * Apply a batch of file-system events to a tree, returning a new tree.
+ *
+ * Used by the real-time file watcher (`APPLY_FS_EVENTS` reducer action).
+ * The Rust watcher debounces bursts of events (git checkout, bulk
+ * rename, etc.) into a single batch which we apply atomically here so
+ * the tree never sees intermediate states.
+ *
+ * Path semantics: each event's `path` is the relative path from the
+ * workspace root (e.g. `src/foo.py`), which is the same format used
+ * for `FileNode.id` in this codebase. No prefix stripping required.
+ *
+ * What we do for each event type:
+ *   - `created`: insert a new FileNode with `fileType` derived from the
+ *     file extension (matches `extToLangId`). For folders, also ensure
+ *     any parent folders exist (defensive — they should already).
+ *   - `modified`: no-op for the tree (we don't track mtime in FileNode).
+ *     The editor's `SET_CONTENT` action is what reflects edits — the
+ *     watcher is only for *external* changes (git pull, build output,
+ *     user editing in another app).
+ *   - `removed`: run the existing `deleteNode` to remove the node and
+ *     all its descendants. If the removed file had an open tab, the
+ *     caller is responsible for closing it (the reducer handles this).
+ */
+export type FsEventForTree =
+  | { type: "created"; path: string; is_dir: boolean }
+  | { type: "modified"; path: string }
+  | { type: "removed"; path: string };
+
+export function applyFsEvents(tree: FileNode[], events: FsEventForTree[]): FileNode[] {
+  let next = tree;
+  for (const event of events) {
+    if (event.type === "created") {
+      next = applyCreate(next, event.path, event.is_dir);
+    } else if (event.type === "removed") {
+      next = applyRemove(next, event.path);
+    }
+    // "modified" is a no-op — the editor already tracks live edits via
+    // SET_CONTENT. The watcher only fires for external writes.
+  }
+  return next;
+}
+
+function parentIdFor(path: string): string | null {
+  const idx = path.lastIndexOf("/");
+  if (idx < 0) return null;
+  return path.slice(0, idx);
+}
+
+function nameFor(path: string): string {
+  const idx = path.lastIndexOf("/");
+  if (idx < 0) return path;
+  return path.slice(idx + 1);
+}
+
+function applyCreate(tree: FileNode[], relPath: string, isDir: boolean): FileNode[] {
+  // Skip if already present (idempotent — Rust watcher may double-fire
+  // on some platforms like macOS FSEvents).
+  if (tree.some((n) => n.id === relPath)) return tree;
+
+  // Ensure all parent folders exist. They should already be there from
+  // the initial `read_directory`, but a deleted-and-recreated folder
+  // hierarchy could arrive in any order.
+  let withParents = tree;
+  let cursor = parentIdFor(relPath);
+  while (cursor !== null) {
+    const parentName = nameFor(cursor);
+    const parentPath = cursor;
+    if (withParents.some((n) => n.id === parentPath)) break;
+    withParents = [
+      ...withParents,
+      {
+        id: parentPath,
+        name: parentName,
+        kind: "folder",
+        parentId: parentIdFor(parentPath),
+        expanded: true,
+        fileType: "text",
+      },
+    ];
+    cursor = parentIdFor(parentPath);
+  }
+
+  const name = nameFor(relPath);
+  return [
+    ...withParents,
+    {
+      id: relPath,
+      name,
+      kind: isDir ? "folder" : "file",
+      parentId: parentIdFor(relPath),
+      expanded: isDir ? true : undefined,
+      fileType: isDir ? "text" : extToLangId(name),
+    },
+  ];
+}
+
+function applyRemove(tree: FileNode[], relPath: string): FileNode[] {
+  // Reuse the existing deleteNode helper — it already handles removing
+  // the node and all descendants, plus collecting the removed ids.
+  const { tree: next } = deleteNode(tree, relPath);
+  return next;
+}
+
+/**
+ * Extract the set of removed file ids from a batch of events. Used by
+ * the reducer to close any open tabs whose underlying file was deleted
+ * on disk.
+ */
+export function removedFileIds(events: FsEventForTree[]): Set<string> {
+  const ids = new Set<string>();
+  for (const event of events) {
+    if (event.type === "removed") ids.add(event.path);
+  }
+  return ids;
+}

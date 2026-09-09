@@ -8,6 +8,7 @@ import {
   useTerminalSessions,
   useActiveTerminal,
   useToast,
+  useWorkspaceRoot,
 } from "../../ide/hooks";
 import type { TerminalSession } from "../../ide/store";
 import type { TerminalProfile } from "../../ipc/tauri";
@@ -73,6 +74,7 @@ function TerminalSessionView({
   const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const connectedRef = useRef(false);
+  const cancelledRef = useRef(false);
 
   // Open the WebSocket and start streaming as soon as this component mounts.
   // We don't render any "Connect" button — the contract with the user is
@@ -90,8 +92,14 @@ function TerminalSessionView({
       // gap between every line of output. Setting lineHeight: 1 matches
       // the row height xterm computes from the font metrics, so the text
       // sits tightly inside each row, exactly like VS Code.
-      fontFamily: "var(--font-mono, 'Cascadia Code', 'Fira Code', Consolas, monospace)",
-      fontSize: 13,
+      // JetBrains Mono is a purpose-built terminal/code font: 12px at
+      // default weight sits comfortably in a 19px row height (matching
+      // VS Code's terminal). 12px is slightly smaller than the 13px
+      // default, which tightens the row height and gives more room for
+      // content without the text feeling cramped. We use the CSS variable
+      // so theme changes cascade automatically.
+      fontFamily: "var(--font-mono)",
+      fontSize: 12,
       lineHeight: 1,
       // Letter-spacing tightens the columns too — xterm defaults to a
       // value that's fine in editors but feels loose in a terminal.
@@ -109,32 +117,47 @@ function TerminalSessionView({
 
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
+
+    // Clear any stale DOM from a previous mount (StrictMode double-mounts
+    // effects in development; the first cleanup may not have finished DOM
+    // removal before the second effect runs, so we guard here too).
+    if (containerRef.current) {
+      containerRef.current.innerHTML = "";
+    }
     term.open(containerRef.current);
     fitAddon.fit();
 
     termRef.current = term;
     fitRef.current = fitAddon;
 
-    let cancelled = false;
+    cancelledRef.current = false;
 
     async function connect() {
       try {
         const wsUrl = await bonafide.pty.getWsUrl();
-        if (cancelled) return;
+        if (cancelledRef.current) return;
         const ws = new WebSocket(wsUrl);
         ws.binaryType = "arraybuffer";
         wsRef.current = ws;
 
         ws.onopen = () => {
-          if (cancelled) return;
+          if (cancelledRef.current) return;
           connectedRef.current = true;
-          // Handshake: tell the server which profile to spawn and the
-          // initial grid size so the PTY opens at the correct dimensions.
+          // Handshake: tell the server which profile to spawn, the
+          // initial grid size so the PTY opens at the correct dimensions,
+          // and the working directory so the shell starts inside the
+          // user's workspace rather than Tauri's cwd.
+          //
+          // Field names match the serde `rename` annotations on the
+          // Rust side (camelCase). Mismatches here silently fall back
+          // to the default profile and inherited cwd — so getting them
+          // right matters.
           const handshake = JSON.stringify({
             type: "hello",
             profileId: session.profileId,
             cols: term.cols,
             rows: term.rows,
+            cwd: session.cwd,
           });
           ws.send(handshake);
           dispatch({
@@ -145,7 +168,7 @@ function TerminalSessionView({
         };
 
         ws.onmessage = (e) => {
-          if (cancelled) return;
+          if (cancelledRef.current) return;
           if (typeof e.data === "string") {
             // JSON control frame (e.g. exit notification).
             try {
@@ -174,7 +197,7 @@ function TerminalSessionView({
 
         ws.onclose = () => {
           connectedRef.current = false;
-          if (termRef.current && !cancelled) {
+          if (termRef.current && !cancelledRef.current) {
             term.writeln("\r\n\x1b[33m[disconnected]\x1b[0m");
           }
           dispatch({
@@ -185,7 +208,7 @@ function TerminalSessionView({
         };
 
         ws.onerror = () => {
-          if (cancelled) return;
+          if (cancelledRef.current) return;
           term.writeln("\r\n\x1b[31m[connection error]\x1b[0m");
           dispatch({
             type: "SET_TERMINAL_STATUS",
@@ -195,9 +218,18 @@ function TerminalSessionView({
         };
 
         // Pipe keystrokes from xterm into the PTY.
+        //
+        // IMPORTANT: send as a BINARY frame. Earlier versions sent
+        // `data` as a text frame; the Rust receiver then tried to parse
+        // every keystroke as JSON `ClientMessage` and silently dropped
+        // anything that wasn't a valid control message — which meant
+        // typing was a no-op. Binary frames are routed straight to the
+        // PTY master, and text frames are reserved for control JSON.
         term.onData((data) => {
           if (ws.readyState === WebSocket.OPEN) {
-            ws.send(data);
+            // TextEncoder keeps multi-byte UTF-8 sequences intact even
+            // when the user types non-ASCII (emoji, accented chars, etc).
+            ws.send(new TextEncoder().encode(data));
           }
         });
 
@@ -208,7 +240,7 @@ function TerminalSessionView({
           }
         });
       } catch (err) {
-        if (cancelled) return;
+        if (cancelledRef.current) return;
         term.writeln(
           `\r\n\x1b[31m[failed to connect: ${(err as Error).message}]\x1b[0m`,
         );
@@ -223,7 +255,7 @@ function TerminalSessionView({
     void connect();
 
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
       connectedRef.current = false;
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         wsRef.current.close();
@@ -256,11 +288,23 @@ function TerminalSessionView({
   }, [isActive]);
 
   return (
-    <div
-      ref={containerRef}
-      className="h-full w-full overflow-hidden p-1"
-      style={{ background: THEME.background }}
-    />
+    // Outer wrapper: top padding shifts the terminal content down so
+    // the prompt isn't flush against the panel tab strip. The 3px gap
+    // matches the breathing room in VS Code's terminal. The xterm
+    // viewport/screen/canvas sit inside at natural positions — the
+    // padding creates visible empty space above the first text row.
+    <div className="h-full w-full pt-[3px]">
+      <div
+        ref={containerRef}
+        // No padding on this div — FitAddon reads clientWidth/clientHeight
+        // which includes the wrapper's padding, so the canvas grows into
+        // that space and the scrollbar lands at the right edge of the
+        // full container (matching VS Code). `lineHeight: 1` (set on the
+        // Terminal instance) handles row spacing.
+        className="h-full w-full overflow-hidden"
+        style={{ background: THEME.background }}
+      />
+    </div>
   );
 }
 
@@ -276,23 +320,24 @@ function LaunchProfileMenu({
   const [profiles, setProfiles] = useState<TerminalProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const menuRef = useRef<HTMLDivElement>(null);
+  const cancelledProfilesRef = useRef(false);
 
   useEffect(() => {
-    let cancelled = false;
+    cancelledProfilesRef.current = false;
     bonafide.pty
       .listProfiles()
       .then((list) => {
-        if (cancelled) return;
+        if (cancelledProfilesRef.current) return;
         setProfiles(list);
         setLoading(false);
       })
       .catch(() => {
-        if (cancelled) return;
+        if (cancelledProfilesRef.current) return;
         setProfiles([]);
         setLoading(false);
       });
     return () => {
-      cancelled = true;
+      cancelledProfilesRef.current = true;
     };
   }, []);
 
@@ -433,6 +478,7 @@ export function PanelTerminalTab() {
   const dispatch = useDispatch();
   const sessions = useTerminalSessions();
   const active = useActiveTerminal();
+  const workspaceRoot = useWorkspaceRoot();
   const [menuOpen, setMenuOpen] = useState(false);
   const pushToast = useToast();
 
@@ -447,11 +493,16 @@ export function PanelTerminalTab() {
         id,
         profileId: p.id,
         profileLabel: p.label,
+        // The shell's cwd is the open workspace root, so a Git Bash
+        // opened from `A:\bonafide` lands at /a/bonafide, PowerShell
+        // at `A:\bonafide>`, etc. When no folder is open the shell
+        // falls back to the inherited cwd.
+        cwd: workspaceRoot,
         status: "spawning",
       };
       dispatch({ type: "ADD_TERMINAL_SESSION", session });
     },
-    [dispatch, pushToast],
+    [dispatch, pushToast, workspaceRoot],
   );
 
   return (

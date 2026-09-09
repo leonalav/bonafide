@@ -22,6 +22,8 @@ use walkdir::WalkDir;
 
 mod lsp_bridge;
 mod pty_bridge;
+mod fs_watcher;
+mod git_service;
 
 // ── Types shared with the renderer ────────────────────────────────────────
 // These mirror the FsNode / DirListing / ElectronAPI types from the
@@ -231,6 +233,30 @@ async fn delete_path(target: String) -> Result<OpResult, String> {
     Ok(OpResult { ok: true, path: None })
 }
 
+// ── File watcher ──────────────────────────────────────────────────────────
+
+/// Start watching a workspace directory for file-system changes.
+/// Called from the renderer when a workspace is opened (after `read_directory`).
+/// If a watcher is already running, it is stopped and replaced.
+#[tauri::command]
+async fn start_watcher(
+    path: String,
+    state: State<'_, fs_watcher::WatcherState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let mut guard = state.lock().await;
+    guard.watch(PathBuf::from(&path), app);
+    Ok(())
+}
+
+/// Stop watching the current workspace. Called from the renderer when
+/// the workspace is closed or changed.
+#[tauri::command]
+async fn stop_watcher(state: State<'_, fs_watcher::WatcherState>) -> Result<(), String> {
+    state.lock().await.unwatch();
+    Ok(())
+}
+
 // ── App lifecycle ────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -317,6 +343,88 @@ fn list_terminal_profiles(state: State<'_, pty_bridge::ProfileRegistry>) -> Vec<
     state.as_ref().clone()
 }
 
+// ── Git / source-control commands ─────────────────────────────────────────
+//
+// Each command is a thin wrapper over `git_service::...`. The renderer
+// is the only caller (via `invoke` from src/ipc/tauri.ts). All commands
+// take a `workspace: String` path so they run against the user's
+// currently-open folder regardless of the process CWD.
+
+#[tauri::command]
+async fn git_status(workspace: String) -> Result<git_service::GitStatus, String> {
+    git_service::status(workspace).await
+}
+
+#[tauri::command]
+async fn git_list_branches(workspace: String) -> Result<Vec<git_service::GitBranch>, String> {
+    git_service::list_branches(workspace).await
+}
+
+#[tauri::command]
+async fn git_log(workspace: String, max_count: Option<usize>) -> Result<Vec<git_service::GitCommit>, String> {
+    git_service::log(workspace, max_count).await
+}
+
+#[tauri::command]
+async fn git_diff(workspace: String, path: Option<String>) -> Result<git_service::GitDiffResult, String> {
+    git_service::diff(workspace, path).await
+}
+
+#[tauri::command]
+async fn git_add(workspace: String, paths: Vec<String>) -> Result<git_service::GitOpResult, String> {
+    git_service::add(workspace, paths).await
+}
+
+#[tauri::command]
+async fn git_unstage(workspace: String, paths: Vec<String>) -> Result<git_service::GitOpResult, String> {
+    git_service::unstage(workspace, paths).await
+}
+
+#[tauri::command]
+async fn git_discard(workspace: String, paths: Vec<String>) -> Result<git_service::GitOpResult, String> {
+    git_service::discard(workspace, paths).await
+}
+
+#[tauri::command]
+async fn git_commit(workspace: String, message: String) -> Result<git_service::GitOpResult, String> {
+    git_service::commit(workspace, message).await
+}
+
+#[tauri::command]
+async fn git_checkout(workspace: String, branch: String, create: bool) -> Result<git_service::GitOpResult, String> {
+    git_service::checkout(workspace, branch, create).await
+}
+
+#[tauri::command]
+async fn git_pull(workspace: String) -> Result<git_service::GitOpResult, String> {
+    git_service::pull(workspace).await
+}
+
+#[tauri::command]
+async fn git_push(workspace: String) -> Result<git_service::GitOpResult, String> {
+    git_service::push(workspace).await
+}
+
+#[tauri::command]
+async fn git_fetch(workspace: String) -> Result<git_service::GitOpResult, String> {
+    git_service::fetch(workspace).await
+}
+
+#[tauri::command]
+async fn git_init(workspace: String) -> Result<git_service::GitOpResult, String> {
+    git_service::init(workspace).await
+}
+
+// Re-exports the git_service module for the integration test in
+// `tests/git_smoke.rs`. This is the canonical pattern for exposing
+// internal modules to tests without making them part of the public
+// lib.rs API surface (which would require every function to be
+// `pub` at the top level).
+#[doc(hidden)]
+pub mod git_service_for_tests {
+    pub use crate::git_service::*;
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -335,12 +443,27 @@ pub fn run() {
             create_folder,
             rename_path,
             delete_path,
+            start_watcher,
+            stop_watcher,
             get_lsp_bridge_url,
             get_lsp_servers,
             stop_lsp_server,
             ruff_check,
             get_pty_ws_url,
             list_terminal_profiles,
+            git_status,
+            git_list_branches,
+            git_log,
+            git_diff,
+            git_add,
+            git_unstage,
+            git_discard,
+            git_commit,
+            git_checkout,
+            git_pull,
+            git_push,
+            git_fetch,
+            git_init,
         ])
         .setup(|app| {
             // Tauri 2 has a subtle race: `visible: true` shows the
@@ -364,6 +487,14 @@ pub fn run() {
             let processes: lsp_bridge::ProcessMap =
                 Arc::new(RwLock::new(HashMap::new()));
             app.manage(processes.clone());
+
+            // ── File watcher setup ────────────────────────────────────────
+            // Stores the notify watcher. Commands `start_watcher` and
+            // `stop_watcher` mutate it via Arc<AsyncMutex>; the watcher
+            // emits Tauri events directly to the renderer.
+            let watcher_state: fs_watcher::WatcherState =
+                Arc::new(tokio::sync::Mutex::new(fs_watcher::FsWatcherState::default()));
+            app.manage(watcher_state);
 
             // Start the WebSocket LSP bridge on port 9877.
             // This relay server accepts connections from the browser

@@ -30,29 +30,56 @@
  *     and only when there's a workspace root + absPath.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentWithTab, selectAll } from "@codemirror/commands";
-import { bracketMatching, foldGutter, indentOnInput, indentUnit, foldKeymap } from "@codemirror/language";
-import { searchKeymap, openSearchPanel, findNext, findPrevious } from "@codemirror/search";
-import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
-import { lintGutter } from "@codemirror/lint";
-import { javascript } from "@codemirror/lang-javascript";
-import { css } from "@codemirror/lang-css";
-import { json } from "@codemirror/lang-json";
-import { markdown } from "@codemirror/lang-markdown";
-import { python } from "@codemirror/lang-python";
-import { yaml } from "@codemirror/lang-yaml";
-import { languageServerWithClient } from "@marimo-team/codemirror-languageserver";
-import { useDispatch, useIdeStore, useWorkspaceRoot } from "../ide/hooks";
-import type { LangId } from "../ide/fileTree";
-import { bonafideTheme } from "../ide/cm-theme";
-import { bonafide } from "../ipc/tauri";
-import { getPreloadedEntry } from "../ide/preloadCache";
-import { getOrCreateClient, buildLspOptions, closeClient } from "../ide/lsp-client";
-import { diagnosticsExtensions } from "../ide/diagnostics";
-import type { Extension } from "@codemirror/state";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror"
+import {
+  EditorView,
+  keymap,
+  lineNumbers,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+} from "@codemirror/view"
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+  selectAll,
+} from "@codemirror/commands"
+import {
+  bracketMatching,
+  foldGutter,
+  indentOnInput,
+  indentUnit,
+  foldKeymap,
+} from "@codemirror/language"
+import {
+  autocompletion,
+  completionKeymap,
+  closeBrackets,
+  closeBracketsKeymap,
+} from "@codemirror/autocomplete"
+import { FindReplaceWidget, findReplaceExtensions } from "./FindReplaceWidget"
+import { lintGutter } from "@codemirror/lint"
+import { javascript } from "@codemirror/lang-javascript"
+import { css } from "@codemirror/lang-css"
+import { json } from "@codemirror/lang-json"
+import { markdown } from "@codemirror/lang-markdown"
+import { python } from "@codemirror/lang-python"
+import { yaml } from "@codemirror/lang-yaml"
+import { languageServerWithClient } from "@marimo-team/codemirror-languageserver"
+import { useDispatch, useIdeStore, useWorkspaceRoot } from "../ide/hooks"
+import type { LangId } from "../ide/fileTree"
+import { bonafideTheme } from "../ide/cm-theme"
+import { bonafide } from "../ipc/tauri"
+import { getPreloadedEntry } from "../ide/preloadCache"
+import {
+  getOrCreateClient,
+  buildLspOptions,
+  closeClient,
+} from "../ide/lsp-client"
+import { diagnosticsExtensions } from "../ide/diagnostics"
+import type { Extension } from "@codemirror/state"
 
 // ── Language mapping ────────────────────────────────────────────────────────
 // Bonafide's LangId → CodeMirror language extension. We pull each lang
@@ -61,32 +88,32 @@ import type { Extension } from "@codemirror/state";
 function langExtensionFor(fileType: LangId) {
   switch (fileType) {
     case "python":
-      return python();
+      return python()
     case "markdown":
-      return markdown();
+      return markdown()
     case "json":
-      return json();
+      return json()
     case "typescript":
     case "tsx":
       // CodeMirror's lang-javascript covers both JS and TS via the
       // `typescript` option; we keep this single-extension setup since
       // semantic TS services aren't something we ship.
-      return javascript({ typescript: true, jsx: fileType === "tsx" });
+      return javascript({ typescript: true, jsx: fileType === "tsx" })
     case "css":
-      return css();
+      return css()
     case "yaml":
-      return yaml();
+      return yaml()
     case "toml":
       // No first-class TOML extension; `css()` with no rules would
       // crash, so we return nothing and fall through to plain text.
-      return [];
+      return []
     case "shell":
       // CodeMirror 6 doesn't ship shell highlighting in its core.
       // Plain text is fine; a future PR can add `@codemirror/legacy-modes`
       // + `StreamLanguage` for shell highlighting.
-      return [];
+      return []
     case "text":
-      return [];
+      return []
   }
 }
 
@@ -129,10 +156,20 @@ const baseExtensions = [
     ...foldKeymap,
     ...completionKeymap,
     ...closeBracketsKeymap,
-    ...searchKeymap,
+    // We deliberately omit `searchKeymap` (Ctrl+F / Ctrl+H / F3 / etc.)
+    // — those shortcuts are owned by the Bonafide find/replace widget
+    // and the global App.tsx keyboard router. CodeMirror's built-in
+    // search panel is replaced by `FindReplaceWidget` rendered inside
+    // the editor wrapper below.
     indentWithTab,
   ]),
-];
+  // Decoration extension for the Bonafide find/replace widget — every
+  // match is underlined with a tertiary-tinted background; the active
+  // match (cursor position) gets a stronger border + tint. Wired into
+  // the StateField below so the React widget can drive it via
+  // `setSearchMatches` effects.
+  ...findReplaceExtensions,
+]
 
 /**
  * Build the LSP extension for the current editor instance.
@@ -148,45 +185,49 @@ function useLspExtensions(
   workspaceRoot: string | null,
   absPath: string | null,
 ): Extension[] {
-  const [extensions, setExtensions] = useState<Extension[]>([]);
+  const [extensions, setExtensions] = useState<Extension[]>([])
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
 
     async function build() {
       if (fileType !== "python") {
-        if (!cancelled) setExtensions([]);
-        return;
+        if (!cancelled) setExtensions([])
+        return
       }
       if (!absPath || !workspaceRoot) {
-        if (!cancelled) setExtensions([]);
-        return;
+        if (!cancelled) setExtensions([])
+        return
       }
       try {
-        const clientResult = await getOrCreateClient("pyright", workspaceRoot);
+        const clientResult = await getOrCreateClient("pyright", workspaceRoot)
         if (!clientResult || cancelled) {
-          setExtensions([]);
-          return;
+          setExtensions([])
+          return
         }
-        const opts = buildLspOptions(clientResult.client, workspaceRoot, absPath);
+        const opts = buildLspOptions(
+          clientResult.client,
+          workspaceRoot,
+          absPath,
+        )
         // languageServerWithClient returns an Extension[] (not just an
         // Extension) because the LSP plugin needs to coordinate multiple
         // sub-extensions (transactions, decorations, hover tooltips, etc.).
-        const exts = languageServerWithClient(opts);
-        if (!cancelled) setExtensions(exts);
+        const exts = languageServerWithClient(opts)
+        if (!cancelled) setExtensions(exts)
       } catch (err) {
-        console.error("[lsp] failed to build extensions", err);
-        if (!cancelled) setExtensions([]);
+        console.error("[lsp] failed to build extensions", err)
+        if (!cancelled) setExtensions([])
       }
     }
-    void build();
+    void build()
 
     return () => {
-      cancelled = true;
-    };
-  }, [fileType, workspaceRoot, absPath]);
+      cancelled = true
+    }
+  }, [fileType, workspaceRoot, absPath])
 
-  return extensions;
+  return extensions
 }
 
 export function CodeMirrorEditor({
@@ -195,31 +236,31 @@ export function CodeMirrorEditor({
   content,
   absPath,
   onSave,
-}: {
-  fileId: string;
-  fileType: LangId;
-  content: string;
-  absPath?: string | null;
   /** Called when the user saves (Ctrl/Cmd+S). The parent owns disk writes. */
-  onSave: (currentValue: string) => void;
+}: {
+  fileId: string
+  fileType: LangId
+  content: string
+  absPath?: string | null
+  onSave: (currentValue: string) => void
 }) {
-  const dispatch = useDispatch();
-  const store = useIdeStore();
-  const editorRef = useRef<ReactCodeMirrorRef | null>(null);
-  // Track the current fileId on the model so onChange can decide whether
-  // the edit happened to the file currently displayed (it always will
-  // because we swap the model on file change, but defensive is cheap).
-  const currentFileIdRef = useRef<string>(fileId);
+  const dispatch = useDispatch()
+  const store = useIdeStore()
+  const editorRef = useRef<ReactCodeMirrorRef | null>(null)
   // Hold the latest onSave in a ref so the keymap closure (registered
   // once per fileId) doesn't capture a stale callback.
-  const onSaveRef = useRef(onSave);
-  onSaveRef.current = onSave;
+  const onSaveRef = useRef(onSave)
+  onSaveRef.current = onSave
   // Reactive workspace root so LSP plugins re-mount when the user opens a folder.
-  const workspaceRoot = useWorkspaceRoot();
+  const workspaceRoot = useWorkspaceRoot()
   // LSP extensions only mount for Python files with a workspace root.
-  const lspExtensions = useLspExtensions(fileType, workspaceRoot, absPath ?? null);
+  const lspExtensions = useLspExtensions(
+    fileType,
+    workspaceRoot,
+    absPath ?? null,
+  )
   // Track latest view for diagnostics dispatch.
-  const viewRef = useRef<EditorView | null>(null);
+  const viewRef = useRef<EditorView | null>(null)
 
   // ── Ctrl/Cmd+S → onSave ──────────────────────────────────────────────────
   // We register the keymap as an extension so it travels with the
@@ -233,15 +274,53 @@ export function CodeMirrorEditor({
           key: "Mod-s",
           preventDefault: true,
           run: () => {
-            const view = editorRef.current?.view;
-            if (!view) return false;
-            onSaveRef.current(view.state.doc.toString());
-            return true;
+            const view = editorRef.current?.view
+            if (!view) return false
+            onSaveRef.current(view.state.doc.toString())
+            return true
           },
         },
       ]),
     [],
-  );
+  )
+
+  // Belt-and-suspenders: override Ctrl+F / Ctrl+H here too. Even if a
+  // future change re-enables basicSetup's searchKeymap, our keymap is
+  // registered LATER (higher precedence in CodeMirror's LIFO stack),
+  // so these bindings always win.
+  //
+  // We dispatch a CustomEvent that `FindReplaceWidget` listens for
+  // (mounted inside the editor wrapper below). The widget reads the
+  // current selection to seed its find input. We mark the run as
+  // handled (`return true`) so no downstream handler — including the
+  // global App.tsx keyboard router — runs a second time. This keymap
+  // is registered AFTER `baseExtensions` in the `extensions` array,
+  // so it wins the LIFO precedence over anything CodeMirror's basic
+  // setup tries to register.
+  const openFindKeymap = useMemo(
+    () =>
+      keymap.of([
+        {
+          key: "Mod-f",
+          run: () => {
+            window.dispatchEvent(
+              new CustomEvent("ide:open-find", { detail: { mode: "find" } }),
+            )
+            return true
+          },
+        },
+        {
+          key: "Mod-h",
+          run: () => {
+            window.dispatchEvent(
+              new CustomEvent("ide:open-find", { detail: { mode: "replace" } }),
+            )
+            return true
+          },
+        },
+      ]),
+    [],
+  )
 
   // ── Right-click context menu ────────────────────────────────────────────
   // The previous (Monaco) version attached the context-menu interception
@@ -261,68 +340,84 @@ export function CodeMirrorEditor({
   // else see the event. The handler dispatches `ide:editor-ctx` so
   // EditorPane can show Bonafide's own editor context menu.
   const onEditorContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault()
+    e.stopPropagation()
     window.dispatchEvent(
       new CustomEvent("ide:editor-ctx", {
         detail: { x: e.clientX, y: e.clientY },
       }),
-    );
-  }, []);
+    )
+  }, [])
 
   // ── ide:editor-action events from the editor context menu ────────────────
   // Dispatched by menus.tsx for Cut, Copy, Paste, Select All, Find, Replace,
-  // Go to Line, and Format Document. Each kind maps to the corresponding
-  // CodeMirror command or UI action.
+  // Go to Line, and Format Document. Find/Replace are routed through the
+  // Bonafide `FindReplaceWidget` (rendered in the editor wrapper below) by
+  // dispatching a window event the widget listens for; everything else
+  // maps directly to a CodeMirror command.
   useEffect(() => {
     function onEditorAction(e: Event) {
-      const { kind } = (e as CustomEvent).detail as { kind: string };
-      const view = editorRef.current?.view;
-      if (!view) return;
+      const { kind } = (e as CustomEvent).detail as { kind: string }
+      const view = editorRef.current?.view
+      if (!view) return
       switch (kind) {
         case "select-all":
-          selectAll(view);
-          break;
+          selectAll(view)
+          break
         case "find":
-          openSearchPanel(view);
-          break;
+          // Open the Bonafide find/replace widget (find mode). The widget
+          // seeds its input from the current selection, if any.
+          window.dispatchEvent(
+            new CustomEvent("ide:open-find", { detail: { mode: "find" } }),
+          )
+          break
         case "replace":
-          openSearchPanel(view);
-          break;
+          // Same widget, but with the replace row expanded.
+          window.dispatchEvent(
+            new CustomEvent("ide:open-find", {
+              detail: { mode: "replace" },
+            }),
+          )
+          break
         case "goto-line":
           // Prompt the user for a line number and jump there.
           {
-            const line = view.state.doc.lines;
-            const input = window.prompt(`Go to line (1–${line}):`);
-            if (!input) break;
-            const lineNum = parseInt(input.trim(), 10);
-            if (isNaN(lineNum) || lineNum < 1 || lineNum > line) break;
-            const lineInfo = view.state.doc.line(lineNum);
+            const line = view.state.doc.lines
+            const input = window.prompt(`Go to line (1–${line}):`)
+            if (!input) break
+            const lineNum = parseInt(input.trim(), 10)
+            if (isNaN(lineNum) || lineNum < 1 || lineNum > line) break
+            const lineInfo = view.state.doc.line(lineNum)
             view.dispatch({
               selection: { anchor: lineInfo.from },
               scrollIntoView: true,
-            });
-            view.focus();
+            })
+            view.focus()
           }
-          break;
+          break
         default:
-          break;
+          break
       }
     }
-    window.addEventListener("ide:editor-action", onEditorAction);
-    return () => window.removeEventListener("ide:editor-action", onEditorAction);
-  }, []);
+    window.addEventListener("ide:editor-action", onEditorAction)
+    return () => window.removeEventListener("ide:editor-action", onEditorAction)
+  }, [])
 
   const extensions = useMemo(
     () => [
       baseExtensions,
       ...diagnosticsExtensions(),
       saveKeymap,
+      // Override Ctrl+F / Ctrl+H so they ALWAYS dispatch the Bonafide
+      // find/replace widget — even if a future basicSetup toggle
+      // re-enables CodeMirror's built-in `searchKeymap`. LIFO order
+      // means this keymap wins precedence over basicSetup's.
+      openFindKeymap,
       langExtensionFor(fileType),
       ...lspExtensions,
     ],
-    [saveKeymap, fileType, lspExtensions],
-  );
+    [saveKeymap, openFindKeymap, fileType, lspExtensions],
+  )
 
   // ── Seed content from disk when no in-memory content is available ──────
   // The Sidebar's preload cache fires a disk read in the click task,
@@ -332,96 +427,133 @@ export function CodeMirrorEditor({
   // content into the store via `SET_CONTENT` so a future remount of
   // this editor (i.e. another file-switch away-and-back) doesn't have
   // to re-read from disk.
-  const initialDiskContentRef = useRef<string | null>(null);
-  const currentSeedIdRef = useRef<number>(0);
+  const initialDiskContentRef = useRef<string | null>(null)
+  const currentSeedIdRef = useRef<number>(0)
 
   useEffect(() => {
-    let cancelled = false;
-    const seedId = ++currentSeedIdRef.current;
+    let cancelled = false
+    const seedId = ++currentSeedIdRef.current
 
     async function seedFromDisk() {
-      if (content && content.length > 0) return;
-      if (!absPath) return;
+      if (content && content.length > 0) return
+      if (!absPath) return
 
       // Cache fast path
-      const cached = getPreloadedEntry(absPath);
+      const cached = getPreloadedEntry(absPath)
       if (cached && cached.content.length > 0) {
-        if (cancelled || seedId !== currentSeedIdRef.current) return;
-        initialDiskContentRef.current = cached.content;
+        if (cancelled || seedId !== currentSeedIdRef.current) return
+        initialDiskContentRef.current = cached.content
+        // Update the baseline so handleChange(diskContent) doesn't mark dirty.
+        baselineContentRef.current = cached.content
         // Push into the store so a future remount mounts with content.
-        dispatch({ type: "SET_CONTENT", fileId, content: cached.content });
-        const view = editorRef.current?.view;
+        dispatch({ type: "SET_CONTENT", fileId, content: cached.content })
+        const view = editorRef.current?.view
         if (view) {
           view.dispatch({
-            changes: { from: 0, to: view.state.doc.length, insert: cached.content },
-          });
+            changes: {
+              from: 0,
+              to: view.state.doc.length,
+              insert: cached.content,
+            },
+          })
         }
-        return;
+        return
       }
 
       try {
-        const { content: onDisk } = await bonafide.fs.readFile(absPath);
-        if (cancelled || seedId !== currentSeedIdRef.current) return;
-        initialDiskContentRef.current = onDisk;
-        dispatch({ type: "SET_CONTENT", fileId, content: onDisk });
-        const view = editorRef.current?.view;
+        const { content: onDisk } = await bonafide.fs.readFile(absPath)
+        if (cancelled || seedId !== currentSeedIdRef.current) return
+        initialDiskContentRef.current = onDisk
+        // Update the baseline so handleChange(onDisk) doesn't mark dirty.
+        baselineContentRef.current = onDisk
+        dispatch({ type: "SET_CONTENT", fileId, content: onDisk })
+        const view = editorRef.current?.view
         if (view) {
           view.dispatch({
             changes: { from: 0, to: view.state.doc.length, insert: onDisk },
-          });
+          })
         }
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.error("[CodeMirrorEditor] failed to read file", absPath, err);
+        console.error("[CodeMirrorEditor] failed to read file", absPath, err)
       }
     }
 
-    initialDiskContentRef.current = null;
-    seedFromDisk();
+    initialDiskContentRef.current = null
+    seedFromDisk()
     return () => {
-      cancelled = true;
-    };
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fileId, absPath]);
+  }, [fileId, absPath])
 
-  // ── Track current file in a ref so onChange knows which tab to mark ────
+  // ── Track the "baseline" content for the currently open file.
+  //
+  // When a file opens, CodeMirror's first handleChange fires with the
+  // controlled `value` prop (usually empty when content hasn't been
+  // seeded into the store yet). That call must NOT mark the tab dirty.
+  // After the seed effect patches the editor doc with the on-disk
+  // content, that call must also NOT mark dirty.
+  //
+  // The baseline is the content we last saw on disk for this fileId.
+  // handleChange compares the incoming value to the baseline: if they
+  // match, the change is just code syncing to the file's known state,
+  // not a user edit.
+  //
+  // The baseline is set on mount (empty string), updated by the seed
+  // effect (disk content), and reset whenever the fileId changes.
+  const baselineContentRef = useRef<string>("")
+  const currentFileIdRef = useRef<string>(fileId)
+
   useEffect(() => {
-    currentFileIdRef.current = fileId;
-  }, [fileId]);
+    // Reset baseline when switching files so the new fileId starts fresh.
+    if (currentFileIdRef.current !== fileId) {
+      currentFileIdRef.current = fileId
+      baselineContentRef.current = ""
+    }
+  }, [fileId])
 
   // ── Editor change → mark dirty (store) + queue content flush ───────────
   //
-  // Identical flush strategy to the previous Monaco editor: dispatch
-  // MARK_DIRTY synchronously, debounce SET_CONTENT so rapid typing
-  // batches into a single store update instead of hundreds of
-  // re-renders.
-  const pendingContentRef = useRef<string>("");
-  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Debounce SET_CONTENT so rapid typing batches into a single store update
+  // instead of hundreds of re-renders.
+  const pendingContentRef = useRef<string>("")
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   function scheduleFlush(value: string) {
-    pendingContentRef.current = value;
-    if (flushTimerRef.current !== null) clearTimeout(flushTimerRef.current);
+    pendingContentRef.current = value
+    if (flushTimerRef.current !== null) clearTimeout(flushTimerRef.current)
     flushTimerRef.current = setTimeout(() => {
-      const currentFileId = currentFileIdRef.current;
-      const value = pendingContentRef.current;
+      const currentFileId = currentFileIdRef.current
+      const value = pendingContentRef.current
       if (value) {
-        dispatch({ type: "SET_CONTENT", fileId: currentFileId, content: value });
+        dispatch({ type: "SET_CONTENT", fileId: currentFileId, content: value })
       }
-    }, 400);
+    }, 400)
   }
 
   const handleChange = useCallback(
     (value: string) => {
-      const currentFileId = currentFileIdRef.current;
-      const state = store.getState();
-      const tab = state.tabs.find((t) => t.fileId === currentFileId);
-      if (tab && !tab.dirty) {
-        dispatch({ type: "MARK_DIRTY", tabId: tab.id, dirty: true });
+      const currentFileId = currentFileIdRef.current
+      // Only mark dirty when the value diverges from the on-disk baseline
+      // for this file. Two cases are NOT user edits and must NOT mark dirty:
+      //   1. CodeMirror's first handleChange("") on mount — the baseline is
+      //      "" until the seed effect patches the doc.
+      //   2. The seed effect's view.dispatch() that loads disk content into
+      //      the editor — once we set baseline to that content, future
+      //      handleChange(value) calls that match it are no-ops.
+      const matchesBaseline = baselineContentRef.current === value
+      if (!matchesBaseline) {
+        const state = store.getState()
+        const tab = state.tabs.find((t) => t.fileId === currentFileId)
+        if (tab && !tab.dirty) {
+          dispatch({ type: "MARK_DIRTY", tabId: tab.id, dirty: true })
+        }
       }
-      scheduleFlush(value);
+      scheduleFlush(value)
     },
     [dispatch, store],
-  );
+  )
 
   // ── One-shot content seed ────────────────────────────────────────────────
   // The previous design passed `value={content}` to `<CodeMirror>` only on
@@ -447,7 +579,7 @@ export function CodeMirrorEditor({
   // overwhelming majority of switches (the user just opened the file a
   // few moments ago, or it was preloaded via the sidebar click), `content`
   // is already populated and the editor mounts with content immediately.
-  const controlledValue: string | undefined = content;
+  const controlledValue: string | undefined = content
 
   // Cleanup the LSP client when the workspace is closed (workspaceRoot
   // becomes null). The cache key includes the workspace, so dropping it
@@ -457,27 +589,46 @@ export function CodeMirrorEditor({
     if (fileType === "python" && absPath && workspaceRoot) {
       // Defer cleanup so the LSP plugin has time to flush didClose.
       const t = setTimeout(() => {
-        closeClient("pyright", workspaceRoot);
-      }, 100);
-      return () => clearTimeout(t);
+        closeClient("pyright", workspaceRoot)
+      }, 100)
+      return () => clearTimeout(t)
     }
-    return undefined;
-  }, [workspaceRoot, absPath, fileType]);
+    return undefined
+  }, [workspaceRoot, absPath, fileType])
+
+  // Hold a reactive copy of the CodeMirror view so the FindReplaceWidget
+  // overlay (rendered in the wrapper below) can call commands on it.
+  // The CodeMirror component only writes `editorRef.current.view` once
+  // per `key` mount, so we mirror that into React state when the view
+  // becomes available — that way the wrapper re-renders and the widget
+  // gets a non-null view.
+  const [cmView, setCmView] = useState<EditorView | null>(null)
+  useEffect(() => {
+    const v = editorRef.current?.view ?? null
+    if (v && v !== cmView) {
+      setCmView(v)
+    }
+    // We intentionally depend only on fileId: the view lifetime is
+    // tied to the `key={fileId}` mount, so when fileId changes we get
+    // a fresh ref and re-run this effect to capture the new view.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileId])
 
   return (
-    <CodeMirror
-      key={fileId}
-      ref={editorRef}
-      value={controlledValue}
-      // The `theme` prop on @uiw/react-codemirror's <CodeMirror> is the
-      // extension applied to the editor view as its base visual surface.
-      // If we omit it, the component falls back to its built-in *light*
-      // theme — which is what was producing the giant white rectangle
-      // over the code. Passing our `bonafideTheme` array (editor chrome
-      // + syntax highlight) makes Bonafide's theme the sole authority:
-      // the editor root, gutters, panels, tooltips, selection, and active
-      // line all come from a single source of truth.
-      theme={bonafideTheme}
+    <div className="relative h-full w-full">
+      <CodeMirror
+        key={fileId}
+        ref={editorRef}
+        value={controlledValue}
+        // The `theme` prop on @uiw/react-codemirror's <CodeMirror> is the
+        // extension applied to the editor view as its base visual surface.
+        // If we omit it, the component falls back to its built-in *light*
+        // theme — which is what was producing the giant white rectangle
+        // over the code. Passing our `bonafideTheme` array (editor chrome
+        // + syntax highlight) makes Bonafide's theme the sole authority:
+        // the editor root, gutters, panels, tooltips, selection, and active
+        // line all come from a single source of truth.
+        theme={bonafideTheme}
       height="100%"
       width="100%"
       basicSetup={{
@@ -489,18 +640,35 @@ export function CodeMirrorEditor({
         closeBrackets: true,
         indentOnInput: true,
         highlightSelectionMatches: true,
-        // Disable CodeMirror's built-in search panel. Bonafide routes
-        // Ctrl+F through its own UI in the future. The search keymap
-        // itself (Ctrl+D, etc.) is harmless, but disabling it avoids
-        // the possibility of a stale search panel left on screen.
+        // Disable CodeMirror's built-in searchKeymap. Without this,
+        // Ctrl+F / Ctrl+H / F3 from `@uiw/codemirror-extensions-basic-setup`
+        // would call `openSearchPanel` and open CodeMirror's native
+        // search panel — the one that lives at the BOTTOM of the
+        // editor (not our top-right widget). We want a single find UI,
+        // so we turn off CodeMirror's keymap and rely on the global
+        // App.tsx keyboard router (`Ctrl+F` / `Ctrl+H`) plus the
+        // context menu's "Find…" / "Replace…" entries.
         searchKeymap: false,
+        // Same logic for the lint keymap (Alt+Shift+L etc.) — Bonafide
+        // doesn't ship a lint action; disabling avoids accidentally
+        // running a CodeMirror default that we haven't reviewed.
+        lintKeymap: false,
       }}
       extensions={extensions}
       onChange={handleChange}
       onContextMenu={onEditorContextMenu}
       onCreateEditor={(view) => {
-        viewRef.current = view;
+        viewRef.current = view
+        setCmView(view)
       }}
-    />
-  );
+      />
+      {/* Find/Replace overlay — sits inside the editor wrapper so its
+          absolute positioning is anchored to the editor surface. The
+          widget listens for `ide:open-find` (dispatched by the editor
+          context menu and the App.tsx keyboard router) and drives the
+          underlying CodeMirror view via SearchQuery / findNext /
+          findPrevious / replaceNext / replaceAll. */}
+      <FindReplaceWidget view={cmView} />
+    </div>
+  )
 }

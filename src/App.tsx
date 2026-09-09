@@ -1,22 +1,46 @@
-import { Component, useCallback, useEffect, useState, type ReactNode } from "react"
-import { TitleBar } from "./components/TitleBar"
-import { UtilityDock, type DockId } from "./components/UtilityDock"
-import { Sidebar } from "./components/Sidebar"
-import { EditorPane } from "./components/EditorPane"
-import { Inspector } from "./components/Inspector"
-import { StatusBar } from "./components/StatusBar"
-import { PreferencesWindow, type PrefSection } from "./components/preferences/PreferencesWindow"
-import { WorkflowPanel } from "./components/agent/WorkflowPanel"
-import { Panel } from "./components/Panel"
-import { Icon } from "./components/ui/Icon"
-import { ResizeHandle } from "./components/ui/ResizeHandle"
-import { Modal } from "./components/Modal"
-import { ToastHost } from "./components/ToastHost"
-import { bonafide } from "./ipc/tauri"
-import type { TerminalProfile } from "./ipc/tauri"
 import {
-  IdeStoreProvider,
-} from "./ide/store.tsx"
+  Component,
+  useCallback,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react"
+
+import { TitleBar } from "./components/TitleBar"
+
+import { UtilityDock, type DockId } from "./components/UtilityDock"
+
+import { Sidebar } from "./components/Sidebar"
+
+import { EditorPane } from "./components/EditorPane"
+
+import { Inspector } from "./components/Inspector"
+
+import { StatusBar } from "./components/StatusBar"
+
+import {
+  PreferencesWindow,
+  type PrefSection,
+} from "./components/preferences/PreferencesWindow"
+
+import { WorkflowPanel } from "./components/agent/WorkflowPanel"
+
+import { Panel } from "./components/Panel"
+
+import { Icon } from "./components/ui/Icon"
+
+import { ResizeHandle } from "./components/ui/ResizeHandle"
+
+import { Modal } from "./components/Modal"
+
+import { ToastHost } from "./components/ToastHost"
+
+import { bonafide } from "./ipc/tauri"
+
+import type { TerminalProfile } from "./ipc/tauri"
+
+import { IdeStoreProvider } from "./ide/store.tsx"
+
 import {
   useDispatch,
   useIdeStore,
@@ -27,12 +51,20 @@ import {
   useWorkspaceRoot,
   useWorkspaceName,
 } from "./ide/hooks"
+
 import type { FileNode } from "./ide/fileTree"
+
 import CommandPalette from "./components/CommandPalette"
 
-class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state: { error: Error | null } = { error: null };
-  static getDerivedStateFromError(e: Error) { return { error: e }; }
+class ErrorBoundary extends Component<{ children: ReactNode }, {
+  error: Error | null
+}> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(e: Error) {
+    return { error: e }
+  }
+
   render() {
     if (this.state.error) {
       return (
@@ -42,9 +74,10 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
             {this.state.error.stack}
           </pre>
         </div>
-      );
+      )
     }
-    return this.props.children;
+
+    return this.props.children
   }
 }
 
@@ -55,360 +88,569 @@ export default function App() {
         <AppInner />
       </IdeStoreProvider>
     </ErrorBoundary>
-  );
+  )
 }
 
 // Performance instrumentation. Enable by setting
+
 // `localStorage.__BONAFIDE_PERF__ = "1"` in devtools. The previous
+
 // version fired an unconditional fetch to localhost:7750 on every
+
 // App render — turning what should be a sub-second render into a
+
 // multi-second one because each fetch times out against an
+
 // unreachable server.
+
 function isPerfEnabled(): boolean {
-  if (typeof window === "undefined") return false;
+  if (typeof window === "undefined") return false
+
   try {
-    return window.localStorage?.getItem("__BONAFIDE_PERF__") === "1";
+    return window.localStorage?.getItem("__BONAFIDE_PERF__") === "1"
   } catch {
-    return false;
+    return false
   }
 }
-const PERF_ENABLED = isPerfEnabled();
+
+const PERF_ENABLED = isPerfEnabled()
+
 function appLog(message: string, data: Record<string, unknown>): void {
-  if (!PERF_ENABLED) return;
+  if (!PERF_ENABLED) return
+
   fetch("http://127.0.0.1:7750/ingest/8d618420-3b75-4343-9d6c-c42e01f4bae7", {
     method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "5197ca" },
+
+    headers: {
+      "Content-Type": "application/json",
+      "X-Debug-Session-Id": "5197ca",
+    },
+
     body: JSON.stringify({
       sessionId: "5197ca",
+
       id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+
       timestamp: Date.now(),
+
       location: "App",
+
       message,
+
       data,
+
       runId: "run1",
+
       hypothesisId: "G",
     }),
-  }).catch(() => {});
+  }).catch(() => {})
 }
 
 function AppInner() {
-  const _renderStart = performance.now();
-  const dispatch = useDispatch();
-  const store = useIdeStore();
-  const [dock, setDock] = useState<DockId>("explorer");
-  const [selectedRun, setSelectedRun] = useState<string>("r1");
-  const [inspectorOpen, setInspectorOpen] = useState(false);
-  const [prefs, setPrefs] = useState<PrefSection | null>(null);
-  const [workflowOpen, setWorkflowOpen] = useState(false);
+  const _renderStart = performance.now()
+
+  const dispatch = useDispatch()
+
+  const store = useIdeStore()
+
+  const [dock, setDock] = useState<DockId>("explorer")
+
+  const [selectedRun, setSelectedRun] = useState<string>("r1")
+
+  const [inspectorOpen, setInspectorOpen] = useState(false)
+
+  const [prefs, setPrefs] = useState<PrefSection | null>(null)
+
+  const [workflowOpen, setWorkflowOpen] = useState(false)
+
   // Resizable panel widths. Persisted in component state for now; if you
+
   // want to remember them across launches, lift into the store + electron-store.
-  const [sidebarWidth, setSidebarWidth] = useState(240);
-  const [inspectorWidth, setInspectorWidth] = useState(320);
+
+  const [sidebarWidth, setSidebarWidth] = useState(240)
+
+  const [inspectorWidth, setInspectorWidth] = useState(320)
 
   // Use reactive selectors — these re-render the component whenever the
+
   // store's workspaceRoot / workspaceName changes (e.g. after openFolder).
+
   // The previous implementation captured these from store.getState() once at
+
   // mount, which meant the empty-state overlay never dismissed.
-  const _t1 = performance.now();
-  const workspaceRoot = useWorkspaceRoot();
-  const _t2 = performance.now();
-  const workspaceName = useWorkspaceName();
-  const _t3 = performance.now();
-  const activeTab = useActiveTab();
-  const _t4 = performance.now();
-  const activeFile = useActiveFile();
-  const _t5 = performance.now();
-  const modal = useModalState();
-  const pushToast = useToast();
-  const activeTabId = activeTab?.id ?? null;
+
+  const _t1 = performance.now()
+
+  const workspaceRoot = useWorkspaceRoot()
+
+  const _t2 = performance.now()
+
+  const workspaceName = useWorkspaceName()
+
+  const _t3 = performance.now()
+
+  const activeTab = useActiveTab()
+
+  const _t4 = performance.now()
+
+  const activeFile = useActiveFile()
+
+  const _t5 = performance.now()
+
+  const modal = useModalState()
+
+  const pushToast = useToast()
+
+  const activeTabId = activeTab?.id ?? null
 
   // Log selector cost. Only logs when a single selector takes >5ms.
-  const _selCost = _t5 - _renderStart;
+
+  const _selCost = _t5 - _renderStart
+
   if (_selCost > 5) {
-    appLog('AppInner:selector_cost', {
+    appLog("AppInner:selector_cost", {
       totalMs: _selCost.toFixed(2),
+
       workspaceRootMs: (_t2 - _t1).toFixed(2),
+
       workspaceNameMs: (_t3 - _t2).toFixed(2),
+
       activeTabMs: (_t4 - _t3).toFixed(2),
+
       activeFileMs: (_t5 - _t4).toFixed(2),
-      activeTabId: activeTabId ?? 'null',
+
+      activeTabId: activeTabId ?? "null",
+
       activeFileContentLen: activeFile?.content?.length ?? 0,
-    });
+    })
   }
 
   const openFolder = useCallback(async () => {
     try {
-      const folderPath = await bonafide.fs.pickFolder();
-      if (!folderPath) return;
+      const folderPath = await bonafide.fs.pickFolder()
 
-      const listing = await bonafide.fs.readDirectory(folderPath);
+      if (!folderPath) return
+
+      const listing = await bonafide.fs.readDirectory(folderPath)
 
       // Convert from the FsNode shape (from Rust main process) to FileNode
+
       // shape (store's internal format).
+
       const tree: FileNode[] = listing.files.map((f) => ({
         id: f.id,
-        name: f.name,
-        kind: f.kind as "folder" | "file",
-        parentId: f.parentId,
-        expanded: f.kind === "folder" && (f.expanded ?? false),
-        fileType: f.fileType as FileNode["fileType"],
-      }));
 
-      dispatch({ type: "OPEN_WORKSPACE", rootPath: listing.rootPath, rootName: listing.rootName, tree });
-      pushToast(`Opened ${listing.rootName}`, "success");
+        name: f.name,
+
+        kind: f.kind as "folder" | "file",
+
+        parentId: f.parentId,
+
+        expanded: f.kind === "folder" && (f.expanded ?? false),
+
+        fileType: f.fileType as FileNode["fileType"],
+      }))
+
+      dispatch({
+        type: "OPEN_WORKSPACE",
+        rootPath: listing.rootPath,
+        rootName: listing.rootName,
+        tree,
+      })
+
+      pushToast(`Opened ${listing.rootName}`, "success")
     } catch (err) {
-      console.error("[App] openFolder failed", err);
-      pushToast("Failed to open folder", "error");
+      console.error("[App] openFolder failed", err)
+
+      pushToast("Failed to open folder", "error")
     }
-  }, [dispatch, pushToast]);
+  }, [dispatch, pushToast])
 
   // ── Real-time file watcher ─────────────────────────────────────────────
+
   // Start the Rust watcher when a workspace is opened, stop it when closed.
+
   // We also subscribe to `fs:watcher` events and dispatch them to the store
+
   // as `APPLY_FS_EVENTS` actions so the file tree updates in real-time.
+
   useEffect(() => {
-    if (!workspaceRoot) return;
+    if (!workspaceRoot) return
 
     // Subscribe to file-system change events and pipe them into the store.
+
     // The Rust watcher batches rapid bursts (e.g. `git checkout` touching
+
     // 50 files) into a single emission, so we receive one array per
+
     // batch rather than 50 individual events.
+
     const unsubscribe = bonafide.watcher.onEvent((events) => {
-      dispatch({ type: "APPLY_FS_EVENTS", events });
-    });
+      dispatch({ type: "APPLY_FS_EVENTS", events })
+    })
 
     // Start the Rust-side watcher for this workspace root.
-    void bonafide.watcher.start(workspaceRoot);
+
+    void bonafide.watcher.start(workspaceRoot)
 
     // Stop the watcher when the component unmounts or workspace changes.
+
     return () => {
-      unsubscribe();
-      void bonafide.watcher.stop();
-    };
-  }, [workspaceRoot, dispatch]);
+      unsubscribe()
+
+      void bonafide.watcher.stop()
+    }
+  }, [workspaceRoot, dispatch])
 
   function openRun(id: string) {
-    setSelectedRun(id);
-    setInspectorOpen(true);
+    setSelectedRun(id)
+
+    setInspectorOpen(true)
   }
 
   function closeTab(id: string) {
-    dispatch({ type: "CLOSE_TAB", tabId: id });
+    dispatch({ type: "CLOSE_TAB", tabId: id })
   }
 
   function activateTab(id: string) {
-    dispatch({ type: "ACTIVATE_TAB", tabId: id });
+    dispatch({ type: "ACTIVATE_TAB", tabId: id })
   }
 
   // ── Modal handlers ────────────────────────────────────────────────────
 
   function confirmDelete() {
     if (modal?.kind === "delete") {
-      dispatch({ type: "DELETE", nodeId: modal.fileId });
+      dispatch({ type: "DELETE", nodeId: modal.fileId })
     }
   }
 
   function cancelDelete() {
-    dispatch({ type: "CLOSE_MODAL" });
+    dispatch({ type: "CLOSE_MODAL" })
   }
 
   function closeDirtyCancel() {
-    dispatch({ type: "CLOSE_MODAL" });
+    dispatch({ type: "CLOSE_MODAL" })
   }
 
   function closeDirtyDontSave() {
     if (modal?.kind === "closeDirty") {
-      dispatch({ type: "CLOSE_TAB", tabId: modal.tabId, force: true });
+      dispatch({ type: "CLOSE_TAB", tabId: modal.tabId, force: true })
     }
   }
 
   function closeDirtySave() {
     if (modal?.kind === "closeDirty") {
-      dispatch({ type: "MARK_DIRTY", tabId: modal.tabId, dirty: false });
-      pushToast(`Saved "${modal.name}"`, "success");
-      dispatch({ type: "CLOSE_TAB", tabId: modal.tabId, force: true });
+      dispatch({ type: "MARK_DIRTY", tabId: modal.tabId, dirty: false })
+
+      pushToast(`Saved "${modal.name}"`, "success")
+
+      dispatch({ type: "CLOSE_TAB", tabId: modal.tabId, force: true })
     }
   }
 
   // #region DEBUG: track AppInner renders + measure sub-phases
-  const _renderSyncDone = performance.now();
-  appLog('AppInner:render_sync_done', {
+
+  const _renderSyncDone = performance.now()
+
+  appLog("AppInner:render_sync_done", {
     ms: _renderSyncDone - _renderStart,
-    activeTabId: activeTabId ?? 'null',
-  });
+
+    activeTabId: activeTabId ?? "null",
+  })
+
   useEffect(() => {
-    appLog('AppInner:rendered', { ms: performance.now() - _renderStart, activeTabId: activeTabId ?? 'null' });
-  });
+    appLog("AppInner:rendered", {
+      ms: performance.now() - _renderStart,
+      activeTabId: activeTabId ?? "null",
+    })
+  })
+
   // #endregion
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
 
   const launchDefaultTerminal = useCallback(async () => {
     try {
-      const profiles = await bonafide.pty.listProfiles();
+      const profiles = await bonafide.pty.listProfiles()
+
       const pick =
         profiles.find((p: TerminalProfile) => p.available) ??
         profiles[0] ??
-        null;
+        null
+
       if (!pick) {
-        pushToast("No terminal profiles available", "error");
-        return;
+        pushToast("No terminal profiles available", "error")
+
+        return
       }
-      const id = `term_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+
+      const id = `term_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
+
       dispatch({
         type: "ADD_TERMINAL_SESSION",
+
         session: {
           id,
+
           profileId: pick.id,
+
           profileLabel: pick.label,
+
           // Land the new terminal in the open workspace folder. When
+
           // no folder is open the backend falls back to the inherited
+
           // cwd rather than rejecting the request.
+
           cwd: workspaceRoot,
+
           status: "spawning",
         },
-      });
+      })
     } catch (err) {
-      console.error("[App] launchDefaultTerminal failed", err);
-      pushToast("Failed to launch terminal", "error");
+      console.error("[App] launchDefaultTerminal failed", err)
+
+      pushToast("Failed to launch terminal", "error")
     }
-  }, [dispatch, pushToast, workspaceRoot]);
+  }, [dispatch, pushToast, workspaceRoot])
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const cmd = e.metaKey || e.ctrlKey;
+      const cmd = e.metaKey || e.ctrlKey
 
       // Ctrl+O — Open folder
+
       if (cmd && !e.shiftKey && e.key.toLowerCase() === "o") {
-        e.preventDefault();
-        openFolder();
-        return;
+        e.preventDefault()
+
+        openFolder()
+
+        return
       }
 
       // Ctrl+S — Save active file
+
       if (cmd && !e.shiftKey && e.key.toLowerCase() === "s") {
-        e.preventDefault();
+        e.preventDefault()
+
         if (activeTab?.dirty) {
-          dispatch({ type: "MARK_DIRTY", tabId: activeTab.id, dirty: false });
-          pushToast(`Saved "${activeTab.name}"`, "success");
+          dispatch({ type: "MARK_DIRTY", tabId: activeTab.id, dirty: false })
+
+          pushToast(`Saved "${activeTab.name}"`, "success")
         }
-        return;
+
+        return
       }
 
       // Ctrl+W — Close active tab
+
       if (cmd && !e.shiftKey && e.key.toLowerCase() === "w") {
-        e.preventDefault();
-        if (activeTab) closeTab(activeTab.id);
-        return;
+        e.preventDefault()
+
+        if (activeTab) closeTab(activeTab.id)
+
+        return
       }
 
       // Ctrl+Shift+T — Reopen closed tab
+
       if (cmd && e.shiftKey && e.key.toLowerCase() === "t") {
-        e.preventDefault();
-        dispatch({ type: "REOPEN_CLOSED_TAB" });
-        return;
+        e.preventDefault()
+
+        dispatch({ type: "REOPEN_CLOSED_TAB" })
+
+        return
       }
 
       // Ctrl+N — New file
+
       if (cmd && !e.shiftKey && e.key.toLowerCase() === "n") {
-        e.preventDefault();
-        dispatch({ type: "OPEN_UNTITLED" });
-        return;
+        e.preventDefault()
+
+        dispatch({ type: "OPEN_UNTITLED" })
+
+        return
       }
 
       // Ctrl+J — Toggle bottom panel
+
       if (cmd && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "j") {
-        e.preventDefault();
-        dispatch({ type: "TOGGLE_PANEL" });
-        return;
+        e.preventDefault()
+
+        dispatch({ type: "TOGGLE_PANEL" })
+
+        return
+      }
+
+      // Ctrl+B — Toggle sidebar
+
+      if (cmd && !e.shiftKey && e.key.toLowerCase() === "b") {
+        e.preventDefault()
+
+        window.dispatchEvent(new CustomEvent("ide:toggle-sidebar"))
+
+        return
       }
 
       // Ctrl+Shift+` — New terminal with the default profile
+
       // Mirrors VS Code's default keyboard shortcut (Ctrl+Shift+`).
+
       // We don't try to be smart about which profile — we launch the
+
       // first available one. The "+" dropdown in the Terminal panel
+
       // lets the user pick a specific shell.
+
       if (cmd && e.shiftKey && e.key === "`") {
-        e.preventDefault();
-        void launchDefaultTerminal();
-        return;
+        e.preventDefault()
+
+        void launchDefaultTerminal()
+
+        return
       }
 
       // Escape — close modal
+
       if (e.key === "Escape" && modal) {
-        dispatch({ type: "CLOSE_MODAL" });
+        dispatch({ type: "CLOSE_MODAL" })
       }
 
       // Ctrl+Shift+P — Command palette
+
       if (cmd && e.shiftKey && e.key.toLowerCase() === "p") {
-        e.preventDefault();
-        dispatch({ type: "OPEN_PALETTE" });
-        return;
+        e.preventDefault()
+
+        dispatch({ type: "OPEN_PALETTE" })
+
+        return
+      }
+
+      // Ctrl+F — Find (opens the Bonafide find/replace widget in find mode)
+
+      if (cmd && !e.shiftKey && e.key.toLowerCase() === "f") {
+        e.preventDefault()
+
+        window.dispatchEvent(
+          new CustomEvent("ide:open-find", { detail: { mode: "find" } }),
+        )
+
+        return
+      }
+
+      // Ctrl+H — Replace (opens the Bonafide find/replace widget with the
+
+      // replace row expanded)
+
+      if (cmd && !e.shiftKey && e.key.toLowerCase() === "h") {
+        e.preventDefault()
+
+        window.dispatchEvent(
+          new CustomEvent("ide:open-find", { detail: { mode: "replace" } }),
+        )
+
+        return
+      }
+
+      // Ctrl+Shift+G — refresh source-control state. The panel itself
+      // listens for this via a custom event so it can stay decoupled
+      // from App.tsx's keyboard router.
+
+      if (cmd && e.shiftKey && e.key.toLowerCase() === "g") {
+        e.preventDefault()
+        window.dispatchEvent(new CustomEvent("ide:git-refresh"))
+        return
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [activeTab, dispatch, modal, pushToast, openFolder, launchDefaultTerminal]);
+
+    window.addEventListener("keydown", onKey)
+
+    return () => window.removeEventListener("keydown", onKey)
+  }, [activeTab, dispatch, modal, pushToast, openFolder, launchDefaultTerminal])
 
   // ── Custom event listeners ──────────────────────────────────────────────
+
   // These handle events fired by the command palette and other components.
 
   // ide:open-file — open an arbitrary file by absolute path.
+
   // Adds it to the file tree (or activates existing tab) and loads its content.
+
   useEffect(() => {
     async function onOpenFile(e: Event) {
-      const path = (e as CustomEvent<{ path: string }>).detail?.path;
-      if (!path) return;
+      const path = (e as CustomEvent<{ path: string }>).detail?.path
 
-      const state = store.getState();
+      if (!path) return
+
+      const state = store.getState()
 
       // If the file is already in the tree, just open its tab.
-      const existing = state.fileTree.find((n) => n.id === path);
+
+      const existing = state.fileTree.find((n) => n.id === path)
+
       if (existing && existing.kind === "file") {
-        dispatch({ type: "OPEN_FILE", fileId: existing.id });
-        return;
+        dispatch({ type: "OPEN_FILE", fileId: existing.id })
+
+        return
       }
 
       // Not in tree — read the file content and add it as a new node.
+
       try {
-        const { content } = await bonafide.fs.readFile(path);
-        const name = path.split(/[/\\]/).pop() ?? path;
-        const parentId = state.workspaceRoot ?? null;
+        const { content } = await bonafide.fs.readFile(path)
+
+        const name = path.split(/[/\\]/).pop() ?? path
+
+        const parentId = state.workspaceRoot ?? null
 
         // ADD_FILE creates the node and opens a tab for it.
-        dispatch({ type: "ADD_FILE", parentId, name });
+
+        dispatch({ type: "ADD_FILE", parentId, name })
+
         // Now set the content we just read.
-        const newState = store.getState();
-        const newNode = newState.fileTree.find((n) => n.name === name && n.parentId === parentId);
+
+        const newState = store.getState()
+
+        const newNode = newState.fileTree.find(
+          (n) => n.name === name && n.parentId === parentId,
+        )
+
         if (newNode) {
-          dispatch({ type: "SET_CONTENT", fileId: newNode.id, content });
+          dispatch({ type: "SET_CONTENT", fileId: newNode.id, content })
         }
       } catch {
-        pushToast("Failed to open file", "error");
+        pushToast("Failed to open file", "error")
       }
     }
 
     // ide:toggle-sidebar — dispatches to the UtilityDock's visible signal.
+
     function onToggleSidebar() {
-      window.dispatchEvent(new CustomEvent("bonafide:toggle-sidebar"));
+      window.dispatchEvent(new CustomEvent("bonafide:toggle-sidebar"))
     }
 
-    window.addEventListener("ide:open-file", onOpenFile);
-    window.addEventListener("ide:toggle-sidebar", onToggleSidebar);
+    window.addEventListener("ide:open-file", onOpenFile)
+
+    window.addEventListener("ide:toggle-sidebar", onToggleSidebar)
+
     return () => {
-      window.removeEventListener("ide:open-file", onOpenFile);
-      window.removeEventListener("ide:toggle-sidebar", onToggleSidebar);
-    };
-  }, [dispatch, store, pushToast]);
+      window.removeEventListener("ide:open-file", onOpenFile)
+
+      window.removeEventListener("ide:toggle-sidebar", onToggleSidebar)
+    }
+  }, [dispatch, store, pushToast])
+
   // Rendered behind the main UI when no folder is open.
+
   // The Sidebar and editor stay mounted so keyboard shortcuts keep working.
-  const showEmptyState = !workspaceRoot;
+
+  const showEmptyState = !workspaceRoot
 
   function onDockSelect(id: DockId) {
-    if (id === "account") setPrefs("account");
-    else if (id === "settings") setPrefs("settings");
-    else if (id === "workflow") setWorkflowOpen((v) => !v);
-    else setDock(id);
+    if (id === "account") setPrefs("account")
+    else if (id === "settings") setPrefs("settings")
+    else if (id === "workflow") setWorkflowOpen((v) => !v)
+    else setDock(id)
   }
 
   return (
@@ -423,10 +665,12 @@ function AppInner() {
               <Icon name="folder-open" size={32} className="text-secondary" />
             </div>
             <div>
-              <p className="font-sans text-[18px] font-medium text-on-surface">No folder open</p>
+              <p className="font-sans text-[18px] font-medium text-on-surface">
+                No folder open
+              </p>
               <p className="mt-1 font-body text-[13px] text-on-surface-variant">
-                Bonafide needs a project folder to browse files and run experiments.
-                Open a folder to get started.
+                Bonafide needs a project folder to browse files and run
+                experiments. Open a folder to get started.
               </p>
             </div>
             <button
@@ -486,7 +730,10 @@ function AppInner() {
                   side="left"
                   ariaLabel="Resize inspector"
                 />
-                <Inspector width={inspectorWidth} onClose={() => setInspectorOpen(false)} />
+                <Inspector
+                  width={inspectorWidth}
+                  onClose={() => setInspectorOpen(false)}
+                />
               </>
             ) : (
               <button
@@ -519,11 +766,16 @@ function AppInner() {
       {/* Toast host */}
       <ToastHost />
 
-      {prefs && <PreferencesWindow initialSection={prefs} onClose={() => setPrefs(null)} />}
+      {prefs && (
+        <PreferencesWindow
+          initialSection={prefs}
+          onClose={() => setPrefs(null)}
+        />
+      )}
       {workflowOpen && <WorkflowPanel onClose={() => setWorkflowOpen(false)} />}
 
       {/* Command palette (Ctrl+Shift+P) */}
       <CommandPalette />
     </div>
-  );
+  )
 }
