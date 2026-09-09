@@ -172,6 +172,11 @@ export function getTabMenu(
       label: "Close Others",
       icon: "chevrons-left",
       disabled: isOnlyTab,
+      // Batch operations always force-close (no per-tab dirty prompt).
+      // The reducer bypasses the closeDirty modal entirely; this matches
+      // the `force: true` semantics of CLOSE_TAB. The user has already
+      // chosen "Save" or "Don't Save" on the active tab if they needed
+      // to before invoking Close Others.
       onSelect: () => dispatch({ type: "CLOSE_OTHERS", keepTabId: tab.id }),
     },
     {
@@ -186,6 +191,7 @@ export function getTabMenu(
       label: "Close All",
       icon: "chevrons-right",
       disabled: isOnlyTab,
+      // See note above on Close Others: batch ops always force-close.
       onSelect: () => dispatch({ type: "CLOSE_ALL" }),
     },
     { kind: "separator" },

@@ -222,7 +222,7 @@ function makeToast(partial: Omit<Toast, "id">): Toast {
   return { ...partial, id: `toast_${++toastCounter}_${Date.now()}` };
 }
 
-function makeInitialState(): IdeState {
+export function makeInitialState(): IdeState {
   return {
     workspaceRoot: null,
     workspaceName: null,
@@ -481,7 +481,7 @@ function _reduce(state: IdeState, action: IdeAction): IdeState {
         id: `tab_${Date.now()}`,
         fileId,
         name: `${name}.py`,
-        dirty: true,
+        dirty: false,
       };
       return {
         ...state,
@@ -631,13 +631,15 @@ function _reduce(state: IdeState, action: IdeAction): IdeState {
 
     case "SET_CONTENT": {
       const { fileId, content } = action;
+      // SET_CONTENT must leave `dirty` untouched. Editors (e.g. the seed-
+      // from-disk path when opening a file, the save handler in
+      // EditorPane) push content into the store for reasons unrelated to
+      // user edits; only the editor's on-change handler should ever flip
+      // a tab dirty, via MARK_DIRTY.
       return {
         ...state,
         fileTree: state.fileTree.map((n) =>
           n.id === fileId ? { ...n, content } : n,
-        ),
-        tabs: state.tabs.map((t) =>
-          t.fileId === fileId ? { ...t, dirty: true } : t,
         ),
       };
     }
