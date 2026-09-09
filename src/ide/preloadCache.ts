@@ -1,28 +1,17 @@
 // Module-level cache for file content pre-loaded by the file-tree click
-// handler BEFORE Monaco mounts. This bypasses the 30-40 second main-thread
-// stall that happens during Monaco's first initialization on Tauri +
-// Windows + WebView2 + Vite dev mode.
+// handler BEFORE the editor mounts. The cache is editor-agnostic: the
+// Sidebar fires `bonafide.fs.readFile()` SYNCHRONOUSLY in the same task
+// as the click, BEFORE dispatching OPEN_FILE. The IPC request is in
+// flight before any render work begins. When CodeMirrorEditor (or any
+// future editor) seeds from disk, the cache is already populated (or
+// populating) and the editor skips the IPC call entirely.
 //
-// Why we need this:
-//   1. User clicks a file in the sidebar.
-//   2. `OPEN_FILE` action adds a tab; React renders MonacoEditor.
-//   3. MonacoEditor's useEffect fires `seedFromDisk()` → `bonafide.fs.readFile()`.
-//   4. If Monaco's first-time init is still in progress (loading 5,000+
-//      AMD modules from Vite), the main thread is saturated for tens of
-//      seconds. Tauri's IPC response is delivered via WebView2 postMessage,
-//      which sits in the main-thread message queue until the queue is
-//      drained. The `await` doesn't resolve until Monaco's init releases
-//      the main thread.
-//
-// The fix:
-//   - Sidebar's click handler fires `bonafide.fs.readFile()` SYNCHRONOUSLY
-//     in the same task as the click, BEFORE dispatching OPEN_FILE.
-//   - The IPC request is in flight before any render work begins.
-//   - When MonacoEditor's `seedFromDisk` runs, the cache is already
-//     populated (or populating) and we skip the IPC entirely.
-//
-// In dev mode (Tauri + Vite) this drops the first-file-open latency
-// from ~80 seconds to ~2 seconds.
+// History: this cache was originally built to mask a 30-40 second
+// main-thread stall during Monaco's first initialization on Tauri +
+// Windows + WebView2 + Vite dev mode. With CodeMirror 6 the stall is
+// gone, but the cache is still useful: it cuts one round-trip from
+// the open-file-to-render path, which keeps first-paint of the file
+// content well under a second even on cold starts.
 
 import { bonafide } from "../ipc/tauri";
 
@@ -63,19 +52,10 @@ export function preloadContent(absPath: string): void {
     });
 }
 
-export function _dbgPreload(loc: string, msg: string, data: Record<string, unknown>) {
-  fetch('http://127.0.0.1:7750/ingest/8d618420-3b75-4343-9d6c-c42e01f4bae7', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '5197ca' },
-    body: JSON.stringify({
-      sessionId: '5197ca',
-      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-      timestamp: Date.now(),
-      location: loc,
-      message: msg,
-      data,
-      runId: 'run1',
-      hypothesisId: 'I',
-    }),
-  }).catch(() => {});
+// Kept as a no-op stub for callers that may still reference it. The
+// previous implementation fired a fetch to a localhost dev server on
+// every click, which was a major contributor to slow file switching
+// because each fetch timed out and burned a network round-trip.
+export function _dbgPreload(_loc: string, _msg: string, _data: Record<string, unknown>): void {
+  // intentionally empty
 }

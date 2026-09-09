@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKe
 import { Icon } from "./ui/Icon";
 import { ChartTab } from "./ChartTab";
 import { ExperimentsTab } from "./ExperimentsTab";
-import { MonacoEditor } from "./MonacoEditor";
+import { CodeMirrorEditor } from "./CodeMirrorEditor";
+import { MergeViewEditor } from "../ide/MergeViewEditor";
 import {
   useActiveFile,
+  useActiveMergeReview,
   useContextMenuState,
   useDispatch,
   useIdeStore,
@@ -15,7 +17,7 @@ import {
 import { ContextMenu } from "./ContextMenu";
 import { getTabMenu, getEditorMenu } from "../ide/menus";
 import { bonafide } from "../ipc/tauri";
-import type { Tab } from "../ide/store.tsx";
+import type { Tab, DiagnosticEntry } from "../ide/store.tsx";
 
 // ── Tab strip ─────────────────────────────────────────────────────────────
 
@@ -194,6 +196,7 @@ export function EditorPane({
   const pushToast = useToast();
   const tabs = useTabs();
   const activeFile = useActiveFile();
+  const activeMergeReview = useActiveMergeReview();
   const ctxMenu = useContextMenuState();
 
   function onTabContextMenu(e: React.MouseEvent, tabId: string) {
@@ -226,11 +229,106 @@ export function EditorPane({
     return () => window.removeEventListener("ide:editor-ctx", onEditorCtx);
   }, [dispatch, activeTabId]);
 
+  // Listen for "open merge review" events from the editor context menu.
+  // The merge review shows the original vs proposed text in a side-by-side
+  // diff with accept/reject controls. Currently we open it with the current
+  // file's content as both sides — the AI agent code will pass the proposed
+  // text as a second argument when it triggers the review.
+  useEffect(() => {
+    function onEditorMerge(e: Event) {
+      const detail = (e as CustomEvent).detail as {
+        tabId: string;
+        fileId: string;
+        proposedText?: string;
+      };
+      const state = store.getState();
+      const file = state.fileTree.find((n) => n.id === detail.fileId);
+      if (!file) return;
+      const rootPath = state.workspaceRoot;
+      if (!rootPath) return;
+      const absPath = `${rootPath}/${file.id}`;
+      const proposed = detail.proposedText ?? file.content ?? "";
+      dispatch({
+        type: "OPEN_MERGE_REVIEW",
+        absPath,
+        originalText: file.content ?? "",
+        proposedText: proposed,
+        source: "manual review",
+      });
+    }
+    window.addEventListener("ide:editor-merge", onEditorMerge);
+    return () => window.removeEventListener("ide:editor-merge", onEditorMerge);
+  }, [dispatch, store]);
+
+  // Listen for "run ruff" events. We invoke ruff-check via Tauri IPC and
+  // push the resulting diagnostics into the editor's domain-diagnostics
+  // StateField via the editor component. (The LSP path is the long-term
+  // primary surface, but ruff-check is the explicit one-shot entry.)
+  useEffect(() => {
+    function onEditorRuff(e: Event) {
+      const detail = (e as CustomEvent).detail as { tabId: string; fileId: string };
+      const state = store.getState();
+      const file = state.fileTree.find((n) => n.id === detail.fileId);
+      if (!file) return;
+      const rootPath = state.workspaceRoot;
+      if (!rootPath) return;
+      void (async () => {
+        try {
+          const { ruffCheckAsDomain } = await import("../ide/ruff-linter");
+          const diags = await ruffCheckAsDomain(
+            `${rootPath}/${file.id}`,
+            file.content ?? "",
+          );
+
+          // Aggregate ruff diagnostics into the panel's Problems tab so
+          // the user sees them aggregated across files (this ruff call is
+          // for one file; later we'll loop across all open files and union).
+          const existing = store.getState().panel.diagnostics.filter(
+            (d) => !(d.fileId === file.id && d.source === "ruff"),
+          );
+          const newEntries: DiagnosticEntry[] = diags.map((d, idx) => ({
+            id: `ruff_${file.id}_${idx}_${Date.now()}`,
+            fileId: file.id,
+            fileLabel: file.id,
+            line: d.message.match(/(\d+):(\d+)/)?.[1]
+              ? Number(d.message.match(/(\d+):(\d+)/)![1])
+              : 0,
+            col: d.message.match(/(\d+):(\d+)/)?.[2]
+              ? Number(d.message.match(/(\d+):(\d+)/)![2])
+              : 0,
+            severity: d.severity === "info" ? "info" : d.severity === "warning" ? "warning" : "error",
+            code: d.source ?? "ruff",
+            message: d.message,
+            source: "ruff",
+          }));
+          dispatch({ type: "SET_DIAGNOSTICS", diagnostics: [...existing, ...newEntries] });
+          dispatch({ type: "SET_PANEL_TAB", tab: "problems" });
+          if (diags.length > 0) {
+            dispatch({ type: "TOGGLE_PANEL" });
+          }
+
+          pushToast(
+            diags.length === 0
+              ? "No ruff issues found"
+              : `Ruff found ${diags.length} issue${diags.length === 1 ? "" : "s"}`,
+            diags.length === 0 ? "success" : "info",
+          );
+        } catch (err) {
+          console.error("[ruff] check failed", err);
+          pushToast("Ruff check failed", "error");
+        }
+      })();
+    }
+    window.addEventListener("ide:editor-ruff", onEditorRuff);
+    return () => window.removeEventListener("ide:editor-ruff", onEditorRuff);
+  }, [dispatch, pushToast, store]);
+
   // ── Save handler ───────────────────────────────────────────────────────
-  // Called by MonacoEditor when the user hits Ctrl+S. The MonacoEditor
-  // already keeps the store content in sync via onChange — this handler
-  // is responsible for: (1) flipping dirty → false on the tab, and
-  // (2) writing the file to disk when an absPath is available.
+  // Called by CodeMirrorEditor when the user hits Ctrl+S. The
+  // CodeMirrorEditor already keeps the store content in sync via
+  // onChange — this handler is responsible for: (1) flipping dirty →
+  // false on the tab, and (2) writing the file to disk when an absPath
+  // is available.
   const onEditorSave = useCallback(
     async (fileId: string, absPath: string | null, currentValue: string) => {
       // Flush the latest content to the store BEFORE writing to disk so
@@ -320,9 +418,68 @@ export function EditorPane({
         <ChartTab runId={chartTarget.runId} metricKey={chartTarget.metricKey} />
       ) : activeTab?.fileId === "__virtual__/experiments" && experimentsRun ? (
         <ExperimentsTab runId={experimentsRun} />
+      ) : activeMergeReview ? (
+        // Merge review: user is reviewing an AI agent's patch before it lands.
+        // The merge editor handles its own save/close lifecycle through
+        // RESOLVE_MERGE_REVIEW (accept all) / CLOSE_MERGE_REVIEW (reject).
+        <MergeViewEditor
+          originalText={activeMergeReview.originalText}
+          proposedText={activeMergeReview.proposedText}
+          onAccept={(mergedText) => {
+            dispatch({
+              type: "RESOLVE_MERGE_REVIEW",
+              reviewId: activeMergeReview.id,
+              mergedText,
+            });
+            void bonafide.fs
+              .writeFile(activeMergeReview.absPath, mergedText)
+              .then(() => {
+                pushToast(
+                  `Wrote ${activeMergeReview.absPath.split("/").pop() ?? activeMergeReview.absPath} to disk`,
+                  "success",
+                );
+              })
+              .catch((err) => {
+                console.error("[merge] writeFile failed", err);
+                pushToast("Failed to write merged file", "error");
+              });
+          }}
+          onReject={() => {
+            dispatch({ type: "CLOSE_MERGE_REVIEW", reviewId: activeMergeReview.id });
+            pushToast("Rejected changes", "info");
+          }}
+        />
       ) : activeFile ? (
+        // The wrapper paints `bg-surface` (#111318) for a hard
+        // guarantee against *any* uncovered pixel.
+        //
+        // Why it's back: the previous removal of `bg-surface` from
+        // this wrapper (intended to remove the "shadow zone"
+        // produced by `.cm-activeLine`'s solid background) left the
+        // wrapper transparent. With nothing behind it but the parent
+        // column (`bg-surface-container-lowest` = #0c0e13, darker than
+        // the editor), any layout pass that exposes a strip of
+        // wrapper before CodeMirror mounts its own dark background
+        // shows up as a *darker* strip than the editor — which the
+        // user's eye reads as a "lighter zone" because the editor's
+        // own paint is the upper bound of the editor's brightness.
+        // That was the source of the left-30% lighter block.
+        //
+        // By giving the wrapper the *exact same* surface color the
+        // editor paints (#111318), any exposed pixel during a layout
+        // pass is visually identical to the editor paint itself.
+        // There is no longer any shade boundary between the editor
+        // root and its wrapper — they read as one continuous dark
+        // rectangle.
+        //
+        // The `.cm-activeLine` highlight was changed to
+        // `backgroundColor: transparent` + an inset box-shadow left
+        // bar in the same pass, so the active-line visual is now a
+        // thin primary-color stripe on the cursor line, not a
+        // background band — meaning it no longer combines with the
+        // wrapper paint to produce a perceptible zone.
         <div className="relative flex min-h-0 flex-1 overflow-hidden bg-surface">
-          <MonacoEditor
+          <CodeMirrorEditor
             fileId={activeFile.id}
             fileType={activeFile.fileType}
             content={activeFile.content ?? ""}

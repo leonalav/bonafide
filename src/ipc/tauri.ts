@@ -215,6 +215,75 @@ async function shellOpenExternal(url: string): Promise<boolean> {
   return true;
 }
 
+// ── LSP bridge + ruff CLI ──────────────────────────────────────────────────
+
+/** Get the WebSocket URL of the LSP bridge hosted by the Tauri backend. */
+async function getLspBridgeUrl(): Promise<string> {
+  if (!tauriIsTauri()) {
+    // Fall back to a localhost URL when running standalone in the browser.
+    return "ws://127.0.0.1:9877";
+  }
+  return invoke<string>("get_lsp_bridge_url");
+}
+
+/** Get the list of running LSP servers (serverId + rootUri). */
+async function getLspServers(): Promise<{ id: string; status: string }[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<{ id: string; status: string }[]>("get_lsp_servers");
+}
+
+/** Stop a running LSP server by id. */
+async function stopLspServer(serverId: string): Promise<void> {
+  if (!tauriIsTauri()) return;
+  await invoke("stop_lsp_server", { serverId });
+}
+
+/**
+ * Run `ruff check` on a file via the Tauri backend.
+ * Returns the raw JSON output (empty array when no issues).
+ */
+async function ruffCheck(filePath: string): Promise<string> {
+  if (!tauriIsTauri()) return "[]";
+  return invoke<string>("ruff_check", { filePath });
+}
+
+/** Get the WebSocket URL for the PTY bridge (xterm.js terminal sessions). */
+async function getPtyWsUrl(): Promise<string> {
+  if (!tauriIsTauri()) return "ws://127.0.0.1:9878";
+  return invoke<string>("get_pty_ws_url");
+}
+
+/** One available terminal shell profile (cmd, powershell, pwsh, git-bash…). */
+export type TerminalProfile = {
+  id: string;
+  label: string;
+  program: string;
+  args: string[];
+  available: boolean;
+};
+
+/**
+ * List the shell profiles detected on this machine. The renderer uses
+ * this to populate the "+ Launch Profile" dropdown in the Terminal panel.
+ */
+async function listTerminalProfiles(): Promise<TerminalProfile[]> {
+  if (!tauriIsTauri()) {
+    // Browser preview fallback: return a single demo profile so the UI
+    // still renders. The "Connect" button won't actually spawn a shell,
+    // but the dropdown won't be empty.
+    return [
+      {
+        id: "demo",
+        label: "Demo (browser preview)",
+        program: "",
+        args: [],
+        available: true,
+      },
+    ];
+  }
+  return invoke<TerminalProfile[]>("list_terminal_profiles");
+}
+
 // ── Public API — same shape as the old electronAPI ────────────────────────
 
 export const bonafide = {
@@ -241,6 +310,45 @@ export const bonafide = {
     rename,
     delete: deletePath,
   },
+  lsp: {
+    getBridgeUrl: getLspBridgeUrl,
+    getServers: getLspServers,
+    stopServer: stopLspServer,
+  },
+  linters: {
+    ruffCheck,
+  },
+  pty: {
+    getWsUrl: getPtyWsUrl,
+    listProfiles: listTerminalProfiles,
+  },
 };
 
-export type BonafideAPI = typeof bonafide;
+export type BonafideAPI = {
+  window: {
+    minimize: () => Promise<void>;
+    toggleMaximize: () => Promise<void>;
+    isMaximized: () => Promise<boolean>;
+    close: () => Promise<void>;
+    onMaximizeChanged: (cb: (maximized: boolean) => void) => () => void;
+  };
+  shell: { openExternal: (url: string) => Promise<boolean> };
+  app: { getInfo: () => Promise<AppInfo> };
+  fs: {
+    pickFolder: () => Promise<string | null>;
+    readDirectory: (path: string) => Promise<DirListing>;
+    readFile: (path: string) => Promise<{ content: string }>;
+    writeFile: (path: string, content: string) => Promise<OpResult>;
+    createFile: (parentDir: string, name: string) => Promise<OpResult>;
+    createFolder: (parentDir: string, name: string) => Promise<OpResult>;
+    rename: (src: string, newName: string) => Promise<OpResult>;
+    delete: (target: string) => Promise<OpResult>;
+  };
+  lsp: {
+    getBridgeUrl: () => Promise<string>;
+    getServers: () => Promise<{ id: string; status: string }[]>;
+    stopServer: (serverId: string) => Promise<void>;
+  };
+  linters: { ruffCheck: (filePath: string) => Promise<string> };
+  pty: { getWsUrl: () => Promise<string>; listProfiles: () => Promise<TerminalProfile[]> };
+};

@@ -358,5 +358,34 @@ export function getEditorMenu(
         });
       },
     },
+    { kind: "separator" },
+    {
+      kind: "action",
+      label: "Run Ruff Check",
+      icon: "shield-check",
+      disabled: !tab || !tab.fileId.endsWith(".py"),
+      onSelect: () => {
+        if (!tab) return;
+        window.dispatchEvent(
+          new CustomEvent("ide:editor-ruff", {
+            detail: { tabId: tab.id, fileId: tab.fileId },
+          }),
+        );
+      },
+    },
+    {
+      kind: "action",
+      label: "Open Merge Review…",
+      icon: "git-merge",
+      disabled: !tab || !tab.fileId.endsWith(".py"),
+      onSelect: () => {
+        if (!tab) return;
+        window.dispatchEvent(
+          new CustomEvent("ide:editor-merge", {
+            detail: { tabId: tab.id, fileId: tab.fileId },
+          }),
+        );
+      },
+    },
   ];
 }

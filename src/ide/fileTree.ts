@@ -163,23 +163,49 @@ export function findNodeByPath(tree: FileNode[], segments: string[]): FileNode |
   return tree.find((n) => n.name === name && n.parentId === parentId) ?? null;
 }
 
+/**
+ * Build a parentId → children[] index over a flat file tree. O(N).
+ *
+ * Used by `walkVisible` to turn the inner per-node `tree.filter()` from
+ * O(N) into an O(1) Map lookup. Without this, walking a 2 000-file tree
+ * was O(N × D) where D is depth (≈ 4 million comparisons per render);
+ * with the index it's O(N) (≈ 2 000 comparisons).
+ *
+ * The index is built fresh on each call — call sites that render on every
+ * dispatch should memoize it (see `useTreeIndex` in `Sidebar.tsx`).
+ */
+export function buildTreeIndex(tree: FileNode[]): {
+  childrenByParent: Map<string | null, FileNode[]>;
+  byId: Map<string, FileNode>;
+} {
+  const childrenByParent = new Map<string | null, FileNode[]>();
+  const byId = new Map<string, FileNode>();
+  for (const node of tree) {
+    byId.set(node.id, node);
+    const bucket = childrenByParent.get(node.parentId);
+    if (bucket) bucket.push(node);
+    else childrenByParent.set(node.parentId, [node]);
+  }
+  return { childrenByParent, byId };
+}
+
 /** Walk visible nodes in depth-first order, yielding node + depth. */
 export function* walkVisible(
   tree: FileNode[],
   collapsed: Record<string, boolean>,
 ): Generator<{ node: FileNode; depth: number }> {
-  // Root nodes: parentId === null
-  const roots = tree.filter((n) => n.parentId === null);
+  const { childrenByParent } = buildTreeIndex(tree);
+  const roots = childrenByParent.get(null) ?? [];
   for (const root of roots) {
-    yield* walkFrom(root, 0, tree, collapsed);
+    yield* walkFrom(root, 0, collapsed, childrenByParent);
   }
 }
 
 function* walkFrom(
   node: FileNode,
   depth: number,
-  tree: FileNode[],
   collapsed: Record<string, boolean>,
+  childrenByParent: Map<string | null, FileNode[]>,
 ): Generator<{ node: FileNode; depth: number }> {
   yield { node, depth };
   // Only check the `collapsed` map. The `node.expanded` field on FileNode
@@ -189,9 +215,40 @@ function* walkFrom(
   // which evaluated to `false && !true = false` on the very first click,
   // making every folder appear permanently collapsed.
   if (node.kind === "folder" && !collapsed[node.id]) {
-    const children = tree.filter((n) => n.parentId === node.id);
+    const children = childrenByParent.get(node.id) ?? [];
     for (const child of children) {
-      yield* walkFrom(child, depth + 1, tree, collapsed);
+      yield* walkFrom(child, depth + 1, collapsed, childrenByParent);
+    }
+  }
+}
+
+/**
+ * Same as `walkVisible`, but skips rebuilding the parent → children index
+ * when the caller already has one. This is the hot path used by the
+ * Explorer view: the index is built once per tree change, then walks
+ * across every dispatch are pure O(visibleNodes).
+ */
+export function* walkVisibleIndexed(
+  childrenByParent: Map<string | null, FileNode[]>,
+  collapsed: Record<string, boolean>,
+): Generator<{ node: FileNode; depth: number }> {
+  const roots = childrenByParent.get(null) ?? [];
+  for (const root of roots) {
+    yield* walkFromIndexed(root, 0, collapsed, childrenByParent);
+  }
+}
+
+function* walkFromIndexed(
+  node: FileNode,
+  depth: number,
+  collapsed: Record<string, boolean>,
+  childrenByParent: Map<string | null, FileNode[]>,
+): Generator<{ node: FileNode; depth: number }> {
+  yield { node, depth };
+  if (node.kind === "folder" && !collapsed[node.id]) {
+    const children = childrenByParent.get(node.id) ?? [];
+    for (const child of children) {
+      yield* walkFromIndexed(child, depth + 1, collapsed, childrenByParent);
     }
   }
 }
@@ -217,6 +274,31 @@ export function moveFocus(
   return visible[next].node.id;
 }
 
+/**
+ * Like `moveFocus`, but skips rebuilding the parent → children index.
+ * Pass `childrenByParent` from `buildTreeIndex(tree)`. Used by the
+ * keyboard handler in the Explorer, which already has a memoized index.
+ */
+export function moveFocusIndexed(
+  childrenByParent: Map<string | null, FileNode[]>,
+  currentId: string | null,
+  delta: -1 | 1,
+  collapsed: Record<string, boolean>,
+): string | null {
+  const visible = [...walkVisibleIndexed(childrenByParent, collapsed)];
+  if (visible.length === 0) return null;
+
+  if (currentId === null) return visible[0].node.id;
+
+  const idx = visible.findIndex((v) => v.node.id === currentId);
+  const next = idx + delta;
+
+  if (next < 0) return visible[0].node.id;
+  if (next >= visible.length) return visible[visible.length - 1].node.id;
+
+  return visible[next].node.id;
+}
+
 /** Count descendants of a folder node. */
 export function countDescendants(tree: FileNode[], nodeId: string): number {
   return tree.filter((n) => {
@@ -229,6 +311,30 @@ export function countDescendants(tree: FileNode[], nodeId: string): number {
     }
     return false;
   }).length;
+}
+
+/**
+ * Like `countDescendants`, but uses the precomputed parent → children
+ * index. O(N) instead of the O(N × D) walk that the version above does
+ * for every descendant (each `tree.find` is a linear scan). On a 2 000-
+ * node tree this turns ~4 million operations into ~2 000.
+ */
+export function countDescendantsIndexed(
+  childrenByParent: Map<string | null, FileNode[]>,
+  nodeId: string,
+): number {
+  let count = 0;
+  const queue: string[] = [nodeId];
+  while (queue.length > 0) {
+    const id = queue.pop()!;
+    const children = childrenByParent.get(id);
+    if (!children) continue;
+    for (const child of children) {
+      count++;
+      queue.push(child.id);
+    }
+  }
+  return count - 1; // subtract the node itself
 }
 
 /** Get parent of a node. */

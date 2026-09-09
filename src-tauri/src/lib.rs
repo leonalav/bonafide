@@ -10,12 +10,18 @@
 // below so commands we *don't* need to reimplement in Rust (e.g. dialog
 // folder picking) come straight from the official plugin.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, State};
+use tokio::sync::RwLock;
 use walkdir::WalkDir;
+
+mod lsp_bridge;
+mod pty_bridge;
 
 // ── Types shared with the renderer ────────────────────────────────────────
 // These mirror the FsNode / DirListing / ElectronAPI types from the
@@ -227,6 +233,90 @@ async fn delete_path(target: String) -> Result<OpResult, String> {
 
 // ── App lifecycle ────────────────────────────────────────────────────────
 
+#[tauri::command]
+fn get_lsp_bridge_url() -> String {
+    // The WebSocket bridge URL is fixed. The browser connects to this to reach
+    // the LSP servers (pyright-langserver, ruff-langserver) running as child
+    // processes in the Rust backend.
+    "ws://127.0.0.1:9877".to_string()
+}
+
+#[tauri::command]
+fn get_lsp_servers(state: State<'_, lsp_bridge::ProcessMap>) -> Vec<serde_json::Value> {
+    // Note: this is called synchronously from the renderer, but the ProcessMap
+    // uses a tokio RwLock. Since we are on the Tauri main thread (not an async
+    // runtime), we can only do a blocking read. Use `try_read()` which either
+    // gets the lock immediately or returns None (not an error for our purposes).
+    match state.try_read() {
+        Ok(p) => p
+            .keys()
+            .map(|k| serde_json::json!({ "id": k, "status": "running" }))
+            .collect(),
+        Err(_) => vec![],
+    }
+}
+
+#[tauri::command]
+fn stop_lsp_server(
+    server_id: String,
+    state: State<'_, lsp_bridge::ProcessMap>,
+) -> Result<(), String> {
+    let mut p = state.try_write()
+        .map_err(|_| "LSP state is busy — try again shortly")?;
+
+    if let Some(mut proc) = p.remove(&server_id) {
+        let _ = proc.to_lsp_tx.try_send(Vec::new()); // signal EOF to stdin writer
+        proc.child.start_kill().map_err(|e| e.to_string())?;
+        log::info!("[lsp] Stopped server: {server_id}");
+        Ok(())
+    } else {
+        Err(format!("Server not found: {server_id}"))
+    }
+}
+
+/// Run `ruff check` on a file and return its JSON diagnostics.
+#[tauri::command]
+async fn ruff_check(file_path: String) -> Result<String, String> {
+    use tokio::process::Command;
+
+    let output = Command::new("ruff")
+        .args(["check", "--output-format=json", &file_path])
+        .output()
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to run ruff: {e}. \
+                 Install: `pip install ruff`  (or `ruff --version` to verify)"
+            )
+        })?;
+
+    let stdout_len = output.stdout.len();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !stderr.is_empty() && stdout_len == 0 {
+        log::warn!("[ruff] stderr: {stderr}");
+    }
+
+    String::from_utf8(output.stdout)
+        .map_err(|e| format!("ruff stdout not UTF-8: {e}"))
+}
+
+/// Return the WebSocket URL for the PTY bridge (xterm.js terminal sessions).
+/// The PTY bridge listens on port 9878 on localhost; the frontend connects to
+/// it from the browser.  When not running in Tauri (e.g. browser dev preview),
+/// this falls back to a local URL via the tauri.ts IPC wrapper.
+#[tauri::command]
+fn get_pty_ws_url() -> String {
+    "ws://127.0.0.1:9878".to_string()
+}
+
+/// Return the list of detected terminal profiles (cmd, powershell, etc.)
+/// for the renderer to populate the "+ Launch Profile" dropdown.
+#[tauri::command]
+fn list_terminal_profiles(state: State<'_, pty_bridge::ProfileRegistry>) -> Vec<pty_bridge::TerminalProfile> {
+    state.as_ref().clone()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
@@ -245,6 +335,12 @@ pub fn run() {
             create_folder,
             rename_path,
             delete_path,
+            get_lsp_bridge_url,
+            get_lsp_servers,
+            stop_lsp_server,
+            ruff_check,
+            get_pty_ws_url,
+            list_terminal_profiles,
         ])
         .setup(|app| {
             // Tauri 2 has a subtle race: `visible: true` shows the
@@ -260,6 +356,53 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
             }
+
+            // ── LSP bridge setup ─────────────────────────────────────────
+            // Store the shared LSP process map in Tauri app state so all
+            // command handlers (synchronous or async) can access it via
+            // `State<ProcessMap>`.
+            let processes: lsp_bridge::ProcessMap =
+                Arc::new(RwLock::new(HashMap::new()));
+            app.manage(processes.clone());
+
+            // Start the WebSocket LSP bridge on port 9877.
+            // This relay server accepts connections from the browser
+            // (@marimo-team/codemirror-languageserver WebSocketTransport)
+            // and forwards JSON-RPC messages to/from LSP server child processes.
+            //
+            // We dispatch the spawn through `tauri::async_runtime::spawn`,
+            // which runs on Tauri's internal Tokio runtime — `block_on`
+            // from the synchronous setup() closure would panic with
+            // "there is no reactor running". Tauri's async_runtime is a
+            // tokio runtime under the hood, so all our `tokio::*` awaits
+            // inside `start_bridge` and the relay tasks work correctly.
+            let port: u16 = 9877;
+            tauri::async_runtime::spawn(async move {
+                let bridge_url = lsp_bridge::start_bridge(port, processes).await;
+                log::info!("[lsp] Bridge WebSocket URL: {bridge_url}");
+            });
+
+            // ── PTY bridge setup ─────────────────────────────────────────
+            // Detect available shell profiles at startup, store them in
+            // app state so the renderer's `list_terminal_profiles` command
+            // can return them synchronously, and start the WS bridge on
+            // port 9878. Each new WS connection runs its own PTY session;
+            // the profile is chosen by the renderer's hello handshake.
+            let profiles: pty_bridge::ProfileRegistry = pty_bridge::detect_profiles();
+            log::info!(
+                "[pty] Detected {} terminal profiles: {:?}",
+                profiles.len(),
+                profiles.iter().map(|p| format!("{}{}", p.id, if p.available { "" } else { " (missing)" })).collect::<Vec<_>>()
+            );
+            app.manage(profiles.clone());
+
+            let pty_port: u16 = 9878;
+            let profiles_for_bridge = profiles.clone();
+            tauri::async_runtime::spawn(async move {
+                let pty_url = pty_bridge::start_pty_bridge(pty_port, profiles_for_bridge).await;
+                log::info!("[pty] Bridge WebSocket URL: {pty_url}");
+            });
+
             Ok(())
         })
         .run(tauri::generate_context!())

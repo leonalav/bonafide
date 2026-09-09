@@ -4,7 +4,7 @@
  * All hooks subscribe via useSyncExternalStore for safe concurrent rendering.
  */
 
-import { useCallback, useContext, useSyncExternalStore } from "react";
+import { useCallback, useContext, useRef, useSyncExternalStore } from "react";
 import {
   IdeStoreContext,
   type IdeState,
@@ -24,41 +24,79 @@ export function useIdeStore() {
 
 // ── Subscribe with equality check (selector pattern) ─────────────────────────
 
-// #region DEBUG: measure selector performance
-let _hookLog: ((msg: string, d: Record<string, unknown>) => void) | null = null;
-if (typeof window !== 'undefined') {
-  _hookLog = (msg, d) => fetch('http://127.0.0.1:7750/ingest/8d618420-3b75-4343-9d6c-c42e01f4bae7', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '5197ca' },
-    body: JSON.stringify({ sessionId: '5197ca', id: `log_${Date.now()}`, timestamp: Date.now(), location: 'hooks.getSnapshot', message: msg, data: d, runId: 'run1', hypothesisId: 'D' }),
+// Optional performance instrumentation. Set
+// `localStorage.__BONAFIDE_PERF__ = "1"` in devtools to enable. The
+// previous version fired an unconditional fetch on every selector
+// snapshot — dozens per second during file switches, each timing
+// out against an unreachable dev server.
+function isPerfEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage?.getItem("__BONAFIDE_PERF__") === "1";
+  } catch {
+    return false;
+  }
+}
+const PERF_ENABLED = isPerfEnabled();
+function perfLog(location: string, message: string, data: Record<string, unknown>): void {
+  if (!PERF_ENABLED) return;
+  fetch("http://127.0.0.1:7750/ingest/8d618420-3b75-4343-9d6c-c42e01f4bae7", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "5197ca" },
+    body: JSON.stringify({
+      sessionId: "5197ca",
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      location,
+      message,
+      data,
+      runId: "run1",
+      hypothesisId: "D",
+    }),
   }).catch(() => {});
 }
-// #endregion
 
 function useStoreSnapshot<T>(
   store: ReturnType<typeof useIdeStore>,
   selector: (state: IdeState) => T,
   equalityFn: (a: T, b: T) => boolean = Object.is,
 ): T {
-  let prevValue: T | undefined;
-  let callCount = 0;
-  const _id = Math.random().toString(36).slice(2, 6);
+  // The previous version declared `let prevValue` *inside* the callback
+  // body, so it was reset on every render — the equality check was a
+  // no-op and every selector snapshot looked new to useSyncExternalStore,
+  // causing every subscriber to re-render on every dispatch. Lift the
+  // cache to refs so it survives across renders. The useCallback itself
+  // is stable as long as `store` / `selector` / `equalityFn` are stable;
+  // we accept the cost of recomputing the snapshot when the inline
+  // selector identities change (cheap for primitive selectors).
+  const prevValueRef = useRef<T | undefined>(undefined);
+  const callCountRef = useRef(0);
+  const idRef = useRef<string>(Math.random().toString(36).slice(2, 6));
 
   const getSnapshot = useCallback(() => {
-    const t0 = performance.now();
-    callCount++;
+    callCountRef.current++;
+    const t0 = PERF_ENABLED ? performance.now() : 0;
     const next = selector(store.getState());
-    const same = prevValue !== undefined && equalityFn(prevValue, next);
-    const ms = performance.now() - t0;
-    if (ms > 5 || callCount <= 3) {
-      _hookLog?.('getSnapshot', { id: _id, same, ms: ms.toFixed(2), callCount, prevDefined: prevValue !== undefined });
+    const prev = prevValueRef.current;
+    const same = prev !== undefined && equalityFn(prev, next);
+    if (PERF_ENABLED) {
+      const ms = performance.now() - t0;
+      if (ms > 5 || callCountRef.current <= 3) {
+        perfLog("hooks.getSnapshot", "getSnapshot", {
+          id: idRef.current,
+          same,
+          ms: ms.toFixed(2),
+          callCount: callCountRef.current,
+          prevDefined: prev !== undefined,
+        });
+      }
     }
-    if (prevValue !== undefined && equalityFn(prevValue, next)) {
-      return prevValue;
+    if (prev !== undefined && equalityFn(prev, next)) {
+      return prev;
     }
-    prevValue = next;
+    prevValueRef.current = next;
     return next;
-  }, [store]);
+  }, [store, selector, equalityFn]);
 
   // Wrap in an arrow function so `this` is bound to the IdeStore instance,
   // not lost when useSyncExternalStore extracts the method as a bare function.
@@ -157,6 +195,74 @@ export function useWorkspaceName() {
 export function useClosedTabsStack() {
   const store = useIdeStore();
   return useStoreSnapshot(store, (s) => s.closedTabsStack);
+}
+
+// ── Merge reviews ────────────────────────────────────────────────────────────
+
+export function useMergeReviews() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.mergeReviews);
+}
+
+/** Get the active merge review (the one whose tab is active). */
+export function useActiveMergeReview() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => {
+    const activeTab = s.activeTabId
+      ? s.tabs.find((t) => t.id === s.activeTabId)
+      : null;
+    if (!activeTab || !activeTab.fileId.startsWith("__merge__/")) return null;
+    const absPath = activeTab.fileId.slice("__merge__/".length);
+    return s.mergeReviews.find((r) => r.absPath === absPath) ?? null;
+  });
+}
+
+// ── Panel ────────────────────────────────────────────────────────────────────
+
+export type PanelState = IdeState["panel"];
+
+export function usePanel() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.panel);
+}
+
+export function usePanelOpen() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.panel.open);
+}
+
+export function usePanelTab() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.panel.tab);
+}
+
+export function usePanelHeight() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.panel.height);
+}
+
+export function useDiagnostics() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.panel.diagnostics);
+}
+
+export function useOutputLogs() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.panel.outputLogs);
+}
+
+export function useTerminalSessions() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => s.panel.terminalSessions);
+}
+
+export function useActiveTerminal() {
+  const store = useIdeStore();
+  return useStoreSnapshot(store, (s) => {
+    const id = s.panel.activeTerminalId;
+    if (!id) return null;
+    return s.panel.terminalSessions.find((t) => t.id === id) ?? null;
+  });
 }
 
 // ── Dispatch helper ─────────────────────────────────────────────────────────

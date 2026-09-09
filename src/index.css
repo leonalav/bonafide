@@ -1,6 +1,25 @@
 @import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Inter:wght@400;500;600&family=Manrope:wght@400;500;600;700&display=swap');
 @import 'tailwindcss';
 
+/* xterm.js row-height overrides.
+   xterm.js computes row height internally from font metrics. On Windows
+   (especially in WebView2 / Tauri) font metrics can be unreliable, causing
+   the default lineHeight fallback of 1.2 to produce rows that are too tall —
+   visually: text spaced further apart than it should be.
+   These overrides set the character dimensions explicitly so xterm always
+   renders at exactly 13px × 19px per cell regardless of font metric
+   availability. */
+.xterm {
+  --xterm-char-width: 7.8125px;
+  --xterm-char-height: 19px;
+  --xterm-char-baseline: 15px;
+}
+
+/* Also ensure the viewport scrollbar matches the dark theme */
+.xterm .xterm-viewport::-webkit-scrollbar {
+  width: 8px;
+}
+
 @theme {
   /* Surfaces */
   --color-surface: #111318;
@@ -128,6 +147,26 @@ body {
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-corner { background: transparent; }
 *::-webkit-scrollbar-button { display: none; }
+
+/* ── CodeMirror fills its host ────────────────────────────────────────
+   Belt-and-suspenders: even though `<CodeMirror height="100%"
+   width="100%">` should fill its parent, the previous round showed
+   that a brief layout pass (between React mount and CM6 injecting its
+   style mod stylesheet) could leave a left strip uncovered, showing
+   the parent's `#0c0e13` (`surface-container-lowest`) through the
+   `bg-surface` (#111318) wrapper. Forcing each layer of the CM mount
+   tree to claim 100% of the wrapper dimensions removes that window
+   entirely. */
+:where(.cm-theme, .cm-editor) {
+  width: 100% !important;
+  height: 100% !important;
+  display: flex;
+  flex-direction: column;
+}
+.cm-editor > .cm-scroller {
+  flex: 1 1 auto;
+  min-height: 0;
+}
 
 /* Always-visible focus ring per accessibility notes */
 :where(button, a, input, [tabindex]):focus-visible {

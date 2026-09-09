@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Icon } from "./ui/Icon";
 import type { DockId } from "./UtilityDock";
 import { ExperimentsView } from "./panels/ExperimentsView";
@@ -12,9 +12,17 @@ import {
   useFileTree,
   useFocusedNodeId,
   useIdeStore,
+  useTabs,
 } from "../ide/hooks";
 import type { FileNode } from "../ide/fileTree";
-import { walkVisible, nameExists, extToLangId } from "../ide/fileTree";
+import {
+  buildTreeIndex,
+  walkVisibleIndexed,
+  nameExists,
+  extToLangId,
+  moveFocusIndexed,
+  countDescendantsIndexed,
+} from "../ide/fileTree";
 import { ContextMenu, type MenuItem } from "./ContextMenu";
 import { getTreeMenu } from "../ide/menus";
 import { preloadContent, _dbgPreload } from "../ide/preloadCache";
@@ -71,28 +79,77 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
   const dispatch = useDispatch();
   const store = useIdeStore();
   const ctxMenu = useContextMenuState();
+  // tabs is read here just to derive the active fileId (one-shot per
+  // render). We don't actually use `tabs` for anything else.
+  const tabs = useTabs();
+  const activeFileId = useMemo(() => {
+    if (!activeTabId) return null;
+    const tab = tabs.find((t) => t.id === activeTabId);
+    return tab ? tab.fileId : null;
+  }, [tabs, activeTabId]);
 
   const [inlineMode, setInlineMode] = useState<InlineMode>(null);
   const [inlineValue, setInlineValue] = useState("");
   const [inlineError, setInlineError] = useState<string | null>(null);
   const [spin, setSpin] = useState(false);
-  const [allCollapsed, setAllCollapsed] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
 
-  // Track "all collapsed" state for icon swap
-  useEffect(() => {
-    const visible = [...walkVisible(tree, collapsed)];
-    const folders = visible.filter((v) => v.node.kind === "folder");
-    if (folders.length === 0) {
-      setAllCollapsed(false);
-      return;
+  // ── Performance: memoize the parent → children index and visible list ──
+  //
+  // Before this, `walkVisible` ran an O(N) `tree.filter()` for every node
+  // it visited, turning a single tree walk into O(N × D) (≈ 4 million
+  // comparisons on a 2 000-file tree) — and this ran on *every* render,
+  // including the ones triggered by switching files. With a 2 000-file
+  // workspace, file-switch was taking ~12 s because of this alone.
+  //
+  // The fix is three pieces:
+  //   1. A structure-only memo key so typing in the editor (which mutates
+  //      `fileTree` via `SET_CONTENT`, creating a new array reference
+  //      every 400 ms while typing) doesn't invalidate the tree index.
+  //   2. `treeIndex.childrenByParent` rebuilt only when the structure
+  //      changes — not when content changes.
+  //   3. `visible` recomputed only when (structure, collapsed) change.
+  //
+  // We *don't* memoize against `focusedNodeId` or `activeTabId` because
+  // those don't affect which nodes are visible.
+  const treeStructureKey = useMemo(() => {
+    // Cheap structural fingerprint: node count + a checksum of every
+    // node's `(id, parentId, kind, name, expanded)`. Cheap enough that
+    // re-computing it on every render is fine (~ microseconds), and it
+    // ignores `content` so typing doesn't trigger a tree rebuild.
+    let h = tree.length;
+    for (const n of tree) {
+      h = (h * 31 + (n.kind === "folder" ? 1 : 0) + n.name.length) | 0;
+      h = (h * 31 + (n.parentId?.length ?? 0)) | 0;
+      h = (h * 31 + (n.expanded ? 1 : 0)) | 0;
     }
-    const expandedCount = folders.filter(
-      (v) => v.node.expanded && !collapsed[v.node.id],
-    ).length;
-    setAllCollapsed(expandedCount === 0);
-  }, [tree, collapsed]);
+    return h;
+  }, [tree]);
+
+  const treeIndex = useMemo(
+    () => buildTreeIndex(tree),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [treeStructureKey],
+  );
+
+  const visible = useMemo(() => {
+    const out: { node: FileNode; depth: number }[] = [];
+    for (const entry of walkVisibleIndexed(treeIndex.childrenByParent, collapsed)) {
+      out.push(entry);
+    }
+    return out;
+  }, [treeIndex, collapsed]);
+
+  // Derive "all collapsed" directly from the memoized visible list rather
+  // than via a `useEffect` + `setState` round-trip. The previous version
+  // walked the tree a *second* time inside `useEffect`, then triggered an
+  // extra render with `setAllCollapsed(...)`. Now it's free.
+  const allCollapsed = useMemo(() => {
+    const folders = visible.filter((v) => v.node.kind === "folder");
+    if (folders.length === 0) return false;
+    return folders.every((v) => !v.node.expanded || collapsed[v.node.id]);
+  }, [visible, collapsed]);
 
   // Auto-focus inline input when it appears
   useEffect(() => {
@@ -109,7 +166,7 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
       // F2 → rename focused node
       if (e.key === "F2" && focusedNodeId) {
         e.preventDefault();
-        const node = tree.find((n) => n.id === focusedNodeId);
+        const node = treeIndex.byId.get(focusedNodeId);
         if (node) {
           setInlineMode({ kind: "rename", nodeId: node.id });
           setInlineValue(node.name);
@@ -119,7 +176,7 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
       // Delete → open delete modal for focused node
       if (e.key === "Delete" && focusedNodeId) {
         e.preventDefault();
-        const node = tree.find((n) => n.id === focusedNodeId);
+        const node = treeIndex.byId.get(focusedNodeId);
         if (node) {
           dispatch({
             type: "OPEN_MODAL",
@@ -130,16 +187,7 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
               isFolder: node.kind === "folder",
               descendantCount:
                 node.kind === "folder"
-                  ? tree.filter((n) => {
-                      let cur = n;
-                      while (cur.parentId !== null) {
-                        if (cur.parentId === node.id) return true;
-                        const p = tree.find((p) => p.id === cur.parentId);
-                        if (!p) return false;
-                        cur = p;
-                      }
-                      return false;
-                    }).length
+                  ? countDescendantsIndexed(treeIndex.childrenByParent, node.id)
                   : 0,
             },
           });
@@ -148,7 +196,7 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [focusedNodeId, tree, dispatch]);
+  }, [focusedNodeId, treeIndex, dispatch, visible]);
 
   function startNewFile(parentId: string | null) {
     setInlineMode({ kind: "new-file", parentId });
@@ -193,12 +241,8 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
       dispatch({ type: "ADD_FOLDER", parentId: inlineMode.parentId, name });
       setInlineMode(null);
     } else if (inlineMode.kind === "rename") {
-      const result = dispatch({ type: "RENAME", nodeId: inlineMode.nodeId, name });
-      // Re-check via state
-      const node = store.getState().fileTree.find((n) =>
-        n.id.startsWith(inlineMode.nodeId.replace(/[^/]+$/, name)),
-      );
-      // For simplicity, just close — error handled in reducer with a toast
+      dispatch({ type: "RENAME", nodeId: inlineMode.nodeId, name });
+      // Errors are surfaced via the reducer's toast; just close the input.
       setInlineMode(null);
     }
   }
@@ -242,13 +286,17 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
     if (node.kind === "folder") {
       dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id });
     } else {
-      // ── Pre-warm the file content BEFORE Monaco mounts ─────────────
-      // Monaco's first init in dev mode holds the main thread for 30+
-      // seconds, blocking any IPC response in flight. By firing the
-      // disk read here (in the click task, before OPEN_FILE dispatches),
-      // the IPC response is already buffered in Tauri by the time
-      // MonacoEditor mounts, so the editor reads from cache and
-      // renders instantly.
+      // ── Pre-warm the file content BEFORE the editor mounts ───────────
+      // By firing the disk read here (in the click task, before
+      // OPEN_FILE dispatches), the IPC response is already buffered
+      // in Tauri by the time CodeMirrorEditor mounts, so the editor
+      // reads from cache and renders instantly.
+      //
+      // This pattern dates from the Monaco era where Monaco's first
+      // init could hold the main thread for 30+ seconds and starve
+      // pending IPC responses. CodeMirror 6 doesn't have that
+      // problem, but the cache still saves one round-trip on every
+      // cold file open, so we keep it.
       if (workspaceRoot) {
         const absPath = `${workspaceRoot}/${node.id}`;
         _dbgPreload("Sidebar.onTreeClick", "preload_dispatch", { absPath, fileId: node.id });
@@ -271,14 +319,26 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
   function onTreeKeyDown(e: React.KeyboardEvent) {
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      dispatch({ type: "MOVE_FOCUS", delta: 1 });
+      const next = moveFocusIndexed(
+        treeIndex.childrenByParent,
+        focusedNodeId,
+        1,
+        collapsed,
+      );
+      if (next) dispatch({ type: "FOCUS_NODE", nodeId: next });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      dispatch({ type: "MOVE_FOCUS", delta: -1 });
+      const next = moveFocusIndexed(
+        treeIndex.childrenByParent,
+        focusedNodeId,
+        -1,
+        collapsed,
+      );
+      if (next) dispatch({ type: "FOCUS_NODE", nodeId: next });
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (!focusedNodeId) return;
-      const node = tree.find((n) => n.id === focusedNodeId);
+      const node = treeIndex.byId.get(focusedNodeId);
       if (!node) return;
       if (node.kind === "folder") {
         dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id });
@@ -288,22 +348,20 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
     } else if (e.key === "ArrowLeft") {
       e.preventDefault();
       if (!focusedNodeId) return;
-      const node = tree.find((n) => n.id === focusedNodeId);
+      const node = treeIndex.byId.get(focusedNodeId);
       if (node?.kind === "folder" && (node.expanded ?? true) && !collapsed[node.id]) {
         dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id });
       }
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
       if (!focusedNodeId) return;
-      const node = tree.find((n) => n.id === focusedNodeId);
+      const node = treeIndex.byId.get(focusedNodeId);
       if (!node) return;
       if (node.kind === "folder" && (!(node.expanded ?? true) || collapsed[node.id])) {
         dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id });
       }
     }
   }
-
-  const visible = [...walkVisible(tree, collapsed)];
 
   return (
     <>
@@ -374,9 +432,13 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
           const isFolder = node.kind === "folder";
           const open = isFolder && (node.expanded ?? true) && !collapsed[node.id];
           const isFocused = focusedNodeId === node.id;
-          const isActive = !isFolder && activeTabId !== null && tree.find(
-            (n) => n.id === node.id && store.getState().tabs.find((t) => t.id === activeTabId)?.fileId === n.id,
-          ) !== undefined;
+          // isActive: this file row corresponds to the currently active tab.
+          // We compute the active fileId *once* outside the loop instead of
+          // running `tree.find` + `tabs.find` for every visible row. The
+          // old version was O(visible × tree) — quadratic — and ran on
+          // every render, which was the dominant cost on large trees.
+          const isActive =
+            !isFolder && activeTabId !== null && activeFileId === node.id;
 
           // Render inline rename input if this is the renaming node
           if (inlineMode?.kind === "rename" && inlineMode.nodeId === node.id) {
@@ -451,7 +513,7 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
 
       {/* Tree context menu */}
       {ctxMenu?.surface === "tree" && (() => {
-        const node = tree.find((n) => n.id === ctxMenu.targetId);
+        const node = treeIndex.byId.get(ctxMenu.targetId);
         if (!node) return null;
         const items: MenuItem[] = getTreeMenu(store, node);
         return (

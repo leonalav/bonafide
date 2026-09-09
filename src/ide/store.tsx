@@ -67,7 +67,37 @@ export type ModalState =
   | { kind: "closeDirty"; tabId: string; fileId: string; name: string }
   | null;
 
-// IdeState
+// ── Panel types ───────────────────────────────────────────────────────────
+
+/** A diagnostic from the Problems tab. */
+export type DiagnosticEntry = {
+  id: string;
+  fileId: string | null;
+  /** Human-readable file path (relative to workspace root). */
+  fileLabel: string;
+  line: number;
+  col: number;
+  severity: "error" | "warning" | "info";
+  code: string;
+  message: string;
+  source: "pyright" | "ruff" | "mlflow" | string;
+};
+
+export type PanelTab = "problems" | "output" | "terminal" | "debug" | "ports";
+
+/** A single xterm.js PTY session inside the Terminal panel. */
+export type TerminalSession = {
+  /** Stable id for React keys and store mutations. */
+  id: string;
+  /** Profile id (e.g. "powershell", "cmd"). Used to label the tab. */
+  profileId: string;
+  /** Human-readable label (e.g. "PowerShell", "Command Prompt"). */
+  profileLabel: string;
+  /** "spawning" → handshake with backend; "ready" → shell prompt visible;
+   * "exited" → child process ended; "error" → failed to connect. */
+  status: "spawning" | "ready" | "exited" | "error";
+};
+
 export type IdeState = {
   /** Absolute path of the open workspace root, or null if none is open. */
   workspaceRoot: string | null;
@@ -84,6 +114,42 @@ export type IdeState = {
   closedTabsStack: Tab[];
   untitledCounter: number;
   treeEmpty: boolean;
+  /**
+   * Active merge review sessions. Keyed by review id. A review holds the
+   * original + proposed content for a file the AI agent wants to patch.
+   * Reviews render in the EditorPane when the corresponding merge tab is
+   * active.
+   */
+  mergeReviews: MergeReview[];
+  /** Panel (bottom dock) state. */
+  panel: {
+    open: boolean;
+    tab: PanelTab;
+    height: number; // px
+    /** Aggregated diagnostics for the Problems tab. */
+    diagnostics: DiagnosticEntry[];
+    /** Output log entries. */
+    outputLogs: string[];
+    /** Active terminal sessions inside the Terminal panel tab. */
+    terminalSessions: TerminalSession[];
+    /** Currently focused terminal session (drives which xterm is shown). */
+    activeTerminalId: string | null;
+  };
+};
+
+export type MergeReview = {
+  /** Unique id for this review session. */
+  id: string;
+  /** Absolute path of the file being patched. */
+  absPath: string;
+  /** The current on-disk + in-editor content (left pane of the diff). */
+  originalText: string;
+  /** The AI agent's proposed content (right pane of the diff). */
+  proposedText: string;
+  /** When the review was created. */
+  createdAt: number;
+  /** Source label (e.g. "agent patch", "lint autofix"). */
+  source: string;
 };
 
 // IdeAction
@@ -115,7 +181,29 @@ export type IdeAction =
   | { type: "DISMISS_TOAST"; id: string }
   | { type: "OPEN_WORKSPACE"; rootPath: string; rootName: string; tree: FileNode[] }
   | { type: "CLOSE_WORKSPACE" }
-  | { type: "MOVE_TAB"; tabId: string; direction: "left" | "right" };
+  | { type: "MOVE_TAB"; tabId: string; direction: "left" | "right" }
+  // Merge review lifecycle
+  | {
+      type: "OPEN_MERGE_REVIEW";
+      absPath: string;
+      originalText: string;
+      proposedText: string;
+      source?: string;
+    }
+  | { type: "CLOSE_MERGE_REVIEW"; reviewId: string }
+  | { type: "RESOLVE_MERGE_REVIEW"; reviewId: string; mergedText: string }
+  // Panel
+  | { type: "TOGGLE_PANEL" }
+  | { type: "SET_PANEL_TAB"; tab: PanelTab }
+  | { type: "SET_PANEL_HEIGHT"; height: number }
+  | { type: "SET_DIAGNOSTICS"; diagnostics: DiagnosticEntry[] }
+  | { type: "APPEND_OUTPUT"; line: string }
+  | { type: "CLEAR_OUTPUT" }
+  // Terminal sessions
+  | { type: "ADD_TERMINAL_SESSION"; session: TerminalSession }
+  | { type: "REMOVE_TERMINAL_SESSION"; id: string }
+  | { type: "ACTIVATE_TERMINAL_SESSION"; id: string }
+  | { type: "SET_TERMINAL_STATUS"; id: string; status: TerminalSession["status"] };
 
 // Toast helper
 let toastCounter = 0;
@@ -138,24 +226,62 @@ function makeInitialState(): IdeState {
     closedTabsStack: [],
     untitledCounter: 0,
     treeEmpty: true,
+    mergeReviews: [],
+    panel: {
+      open: false,
+      tab: "problems",
+      height: 240,
+      diagnostics: [],
+      outputLogs: [],
+      terminalSessions: [],
+      activeTerminalId: null,
+    },
   };
 }
 
-// ── Debug instrumentation: measure reduce timing ──────────────────────────
-let _storeLog: ((msg: string, d: Record<string, unknown>) => void) | null = null;
-if (typeof window !== 'undefined') {
-  _storeLog = (msg, d) => fetch('http://127.0.0.1:7750/ingest/8d618420-3b75-4343-9d6c-c42e01f4bae7', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '5197ca' },
-    body: JSON.stringify({ sessionId: '5197ca', id: `log_${Date.now()}`, timestamp: Date.now(), location: 'IdeStore', message: msg, data: d, runId: 'run1', hypothesisId: 'C' }),
+// ── Optional performance instrumentation ──────────────────────────────────
+// Set `localStorage.__BONAFIDE_PERF__ = "1"` in devtools to enable
+// per-dispatch timing logs sent to a local debug server on
+// `localhost:7750`. When unset (the default) the store hooks skip
+// the timing entirely — the previous version fired an unconditional
+// fetch on every reducer call, every selector snapshot, and every
+// App render. On a file-switch that fires dozens of fetches per
+// second, each of which times out because nothing is listening —
+// turning what should be a sub-second interaction into a multi-second
+// one in dev mode.
+function isPerfEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage?.getItem("__BONAFIDE_PERF__") === "1";
+  } catch {
+    return false;
+  }
+}
+const PERF_ENABLED = isPerfEnabled();
+function perfLog(location: string, message: string, data: Record<string, unknown>): void {
+  if (!PERF_ENABLED) return;
+  fetch("http://127.0.0.1:7750/ingest/8d618420-3b75-4343-9d6c-c42e01f4bae7", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "5197ca" },
+    body: JSON.stringify({
+      sessionId: "5197ca",
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      location,
+      message,
+      data,
+      runId: "run1",
+      hypothesisId: "C",
+    }),
   }).catch(() => {});
 }
 
 export function reduce(state: IdeState, action: IdeAction): IdeState {
+  if (!PERF_ENABLED) return _reduce(state, action);
   const t0 = performance.now();
   const result = _reduce(state, action);
   const ms = performance.now() - t0;
-  _storeLog?.('reduce', { actionType: action.type, ms });
+  perfLog("IdeStore", "reduce", { actionType: action.type, ms });
   return result;
 }
 
@@ -564,6 +690,223 @@ function _reduce(state: IdeState, action: IdeAction): IdeState {
         modal: null,
         closedTabsStack: [],
         treeEmpty: true,
+        mergeReviews: [],
+      };
+    }
+
+    case "OPEN_MERGE_REVIEW": {
+      // Open a virtual merge-review tab. The EditorPane listens for these
+      // tabs and renders the merge editor instead of the standard CM6 view.
+      const { absPath, originalText, proposedText, source = "agent patch" } = action;
+      const reviewId = `merge_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      const fileId = `__merge__/${absPath}`;
+      const tabName = `${absPath.split("/").pop() ?? absPath} (review)`;
+      const existingTab = state.tabs.find((t) => t.fileId === fileId);
+      if (existingTab) {
+        // Update the review in place and reactivate.
+        const updatedReviews = state.mergeReviews.map((r) =>
+          r.absPath === absPath ? { ...r, originalText, proposedText, source } : r,
+        );
+        return {
+          ...state,
+          mergeReviews: updatedReviews,
+          activeTabId: existingTab.id,
+          contextMenu: null,
+        };
+      }
+      const newTab: Tab = {
+        id: `tab_${Date.now()}`,
+        fileId,
+        name: tabName,
+        dirty: false,
+      };
+      return {
+        ...state,
+        tabs: [...state.tabs, newTab],
+        activeTabId: newTab.id,
+        mergeReviews: [
+          ...state.mergeReviews,
+          {
+            id: reviewId,
+            absPath,
+            originalText,
+            proposedText,
+            createdAt: Date.now(),
+            source,
+          },
+        ],
+        contextMenu: null,
+      };
+    }
+
+    case "CLOSE_MERGE_REVIEW": {
+      const { reviewId } = action;
+      const review = state.mergeReviews.find((r) => r.id === reviewId);
+      if (!review) return state;
+      // Find the matching tab and close it.
+      const tabToClose = state.tabs.find(
+        (t) => t.fileId === `__merge__/${review.absPath}`,
+      );
+      const tabs = tabToClose
+        ? state.tabs.filter((t) => t.id !== tabToClose.id)
+        : state.tabs;
+      let { activeTabId } = state;
+      if (tabToClose && activeTabId === tabToClose.id) {
+        const idx = state.tabs.findIndex((t) => t.id === tabToClose.id);
+        const next = tabs[idx] ?? tabs[idx - 1] ?? null;
+        activeTabId = next ? next.id : null;
+      }
+      return {
+        ...state,
+        tabs,
+        activeTabId,
+        mergeReviews: state.mergeReviews.filter((r) => r.id !== reviewId),
+      };
+    }
+
+    case "RESOLVE_MERGE_REVIEW": {
+      const { reviewId, mergedText } = action;
+      const review = state.mergeReviews.find((r) => r.id === reviewId);
+      if (!review) return state;
+      // Apply the merged content to the underlying file (if it exists in the tree).
+      const fileTree = state.fileTree.map((n) =>
+        n.id === review.absPath ? { ...n, content: mergedText } : n,
+      );
+      // Close the review tab.
+      const tabToClose = state.tabs.find(
+        (t) => t.fileId === `__merge__/${review.absPath}`,
+      );
+      const tabs = tabToClose
+        ? state.tabs.filter((t) => t.id !== tabToClose.id)
+        : state.tabs;
+      let { activeTabId } = state;
+      if (tabToClose && activeTabId === tabToClose.id) {
+        const idx = state.tabs.findIndex((t) => t.id === tabToClose.id);
+        const next = tabs[idx] ?? tabs[idx - 1] ?? null;
+        activeTabId = next ? next.id : null;
+      }
+      // Mark the underlying file as clean if it had a tab open.
+      const underlyingTabId = state.tabs.find(
+        (t) => t.fileId === review.absPath,
+      )?.id;
+      const updatedTabs = underlyingTabId
+        ? tabs.map((t) =>
+            t.id === underlyingTabId ? { ...t, dirty: false } : t,
+          )
+        : tabs;
+      return {
+        ...state,
+        fileTree,
+        tabs: updatedTabs,
+        activeTabId,
+        mergeReviews: state.mergeReviews.filter((r) => r.id !== reviewId),
+        toasts: [
+          ...state.toasts,
+          makeToast({
+            message: `Merged changes into ${review.absPath.split("/").pop() ?? review.absPath}`,
+            tone: "success",
+            ttlMs: 2400,
+          }),
+        ],
+      };
+    }
+
+    case "TOGGLE_PANEL": {
+      return {
+        ...state,
+        panel: { ...state.panel, open: !state.panel.open },
+      };
+    }
+
+    case "SET_PANEL_TAB": {
+      const open = state.panel.tab !== action.tab ? true : state.panel.open;
+      return {
+        ...state,
+        panel: { ...state.panel, tab: action.tab, open },
+      };
+    }
+
+    case "SET_PANEL_HEIGHT": {
+      return {
+        ...state,
+        panel: { ...state.panel, height: Math.max(100, Math.min(600, action.height)) },
+      };
+    }
+
+    case "SET_DIAGNOSTICS": {
+      return {
+        ...state,
+        panel: { ...state.panel, diagnostics: action.diagnostics },
+      };
+    }
+
+    case "APPEND_OUTPUT": {
+      const logs = [...state.panel.outputLogs, action.line];
+      // Keep last 10,000 lines to prevent memory bloat.
+      return {
+        ...state,
+        panel: { ...state.panel, outputLogs: logs.slice(-10000) },
+      };
+    }
+
+    case "CLEAR_OUTPUT": {
+      return {
+        ...state,
+        panel: { ...state.panel, outputLogs: [] },
+      };
+    }
+
+    case "ADD_TERMINAL_SESSION": {
+      const { session } = action;
+      return {
+        ...state,
+        panel: {
+          ...state.panel,
+          terminalSessions: [...state.panel.terminalSessions, session],
+          activeTerminalId: session.id,
+          // Always open the panel + jump to the terminal tab when a new
+          // session is added, so the user actually sees it. VS Code does
+          // the same.
+          open: true,
+          tab: "terminal",
+        },
+      };
+    }
+
+    case "REMOVE_TERMINAL_SESSION": {
+      const { id } = action;
+      const remaining = state.panel.terminalSessions.filter((s) => s.id !== id);
+      let { activeTerminalId } = state.panel;
+      if (activeTerminalId === id) {
+        const idx = state.panel.terminalSessions.findIndex((s) => s.id === id);
+        activeTerminalId = remaining[idx]?.id ?? remaining[idx - 1]?.id ?? null;
+      }
+      return {
+        ...state,
+        panel: {
+          ...state.panel,
+          terminalSessions: remaining,
+          activeTerminalId,
+        },
+      };
+    }
+
+    case "ACTIVATE_TERMINAL_SESSION": {
+      return {
+        ...state,
+        panel: { ...state.panel, activeTerminalId: action.id },
+      };
+    }
+
+    case "SET_TERMINAL_STATUS": {
+      return {
+        ...state,
+        panel: {
+          ...state.panel,
+          terminalSessions: state.panel.terminalSessions.map((s) =>
+            s.id === action.id ? { ...s, status: action.status } : s,
+          ),
+        },
       };
     }
 
@@ -594,14 +937,25 @@ export class IdeStore {
   }
 
   dispatch(action: IdeAction): void {
+    if (!PERF_ENABLED) {
+      this.state = reduce(this.state, action);
+      this.listeners.forEach((fn) => fn());
+      return;
+    }
     const t0 = performance.now();
     this.state = reduce(this.state, action);
     const reduceMs = performance.now() - t0;
     const listenerCount = this.listeners.size;
-    _storeLog?.('dispatch:reducer_done', { actionType: action.type, reduceMs, listenerCount });
+    perfLog("IdeStore", "dispatch:reducer_done", { actionType: action.type, reduceMs, listenerCount });
     const t1 = performance.now();
     this.listeners.forEach((fn) => fn());
-    _storeLog?.('dispatch:notify_done', { actionType: action.type, totalMs: performance.now() - t0, reduceMs, notifyMs: performance.now() - t1, listenerCount });
+    perfLog("IdeStore", "dispatch:notify_done", {
+      actionType: action.type,
+      totalMs: performance.now() - t0,
+      reduceMs,
+      notifyMs: performance.now() - t1,
+      listenerCount,
+    });
   }
 
   subscribe(fn: () => void): () => void {

@@ -7,11 +7,13 @@ import { Inspector } from "./components/Inspector"
 import { StatusBar } from "./components/StatusBar"
 import { PreferencesWindow, type PrefSection } from "./components/preferences/PreferencesWindow"
 import { WorkflowPanel } from "./components/agent/WorkflowPanel"
+import { Panel } from "./components/Panel"
 import { Icon } from "./components/ui/Icon"
 import { ResizeHandle } from "./components/ui/ResizeHandle"
 import { Modal } from "./components/Modal"
 import { ToastHost } from "./components/ToastHost"
 import { bonafide } from "./ipc/tauri"
+import type { TerminalProfile } from "./ipc/tauri"
 import {
   IdeStoreProvider,
 } from "./ide/store.tsx"
@@ -28,7 +30,7 @@ import {
 import type { FileNode } from "./ide/fileTree"
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
-  state = { error: null };
+  state: { error: Error | null } = { error: null };
   static getDerivedStateFromError(e: Error) { return { error: e }; }
   render() {
     if (this.state.error) {
@@ -55,15 +57,38 @@ export default function App() {
   );
 }
 
-// #region DEBUG: AppInner render tracking
-let _appLog: ((msg: string, d: Record<string, unknown>) => void) | null = null;
-if (typeof window !== 'undefined') {
-  _appLog = (msg, d) => fetch('http://127.0.0.1:7750/ingest/8d618420-3b75-4343-9d6c-c42e01f4bae7', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '5197ca' },
-    body: JSON.stringify({ sessionId: '5197ca', id: `log_${Date.now()}`, timestamp: Date.now(), location: 'App', message: msg, data: d, runId: 'run1', hypothesisId: 'G' }),
+// Performance instrumentation. Enable by setting
+// `localStorage.__BONAFIDE_PERF__ = "1"` in devtools. The previous
+// version fired an unconditional fetch to localhost:7750 on every
+// App render — turning what should be a sub-second render into a
+// multi-second one because each fetch times out against an
+// unreachable server.
+function isPerfEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage?.getItem("__BONAFIDE_PERF__") === "1";
+  } catch {
+    return false;
+  }
+}
+const PERF_ENABLED = isPerfEnabled();
+function appLog(message: string, data: Record<string, unknown>): void {
+  if (!PERF_ENABLED) return;
+  fetch("http://127.0.0.1:7750/ingest/8d618420-3b75-4343-9d6c-c42e01f4bae7", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "5197ca" },
+    body: JSON.stringify({
+      sessionId: "5197ca",
+      id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      timestamp: Date.now(),
+      location: "App",
+      message,
+      data,
+      runId: "run1",
+      hypothesisId: "G",
+    }),
   }).catch(() => {});
 }
-// #endregion
 
 function AppInner() {
   const _renderStart = performance.now();
@@ -99,7 +124,7 @@ function AppInner() {
   // Log selector cost. Only logs when a single selector takes >5ms.
   const _selCost = _t5 - _renderStart;
   if (_selCost > 5) {
-    _appLog?.('AppInner:selector_cost', {
+    appLog('AppInner:selector_cost', {
       totalMs: _selCost.toFixed(2),
       workspaceRootMs: (_t2 - _t1).toFixed(2),
       workspaceNameMs: (_t3 - _t2).toFixed(2),
@@ -181,16 +206,43 @@ function AppInner() {
 
   // #region DEBUG: track AppInner renders + measure sub-phases
   const _renderSyncDone = performance.now();
-  _appLog?.('AppInner:render_sync_done', {
+  appLog('AppInner:render_sync_done', {
     ms: _renderSyncDone - _renderStart,
     activeTabId: activeTabId ?? 'null',
   });
   useEffect(() => {
-    _appLog?.('AppInner:rendered', { ms: performance.now() - _renderStart, activeTabId: activeTabId ?? 'null' });
+    appLog('AppInner:rendered', { ms: performance.now() - _renderStart, activeTabId: activeTabId ?? 'null' });
   });
   // #endregion
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────
+
+  const launchDefaultTerminal = useCallback(async () => {
+    try {
+      const profiles = await bonafide.pty.listProfiles();
+      const pick =
+        profiles.find((p: TerminalProfile) => p.available) ??
+        profiles[0] ??
+        null;
+      if (!pick) {
+        pushToast("No terminal profiles available", "error");
+        return;
+      }
+      const id = `term_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+      dispatch({
+        type: "ADD_TERMINAL_SESSION",
+        session: {
+          id,
+          profileId: pick.id,
+          profileLabel: pick.label,
+          status: "spawning",
+        },
+      });
+    } catch (err) {
+      console.error("[App] launchDefaultTerminal failed", err);
+      pushToast("Failed to launch terminal", "error");
+    }
+  }, [dispatch, pushToast]);
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -234,6 +286,24 @@ function AppInner() {
         return;
       }
 
+      // Ctrl+J — Toggle bottom panel
+      if (cmd && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "j") {
+        e.preventDefault();
+        dispatch({ type: "TOGGLE_PANEL" });
+        return;
+      }
+
+      // Ctrl+Shift+` — New terminal with the default profile
+      // Mirrors VS Code's default keyboard shortcut (Ctrl+Shift+`).
+      // We don't try to be smart about which profile — we launch the
+      // first available one. The "+" dropdown in the Terminal panel
+      // lets the user pick a specific shell.
+      if (cmd && e.shiftKey && e.key === "`") {
+        e.preventDefault();
+        void launchDefaultTerminal();
+        return;
+      }
+
       // Escape — close modal
       if (e.key === "Escape" && modal) {
         dispatch({ type: "CLOSE_MODAL" });
@@ -241,7 +311,7 @@ function AppInner() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [activeTab, dispatch, modal, pushToast, openFolder]);
+  }, [activeTab, dispatch, modal, pushToast, openFolder, launchDefaultTerminal]);
 
   // ── Workspace empty state ────────────────────────────────────────────
   // Rendered behind the main UI when no folder is open.
@@ -341,6 +411,9 @@ function AppInner() {
               />
             )}
           </div>
+
+          {/* Bottom panel (Problems, Output, Terminal, Debug Console, Ports) */}
+          <Panel />
         </div>
       </div>
 

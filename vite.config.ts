@@ -4,7 +4,6 @@ import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
 
 import siteConfiguration from './.figma/make/site.json'
-import { monacoWorkersPlugin } from './src/ide/vite-plugin-monaco-workers'
 
 // Vite config — https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
@@ -31,12 +30,6 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
-      // The Monaco worker loader — see src/ide/monaco-env.ts. The plugin
-      // resolves bare specifiers like `monaco-editor/esm/vs/.../X.worker`
-      // (which sit outside the package's exports map and so fail under
-      // Rolldown) and serves them as virtual modules containing the
-      // worker source as a JSON-encoded string.
-      monacoWorkersPlugin(),
       // Figma-specific plugins should not run in a packaged desktop build.
       ...(isTauriBuild ? [] : [figmaSiteConfiguration(siteConfiguration)]),
       figmaErrorOverlayReplay(),
@@ -48,12 +41,6 @@ export default defineConfig(({ mode }) => {
         '@': path.resolve(__dirname, './src'),
       },
     },
-    // Pre-bundle Monaco so dev startup is fast. We don't pre-bundle the
-    // deep `monaco-editor/esm/vs/editor/editor.api` path because it's
-    // outside the package's `exports` map; `@monaco-editor/react`
-    // imports Monaco from the top-level entry, which is handled
-    // automatically.
-    //
     // **`optimizeDeps.entries`** is the key fix: by default, Vite's
     // dependency scanner walks the entire project tree looking for
     // `import ...` statements. On Bonafide that means it traverses the
@@ -64,30 +51,14 @@ export default defineConfig(({ mode }) => {
     // `release/`, and everything else in the project root is skipped
     // entirely.
     //
-    // **`include`** is the second key fix: explicitly listing Monaco
-    // and the loader here forces Vite to pre-bundle them with esbuild
-    // into a single dev-time chunk. Without this, Vite's on-demand
-    // dev server serves Monaco's ~5,000 internal AMD modules one
-    // HTTP request at a time — that's 5,000 round-trips on first
-    // editor mount, which took 30+ seconds on Tauri+Windows+WebView2.
-    // With pre-bundling, Monaco loads in a single chunk and the editor
-    // mounts in well under a second.
+    // `include` is left empty: CodeMirror 6 ships as plain ES modules
+    // that Vite's on-demand dev server handles fine, so there's no
+    // pre-bundling win to claim. (Monaco previously needed an explicit
+    // include here because its 5,000-module AMD tree took 30+ seconds
+    // to serve one-request-at-a-time; that's gone now.)
     optimizeDeps: {
       entries: ['src/main.tsx'],
-      include: [
-        'monaco-editor',
-        '@monaco-editor/react',
-        'react',
-        'react-dom',
-        'react-dom/client',
-      ],
     },
-    worker: {
-      format: 'es',
-    },
-    // Tauri 2 has stricter CSP for desktop builds. In dev, it serves
-    // the renderer through http://tauri.localhost; in prod, via the
-    // tauri:// scheme. Both allow Web Workers from same-origin.
     server: {
       host: process.env.FIGMA_DEV_SERVER_HOST || '0.0.0.0',
       port: parseInt(process.env.PORT || '8443'),
