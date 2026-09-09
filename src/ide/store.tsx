@@ -29,6 +29,8 @@ import {
   moveFocus,
   nameExists,
   countDescendants,
+  applyFsEvents,
+  removedFileIds,
   type LangId,
 } from "./fileTree";
 
@@ -38,6 +40,7 @@ export type Tab = {
   fileId: string;
   name: string;
   dirty: boolean;
+  pinned?: boolean;
 };
 
 // Toast type
@@ -93,6 +96,9 @@ export type TerminalSession = {
   profileId: string;
   /** Human-readable label (e.g. "PowerShell", "Command Prompt"). */
   profileLabel: string;
+  /** Absolute path the shell should start in. May be null when no
+   * workspace is open — the shell falls back to the inherited cwd. */
+  cwd: string | null;
   /** "spawning" → handshake with backend; "ready" → shell prompt visible;
    * "exited" → child process ended; "error" → failed to connect. */
   status: "spawning" | "ready" | "exited" | "error";
@@ -181,7 +187,12 @@ export type IdeAction =
   | { type: "DISMISS_TOAST"; id: string }
   | { type: "OPEN_WORKSPACE"; rootPath: string; rootName: string; tree: FileNode[] }
   | { type: "CLOSE_WORKSPACE" }
+  // Real-time file watcher: applies a batch of file-system events
+  // (created, modified, removed) reported by the Rust watcher.
+  | { type: "APPLY_FS_EVENTS"; events: import("../ipc/tauri").FsEvent[] }
   | { type: "MOVE_TAB"; tabId: string; direction: "left" | "right" }
+  | { type: "TOGGLE_PIN"; tabId: string }
+  | { type: "CLOSE_TABS_TO_RIGHT"; tabId: string }
   // Merge review lifecycle
   | {
       type: "OPEN_MERGE_REVIEW";
@@ -593,6 +604,31 @@ function _reduce(state: IdeState, action: IdeAction): IdeState {
       return { ...state, tabs };
     }
 
+    case "TOGGLE_PIN": {
+      const { tabId } = action;
+      return {
+        ...state,
+        tabs: state.tabs.map((t) =>
+          t.id === tabId ? { ...t, pinned: !t.pinned } : t,
+        ),
+      };
+    }
+
+    case "CLOSE_TABS_TO_RIGHT": {
+      const { tabId } = action;
+      const idx = state.tabs.findIndex((t) => t.id === tabId);
+      if (idx < 0) return state;
+      const toClose = state.tabs.slice(idx + 1);
+      const closedStack = [...toClose, ...state.closedTabsStack].slice(0, 20);
+      return {
+        ...state,
+        tabs: state.tabs.slice(0, idx + 1),
+        closedTabsStack: closedStack,
+        contextMenu: null,
+        modal: null,
+      };
+    }
+
     case "SET_CONTENT": {
       const { fileId, content } = action;
       return {
@@ -673,6 +709,49 @@ function _reduce(state: IdeState, action: IdeAction): IdeState {
         modal: null,
         closedTabsStack: [],
         treeEmpty: action.tree.length === 0,
+      };
+    }
+
+    // Real-time file watcher: applies a debounced batch of events from
+    // the Rust notify watcher. Idempotent — applying the same event twice
+    // is safe (e.g. on platforms where FSEvents double-fires). The
+    // watcher also auto-creates parent folders, so a `created` for a
+    // deeply-nested file that arrived before its parent's `created` will
+    // still insert correctly.
+    case "APPLY_FS_EVENTS": {
+      const events = action.events;
+      const newTree = applyFsEvents(state.fileTree, events);
+
+      // If nothing changed, skip the rest of the work (avoids needless
+      // re-renders when the watcher emits no-op events).
+      if (newTree === state.fileTree) return state;
+
+      // Close any open tabs whose file was deleted on disk. The watcher
+      // already removed them from the tree, so the tab content would
+      // be orphaned otherwise.
+      const removedIds = removedFileIds(events);
+      let tabs = state.tabs;
+      let activeTabId = state.activeTabId;
+      if (removedIds.size > 0) {
+        tabs = tabs.filter((t) => !removedIds.has(t.fileId));
+        if (activeTabId && !tabs.find((t) => t.id === activeTabId)) {
+          activeTabId = tabs.length > 0 ? tabs[tabs.length - 1].id : null;
+        }
+      }
+
+      // If a deleted file was the user's focused node, drop focus.
+      let focusedNodeId = state.focusedNodeId;
+      if (focusedNodeId && removedIds.has(focusedNodeId)) {
+        focusedNodeId = null;
+      }
+
+      return {
+        ...state,
+        fileTree: newTree,
+        tabs,
+        activeTabId,
+        focusedNodeId,
+        treeEmpty: newTree.length === 0,
       };
     }
 

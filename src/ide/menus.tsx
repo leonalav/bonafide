@@ -40,19 +40,10 @@ export function getTreeMenu(
       label: "New File…",
       icon: "file-plus",
       onSelect: () => {
-        // Trigger inline-input in Sidebar via a sentinel dispatch
-        dispatch({
-          type: "OPEN_MODAL",
-          payload: {
-            kind: "closeDirty",
-            tabId: "__inline_new_file__",
-            fileId: node.id,
-            name: "",
-          },
-        });
-        // The Sidebar component listens for this specific marker
-        // and renders the inline input. Simpler: dispatch via custom mechanism.
-        // We'll use a dedicated action via ADD_FILE in the next render.
+        const parentId = isFolder ? node.id : null;
+        window.dispatchEvent(
+          new CustomEvent("ide:new-file", { detail: { parentId } }),
+        );
       },
     },
     {
@@ -60,7 +51,10 @@ export function getTreeMenu(
       label: "New Folder…",
       icon: "folder-plus",
       onSelect: () => {
-        // Same pattern — handled by Sidebar inline input
+        const parentId = isFolder ? node.id : null;
+        window.dispatchEvent(
+          new CustomEvent("ide:new-folder", { detail: { parentId } }),
+        );
       },
     },
     { kind: "separator" },
@@ -77,21 +71,11 @@ export function getTreeMenu(
       kind: "action",
       label: "Open to the Side",
       icon: "panel-right",
-      disabled: true,
       onSelect: () => {
         dispatch({
           type: "PUSH_TOAST",
           toast: { message: "Split editor — coming soon", tone: "info", ttlMs: 2400 },
         });
-      },
-    },
-    {
-      kind: "action",
-      label: "Reveal in File Tree",
-      icon: "corner",
-      disabled: true,
-      onSelect: () => {
-        // No-op in single-tree view
       },
     },
     { kind: "separator" },
@@ -100,13 +84,11 @@ export function getTreeMenu(
       label: "Rename…",
       icon: "edit-2",
       onSelect: () => {
-        // The Sidebar handles inline rename on F2 / context menu
-        // We mark the focused node — Sidebar reads this and enters rename mode
+        // Focus the node in the store so the Sidebar can enter rename mode.
         dispatch({ type: "FOCUS_NODE", nodeId: node.id });
-        // Set the renaming node id via a marker in contextMenu targetId?
-        // Use a simple approach: dispatch FOCUS_NODE + the Sidebar listens for a flag.
-        // Simpler: emit a toast telling user to press F2. But that's UX-down.
-        // Instead, we set focusedNodeId — Sidebar reads it and triggers rename on focus.
+        window.dispatchEvent(
+          new CustomEvent("ide:tree-rename", { detail: { nodeId: node.id } }),
+        );
       },
     },
     {
@@ -175,6 +157,7 @@ export function getTabMenu(
   const isLeftmost = state.tabs[0]?.id === tab.id;
   const isRightmost = state.tabs[state.tabs.length - 1]?.id === tab.id;
   const isUntitled = tab.fileId.startsWith("__untitled/");
+  const isPinned = !!tab.pinned;
 
   return [
     {
@@ -193,13 +176,24 @@ export function getTabMenu(
     },
     {
       kind: "action",
+      label: "Close to the Right",
+      icon: "chevrons-right",
+      disabled: isRightmost,
+      onSelect: () => dispatch({ type: "CLOSE_TABS_TO_RIGHT", tabId: tab.id }),
+    },
+    {
+      kind: "action",
       label: "Close All",
       icon: "chevrons-right",
       disabled: isOnlyTab,
-      onSelect: () => {
-        dispatch({ type: "CLOSE_TAB", tabId: tab.id });
-        dispatch({ type: "CLOSE_ALL" });
-      },
+      onSelect: () => dispatch({ type: "CLOSE_ALL" }),
+    },
+    { kind: "separator" },
+    {
+      kind: "action",
+      label: isPinned ? "Unpin" : "Pin",
+      icon: "pin",
+      onSelect: () => dispatch({ type: "TOGGLE_PIN", tabId: tab.id }),
     },
     { kind: "separator" },
     {
@@ -267,6 +261,14 @@ export function getEditorMenu(
   const dispatch = (a: IdeAction) => store.dispatch(a);
   const dirty = tab?.dirty ?? false;
 
+  function editorAction(kind: string) {
+    return () => {
+      window.dispatchEvent(
+        new CustomEvent("ide:editor-action", { detail: { kind } }),
+      );
+    };
+  }
+
   function notImplemented(label: string) {
     return () => {
       dispatch({
@@ -274,6 +276,13 @@ export function getEditorMenu(
         toast: { message: `${label} — not yet implemented`, tone: "info", ttlMs: 2400 },
       });
     };
+  }
+
+  async function copySelection() {
+    const ok = await copyToClipboard(window.getSelection()?.toString() ?? "");
+    if (!ok) {
+      dispatch({ type: "PUSH_TOAST", toast: { message: "Copy failed", tone: "error", ttlMs: 2400 } });
+    }
   }
 
   return [
@@ -289,7 +298,9 @@ export function getEditorMenu(
       label: "Copy",
       icon: "copy",
       shortcut: "Ctrl+C",
-      onSelect: notImplemented("Copy"),
+      onSelect: () => {
+        void copySelection();
+      },
     },
     {
       kind: "action",
@@ -304,21 +315,21 @@ export function getEditorMenu(
       label: "Select All",
       icon: "list-ordered",
       shortcut: "Ctrl+A",
-      onSelect: notImplemented("Select All"),
+      onSelect: editorAction("select-all"),
     },
     {
       kind: "action",
       label: "Find…",
       icon: "search",
       shortcut: "Ctrl+F",
-      onSelect: notImplemented("Find"),
+      onSelect: editorAction("find"),
     },
     {
       kind: "action",
       label: "Replace…",
       icon: "replace",
       shortcut: "Ctrl+H",
-      onSelect: notImplemented("Replace"),
+      onSelect: editorAction("replace"),
     },
     { kind: "separator" },
     {
@@ -333,7 +344,7 @@ export function getEditorMenu(
       label: "Go to Line…",
       icon: "corner",
       shortcut: "Ctrl+G",
-      onSelect: notImplemented("Go to Line"),
+      onSelect: editorAction("goto-line"),
     },
     {
       kind: "action",

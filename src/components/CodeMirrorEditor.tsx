@@ -33,9 +33,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { defaultKeymap, history, historyKeymap, indentWithTab, selectAll } from "@codemirror/commands";
 import { bracketMatching, foldGutter, indentOnInput, indentUnit, foldKeymap } from "@codemirror/language";
-import { searchKeymap } from "@codemirror/search";
+import { searchKeymap, openSearchPanel, findNext, findPrevious } from "@codemirror/search";
 import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { lintGutter } from "@codemirror/lint";
 import { javascript } from "@codemirror/lang-javascript";
@@ -268,6 +268,49 @@ export function CodeMirrorEditor({
         detail: { x: e.clientX, y: e.clientY },
       }),
     );
+  }, []);
+
+  // ── ide:editor-action events from the editor context menu ────────────────
+  // Dispatched by menus.tsx for Cut, Copy, Paste, Select All, Find, Replace,
+  // Go to Line, and Format Document. Each kind maps to the corresponding
+  // CodeMirror command or UI action.
+  useEffect(() => {
+    function onEditorAction(e: Event) {
+      const { kind } = (e as CustomEvent).detail as { kind: string };
+      const view = editorRef.current?.view;
+      if (!view) return;
+      switch (kind) {
+        case "select-all":
+          selectAll(view);
+          break;
+        case "find":
+          openSearchPanel(view);
+          break;
+        case "replace":
+          openSearchPanel(view);
+          break;
+        case "goto-line":
+          // Prompt the user for a line number and jump there.
+          {
+            const line = view.state.doc.lines;
+            const input = window.prompt(`Go to line (1–${line}):`);
+            if (!input) break;
+            const lineNum = parseInt(input.trim(), 10);
+            if (isNaN(lineNum) || lineNum < 1 || lineNum > line) break;
+            const lineInfo = view.state.doc.line(lineNum);
+            view.dispatch({
+              selection: { anchor: lineInfo.from },
+              scrollIntoView: true,
+            });
+            view.focus();
+          }
+          break;
+        default:
+          break;
+      }
+    }
+    window.addEventListener("ide:editor-action", onEditorAction);
+    return () => window.removeEventListener("ide:editor-action", onEditorAction);
   }, []);
 
   const extensions = useMemo(

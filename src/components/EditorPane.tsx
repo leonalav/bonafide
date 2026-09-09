@@ -131,6 +131,15 @@ function TabStrip({
                 title="Unsaved changes"
               />
             )}
+            {t.pinned && (
+              <span title="Pinned">
+                <Icon
+                  name="pin"
+                  size={10}
+                  className="text-outline shrink-0"
+                />
+              </span>
+            )}
             <button
               onClick={(e) => {
                 e.stopPropagation();

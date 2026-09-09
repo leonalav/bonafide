@@ -159,8 +159,41 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
     }
   }, [inlineMode]);
 
-  // Watch for tree-level "rename" request via FOCUS_NODE (a Sidebar-internal marker)
-  // For now, we rely on F2 / context menu to trigger rename mode externally.
+  // ── Custom event listeners: ide:new-file, ide:new-folder ─────────────────
+  // Fired by the context menu (menus.tsx) to trigger inline-input mode.
+  useEffect(() => {
+    function onNewFile(e: Event) {
+      const { parentId } = (e as CustomEvent<{ parentId: string | null }>).detail;
+      setInlineMode({ kind: "new-file", parentId });
+      setInlineValue("");
+      setInlineError(null);
+    }
+    function onNewFolder(e: Event) {
+      const { parentId } = (e as CustomEvent<{ parentId: string | null }>).detail;
+      setInlineMode({ kind: "new-folder", parentId });
+      setInlineValue("");
+      setInlineError(null);
+    }
+    // Fired by the context menu's Rename entry to enter rename mode for a node.
+    function onTreeRename(e: Event) {
+      const { nodeId } = (e as CustomEvent<{ nodeId: string }>).detail;
+      const node = treeIndex.byId.get(nodeId);
+      if (!node) return;
+      setInlineMode({ kind: "rename", nodeId: node.id });
+      setInlineValue(node.name);
+      setInlineError(null);
+    }
+    window.addEventListener("ide:new-file", onNewFile);
+    window.addEventListener("ide:new-folder", onNewFolder);
+    window.addEventListener("ide:tree-rename", onTreeRename);
+    return () => {
+      window.removeEventListener("ide:new-file", onNewFile);
+      window.removeEventListener("ide:new-folder", onNewFolder);
+      window.removeEventListener("ide:tree-rename", onTreeRename);
+    };
+  }, [treeIndex]);
+
+  // ── F2 / Delete keyboard shortcuts ──────────────────────────────────
   useEffect(() => {
     function onKey(e: globalThis.KeyboardEvent) {
       // F2 → rename focused node
