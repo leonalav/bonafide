@@ -51,6 +51,18 @@ export async function ruffCheck(absPath: string): Promise<RuffDiagnostic[]> {
 }
 
 /**
+ * Convert ruff's 1-based row / 0-based column to 1-based line / col.
+ * Used to populate DomainDiagnostic.line / DomainDiagnostic.col so that
+ * the Problems panel can display the correct line number.
+ */
+export function ruffLocationToLineCol(
+  loc: { row: number; column: number } | undefined | null,
+): { line: number; col: number } {
+  if (!loc) return { line: 0, col: 0 };
+  return { line: loc.row, col: loc.column + 1 };
+}
+
+/**
  * Convert ruff's 1-based row / 0-based column line/column to CodeMirror
  * document offsets. We use the document's line indexing and assume the
  * file content matches what was passed to ruff.
@@ -82,9 +94,13 @@ export function ruffToCodeMirror(
       toOffset = lineEnd === -1 ? content.length : lineEnd;
     }
 
+    const { line, col } = ruffLocationToLineCol(d.location);
+
     result.push({
       from: fromOffset,
       to: toOffset,
+      line,
+      col,
       severity: "error",
       message: d.code
         ? `${d.code}: ${d.message}`

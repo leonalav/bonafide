@@ -35,6 +35,10 @@ export type DomainDiagnostic = {
   /** Range in CodeMirror document offsets. */
   from: number;
   to: number;
+  /** 1-based line number. */
+  line: number;
+  /** 1-based column number. */
+  col: number;
   severity: "error" | "warning" | "info" | "hint";
   message: string;
   /** Source identifier (e.g. "mlflow", "experiment-runner"). */

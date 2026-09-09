@@ -290,12 +290,8 @@ export function EditorPane({
             id: `ruff_${file.id}_${idx}_${Date.now()}`,
             fileId: file.id,
             fileLabel: file.id,
-            line: d.message.match(/(\d+):(\d+)/)?.[1]
-              ? Number(d.message.match(/(\d+):(\d+)/)![1])
-              : 0,
-            col: d.message.match(/(\d+):(\d+)/)?.[2]
-              ? Number(d.message.match(/(\d+):(\d+)/)![2])
-              : 0,
+            line: d.line,
+            col: d.col,
             severity: d.severity === "info" ? "info" : d.severity === "warning" ? "warning" : "error",
             code: d.source ?? "ruff",
             message: d.message,
