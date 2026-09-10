@@ -27,6 +27,7 @@ mod git_service;
 mod graph;
 mod agent;
 mod shim;
+mod tracker;
 
 // ── Types shared with the renderer ────────────────────────────────────────
 // These mirror the FsNode / DirListing / ElectronAPI types from the
