@@ -33,6 +33,23 @@ which = "6"
 once_cell = "1"
 notify = "8"
 notify-debouncer-mini = "0.5"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tree-sitter = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-yaml = "0.7"
+tree-sitter-markdown = "0.7"
+keyring = "4"
+async-trait = "0.1"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+hex = "0.4"
+thiserror = "2"
+dirs = "7"
+lazy_static = "1.5"
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 panic = "abort"
