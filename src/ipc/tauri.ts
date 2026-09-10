@@ -54,6 +54,9 @@ export type AppInfo = {
   theme: "dark" | "light";
 };
 
+/** Represents any JSON value (matches serde_json::Value on the Rust side). */
+export type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
+
 export type FileType =
   | "python" | "markdown" | "json" | "typescript" | "tsx"
   | "css" | "yaml" | "toml" | "shell" | "text";
@@ -497,6 +500,209 @@ function emptyGitStatus(): GitStatus {
   };
 }
 
+// ── Phase 0: Tracker / Workspace / Code Graph types ────────────────────────
+
+/** W&B tracker error variants returned by the Rust backend. */
+export type TrackerErrorKind =
+  | "no_python"
+  | "auth_failed"
+  | "not_found"
+  | "rate_limited"
+  | "shim_crashed"
+  | "unknown";
+
+/** Structured error from the tracker subsystem. */
+export type TrackerError = {
+  kind: TrackerErrorKind;
+  message: string;
+  hint?: string;
+};
+
+/** Result of `test_tracker_connection`. */
+export type TrackerStatus = {
+  connected: boolean;
+  latencyMs?: number;
+  errorKind?: string;
+};
+
+/** Full workspace descriptor returned by `open_workspace`. */
+export type Workspace = {
+  root: string;
+  hash: string;
+  dbPath: string;
+  hasTracker: boolean;
+};
+
+/** Lightweight workspace summary returned by `list_workspaces`. */
+export type WorkspaceSummary = {
+  root: string;
+  hash: string;
+  lastOpened: number;
+};
+
+/** Run summary returned by `list_runs`. */
+export type RunSummary = {
+  id: string;
+  name: string;
+  state: string;
+  createdAt: number;
+  summaryMetrics: JSONValue;
+};
+
+/** A page of runs with optional next-cursor. */
+export type RunPage = {
+  runs: RunSummary[];
+  nextCursor?: string;
+};
+
+/** Full run detail returned by `get_run`. */
+export type RunDetail = {
+  id: string;
+  name: string;
+  state: string;
+  createdAt: number;
+  finishedAt?: number;
+  config: JSONValue;
+  summaryMetrics: JSONValue;
+  tags: string[];
+  notes: string;
+};
+
+/** A single (step, value) point in a metric time series. */
+export type Point = {
+  step: number;
+  value: number;
+  ts: number;
+};
+
+/** Run configuration returned by `get_run_config`. */
+export type RunConfig = {
+  runId: string;
+  config: JSONValue;
+};
+
+/** Reference to a logged W&B artifact. */
+export type ArtifactRef = {
+  name: string;
+  digest: string;
+  sizeBytes: number;
+  createdAt: number;
+};
+
+/** Summary of a completed code-graph indexing pass. */
+export type IndexSummary = {
+  nodesIndexed: number;
+  edgesIndexed: number;
+  filesScanned: number;
+  durationMs: number;
+};
+
+/** A single entry returned from a code-graph search. */
+export type CodeGraphHit = {
+  id: string;
+  kind: string;
+  file: string;
+  name: string;
+  spanStart: number;
+  spanEnd: number;
+};
+
+// ── Phase 0: IPC function implementations ────────────────────────────────
+
+/** Open a workspace directory, creating its local DB on first access. */
+async function openWorkspace(path: string): Promise<Workspace> {
+  if (!tauriIsTauri()) {
+    return { root: path, hash: "preview", dbPath: "", hasTracker: false };
+  }
+  return invoke<Workspace>("open_workspace", { path });
+}
+
+/** List all workspaces currently tracked in app state. */
+async function listWorkspaces(): Promise<WorkspaceSummary[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<WorkspaceSummary[]>("list_workspaces");
+}
+
+/** Connect a W&B tracker for the given workspace root. */
+async function connectTracker(
+  kind: string,
+  apiKey: string,
+  workspaceRoot: string,
+): Promise<string> {
+  if (!tauriIsTauri()) return "preview";
+  return invoke<string>("connect_tracker", { kind, apiKey, workspaceRoot });
+}
+
+/** Disconnect the tracker for the given workspace root. */
+async function disconnectTracker(kind: string, workspaceRoot: string): Promise<void> {
+  if (!tauriIsTauri()) return;
+  return invoke<void>("disconnect_tracker", { kind, workspaceRoot });
+}
+
+/** Test connectivity to the tracker service without storing credentials. */
+async function testTrackerConnection(kind: string): Promise<TrackerStatus> {
+  if (!tauriIsTauri()) return { connected: false };
+  return invoke<TrackerStatus>("test_tracker_connection", { kind });
+}
+
+/** List runs for a W&B project. */
+async function listRuns(
+  project: string,
+  limit: number,
+  cursor?: string,
+): Promise<RunPage> {
+  if (!tauriIsTauri()) return { runs: [] };
+  return invoke<RunPage>("list_runs", { project, limit, cursor });
+}
+
+/** Get full detail for a single run. */
+async function getRun(runId: string): Promise<RunDetail> {
+  if (!tauriIsTauri()) {
+    throw new Error("getRun not available outside Tauri");
+  }
+  return invoke<RunDetail>("get_run", { runId });
+}
+
+/** Get the time-series values for one metric of a run. */
+async function getMetricSeries(
+  runId: string,
+  key: string,
+): Promise<Point[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<Point[]>("get_metric_series", { runId, key });
+}
+
+/** Get the config dict for a single run. */
+async function getRunConfig(runId: string): Promise<RunConfig> {
+  if (!tauriIsTauri()) {
+    throw new Error("getRunConfig not available outside Tauri");
+  }
+  return invoke<RunConfig>("get_run_config", { runId });
+}
+
+/** List artifacts logged to a run. */
+async function listArtifacts(runId: string): Promise<ArtifactRef[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<ArtifactRef[]>("list_artifacts", { runId });
+}
+
+/** Index all Python files under a workspace root into the code graph. */
+async function indexCodeGraph(workspaceRoot: string): Promise<IndexSummary> {
+  if (!tauriIsTauri()) {
+    return { nodesIndexed: 0, edgesIndexed: 0, filesScanned: 0, durationMs: 0 };
+  }
+  return invoke<IndexSummary>("index_code_graph", { workspaceRoot });
+}
+
+/** Search the code graph for functions/classes matching the query. */
+async function queryCodeGraph(
+  query: string,
+  workspaceRoot: string,
+): Promise<CodeGraphHit[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<CodeGraphHit[]>("query_code_graph", { query, workspaceRoot });
+}
+
 // ── Public API — same shape as the old electronAPI ────────────────────────
 
 export const bonafide = {
@@ -556,6 +762,24 @@ export const bonafide = {
     fetch: gitFetch,
     init: gitInit,
   },
+  workspace: {
+    open: openWorkspace,
+    list: listWorkspaces,
+  },
+  tracker: {
+    connect: connectTracker,
+    disconnect: disconnectTracker,
+    test: testTrackerConnection,
+    listRuns: listRuns,
+    getRun: getRun,
+    getMetricSeries: getMetricSeries,
+    getRunConfig: getRunConfig,
+    listArtifacts,
+  },
+  graph: {
+    index: indexCodeGraph,
+    query: queryCodeGraph,
+  },
 };
 
 export type BonafideAPI = {
@@ -605,5 +829,23 @@ export type BonafideAPI = {
     push: (workspace: string) => Promise<GitOpResult>;
     fetch: (workspace: string) => Promise<GitOpResult>;
     init: (workspace: string) => Promise<GitOpResult>;
+  };
+  workspace: {
+    open: (path: string) => Promise<Workspace>;
+    list: () => Promise<WorkspaceSummary[]>;
+  };
+  tracker: {
+    connect: (kind: string, apiKey: string, workspaceRoot: string) => Promise<string>;
+    disconnect: (kind: string, workspaceRoot: string) => Promise<void>;
+    test: (kind: string) => Promise<TrackerStatus>;
+    listRuns: (project: string, limit: number, cursor?: string) => Promise<RunPage>;
+    getRun: (runId: string) => Promise<RunDetail>;
+    getMetricSeries: (runId: string, key: string) => Promise<Point[]>;
+    getRunConfig: (runId: string) => Promise<RunConfig>;
+    listArtifacts: (runId: string) => Promise<ArtifactRef[]>;
+  };
+  graph: {
+    index: (workspaceRoot: string) => Promise<IndexSummary>;
+    query: (query: string, workspaceRoot: string) => Promise<CodeGraphHit[]>;
   };
 };
