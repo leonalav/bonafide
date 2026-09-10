@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { Icon } from "../ui/Icon";
 import { Button, StatusDot } from "../ui/primitives";
 import { Card, CardHeader, Checkbox } from "../ui/controls";
+import { bonafide } from "@/ipc/tauri";
 
 type Provider = { name: string; account?: string; connected: boolean; meta?: string; note?: string };
 
@@ -57,6 +59,35 @@ function ProviderRow({ p, onManage }: { p: Provider; onManage?: () => void }) {
 }
 
 export function AccountSection({ onManageTracker }: { onManageTracker: () => void }) {
+  const [wbApiKey, setWbApiKey] = useState("");
+  const [wbConnecting, setWbConnecting] = useState(false);
+  const [wbError, setWbError] = useState<string | null>(null);
+  const [wbConnected, setWbConnected] = useState(false);
+
+  // Phase 0: hardcoded workspace root stub — replace with app store when available.
+  const workspaceRoot = "/tmp/bonafide-workspace";
+
+  async function handleWbConnect() {
+    if (!wbApiKey.trim()) return;
+    setWbConnecting(true);
+    setWbError(null);
+    try {
+      await bonafide.tracker.connect("wandb", wbApiKey, workspaceRoot);
+      setWbConnected(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.toLowerCase().includes("auth")) {
+        setWbError("Auth failed — check your W&B API key.");
+      } else if (msg.toLowerCase().includes("no_python") || msg.toLowerCase().includes("python")) {
+        setWbError("Python 3.10+ not found. Set path in Settings → Python.");
+      } else {
+        setWbError(msg);
+      }
+      setWbConnected(false);
+    } finally {
+      setWbConnecting(false);
+    }
+  }
   return (
     <div className="mx-auto flex max-w-[720px] flex-col gap-8">
       {/* Card 1 — Profile */}
@@ -92,6 +123,85 @@ export function AccountSection({ onManageTracker }: { onManageTracker: () => voi
         {TRACKERS.map((p) => (
           <ProviderRow key={p.name} p={p} onManage={onManageTracker} />
         ))}
+      </Card>
+
+      {/* W&B Connect Card */}
+      <Card>
+        <CardHeader
+          title="Weights & Biases"
+          right={
+            wbConnected ? (
+              <div className="flex items-center gap-1.5">
+                <StatusDot token="primary" />
+                <span className="font-body text-[12px] text-primary">Connected</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <StatusDot token="outline" />
+                <span className="font-body text-[12px] text-outline">Not connected</span>
+              </div>
+            )
+          }
+        />
+        <div className="flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <input
+                type="password"
+                value={wbApiKey}
+                onChange={(e) => {
+                  setWbApiKey(e.target.value);
+                  setWbError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void handleWbConnect();
+                }}
+                placeholder="W&B API Key (xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx)"
+                className="h-8 w-full rounded border border-outline-variant bg-surface px-3 pr-10 font-sans text-[13px] text-on-surface placeholder:text-outline focus:border-primary focus:outline-none"
+              />
+              {wbApiKey && (
+                <button
+                  onClick={() => {
+                    setWbApiKey("");
+                    setWbError(null);
+                  }}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-outline hover:text-on-surface"
+                >
+                  <Icon name="x" size={12} />
+                </button>
+              )}
+            </div>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!wbApiKey.trim() || wbConnecting}
+              onClick={() => void handleWbConnect()}
+            >
+              {wbConnecting ? "Connecting…" : wbConnected ? "Reconnect" : "Connect"}
+            </Button>
+          </div>
+          {wbError && (
+            <div className="flex items-center gap-2 rounded border border-error/30 bg-error-container/20 p-2.5">
+              <Icon name="alert-triangle" size={13} className="shrink-0 text-error" />
+              <span className="font-body text-[12px] text-error">{wbError}</span>
+            </div>
+          )}
+          {!wbConnected && !wbError && (
+            <p className="font-body text-[12px] text-on-surface-variant">
+              Find your API key at{" "}
+              <a
+                href="#"
+                onClick={(e) => {
+                  e.preventDefault();
+                  void bonafide.shell.openExternal("https://wandb.ai/authorize");
+                }}
+                className="underline hover:text-primary"
+              >
+                wandb.ai/authorize
+              </a>
+            </p>
+          )}
+        </div>
       </Card>
 
       {/* Card 3 — Connected Services */}
