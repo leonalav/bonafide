@@ -113,12 +113,17 @@ def ensure_wandb() -> None:
 # ---------------------------------------------------------------------------
 
 def make_response(req_id, result) -> dict:
-    return {"jsonrpc": "2.0", "id": req_id, "result": result}
+    # Must match the Rust ShimResponse enum's serde representation:
+    #   #[serde(tag = "type")] — so the discriminator is the "type" field.
+    # Rust expects: {"type": "result", "id": ..., "result": ...}
+    return {"type": "result", "id": req_id, "result": result}
 
 
 def make_error(req_id, code: int, message: str) -> dict:
+    # Must match the Rust ShimResponse::Error variant's serde representation.
+    # Rust expects: {"type": "error", "id": ..., "error": {...}}
     return {
-        "jsonrpc": "2.0",
+        "type": "error",
         "id": req_id,
         "error": {"code": code, "message": message},
     }
