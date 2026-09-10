@@ -55,8 +55,8 @@ pub struct Budget {
 impl Default for Budget {
     fn default() -> Self {
         Self {
-            max_gpu_hours: 0.0,
-            max_dollars: 0.0,
+            max_gpu_hours: 10.0,
+            max_dollars: 10.0,
             spent_gpu_hours: 0.0,
             spent_dollars: 0.0,
         }
@@ -129,19 +129,19 @@ pub struct Thread {
 }
 
 impl Thread {
-    /// Construct a new Thread with the given id, role, model, and event log path.
+    /// Construct a new Thread with the given id, role, run_id, and event log path.
     pub fn new(
         id: String,
         role: AgentRole,
-        model_id: String,
+        run_id: Option<String>,
         event_log_path: PathBuf,
     ) -> Self {
         Self {
             id,
-            run_id: None,
+            run_id,
             role,
             state: ThreadState::Idle,
-            model_id,
+            model_id: "claude-sonnet-4".to_string(),
             messages: Vec::new(),
             trace: Vec::new(),
             hypothesis: None,
@@ -159,6 +159,10 @@ impl Thread {
 /// The file is created if it does not exist; each call appends exactly one
 /// line terminated by `\n`.
 pub fn append_event_log(event_log_path: &PathBuf, event: &str) -> std::io::Result<()> {
+    // PHASE0: create parent dirs if missing (spec: "creates parent dirs")
+    if let Some(parent) = event_log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
