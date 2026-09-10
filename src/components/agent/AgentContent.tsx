@@ -87,7 +87,7 @@ function WelcomePanel({
         items={WELCOME_SUGGESTIONS}
         onPick={(t) => {
           if (t === "Scaffold a new project") onOpenWorkflow?.();
-          else onStartChat(t);
+          else onStartChat(t, []);
         }}
       />
 
@@ -478,7 +478,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
           the eye without blocking the rest of the layout. */}
       {pendingReturnMessageId ? (
         <ReturnDialog
-          thread={activeThread}
+          messages={activeThread.messages}
           messageId={pendingReturnMessageId}
           onConfirm={confirmReturnMessage}
           onCancel={cancelReturnMessage}
@@ -500,12 +500,12 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
  * we'll plug the real file list in here.
  */
 function ReturnDialog({
-  thread,
+  messages,
   messageId,
   onConfirm,
   onCancel,
 }: {
-  thread: ChatThread;
+  messages: ChatMessage[];
   messageId: string;
   onConfirm: () => void;
   onCancel: () => void;
@@ -525,10 +525,10 @@ function ReturnDialog({
   }, [onCancel]);
 
   // Snapshot what would be dropped. We compute this on every render
-  // because the thread reference is live — if a streaming reply
+  // because the messages reference is live — if a streaming reply
   // arrives while the dialog is open, the "would drop" list updates.
-  const anchorIdx = thread.messages.findIndex((m) => m.id === messageId);
-  const dropped = anchorIdx === -1 ? [] : thread.messages.slice(anchorIdx + 1);
+  const anchorIdx = messages.findIndex((m) => m.id === messageId);
+  const dropped = anchorIdx === -1 ? [] : messages.slice(anchorIdx + 1);
 
   return (
     // Backdrop. `pointer-events-auto` because the chat surface
