@@ -24,6 +24,7 @@ mod lsp_bridge;
 mod pty_bridge;
 mod fs_watcher;
 mod git_service;
+mod graph;
 
 // ── Types shared with the renderer ────────────────────────────────────────
 // These mirror the FsNode / DirListing / ElectronAPI types from the
