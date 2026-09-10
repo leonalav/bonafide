@@ -33,4 +33,55 @@ export {
   WORKSPACES,
   GIT_STATE,
   series as generateSeries,
-} from "./artifacts"
+} from "./artifacts";
+
+// ── useRuns hook ────────────────────────────────────────────────────────────
+
+import { useState, useEffect, useCallback } from "react";
+import { bonafide } from "../ipc/tauri";
+import type { RunSummary, RunPage } from "../ipc/tauri";
+
+export type UseRunsResult = {
+  runs: RunSummary[];
+  loading: boolean;
+  error: string | null;
+  refetch: () => void;
+};
+
+/**
+ * Fetch runs for a W&B project from the Tauri backend.
+ *
+ * Falls back to an empty list on error (does not throw) so the caller
+ * can render an empty/error state without crashing.
+ *
+ * @param projectName     — W&B project name, e.g. "bonafide-train"
+ * @param workspaceRoot   — Absolute path of the open workspace (used as the
+ *                         Rust command context; the tracker resolves the
+ *                         project name against the workspace's connected
+ *                         W&B entity).
+ */
+export function useRuns(projectName: string, workspaceRoot: string): UseRunsResult {
+  const [runs, setRuns] = useState<RunSummary[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const fetchRuns = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const page: RunPage = await bonafide.tracker.listRuns(projectName, 50, undefined);
+      setRuns(page.runs);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setRuns([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectName]);
+
+  useEffect(() => {
+    void fetchRuns();
+  }, [fetchRuns]);
+
+  return { runs, loading, error, refetch: fetchRuns };
+}
