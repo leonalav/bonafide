@@ -703,6 +703,46 @@ async function queryCodeGraph(
   return invoke<CodeGraphHit[]>("query_code_graph", { query, workspaceRoot });
 }
 
+// ── Phase 0+: Agent thread IPC ──────────────────────────────────────────────
+//
+// `ThreadRow` is the persisted shape returned by `list_threads`. It is
+// a strict subset of the renderer's `Thread` type (no trace/messages/
+// hypothesis/patch — those live in the append-only event log).
+
+export type ThreadRole =
+  | "debugger" | "scaffolder" | "planner" | "researcher" | "critic";
+
+export type ThreadState =
+  | "idle" | "investigating" | "hypothesis_formed" | "patch_proposed"
+  | "smoke_verifying" | "awaiting_approval" | "full_run_verifying"
+  | "resolved" | "rejected" | "stopped";
+
+export type ThreadBand = "active" | "awaiting_review" | "closed";
+
+export type ThreadRow = {
+  id: string;
+  workspaceHash: string;
+  role: ThreadRole;
+  title: string;
+  summary: string;
+  state: ThreadState;
+  detail: string;
+  band: ThreadBand;
+  system: boolean;
+  /** Unix millis — renderer formats "12s ago" relative labels from this. */
+  updatedAt: number;
+};
+
+async function listThreads(workspaceRoot: string): Promise<ThreadRow[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<ThreadRow[]>("list_threads", { workspaceRoot });
+}
+
+async function upsertThread(row: ThreadRow): Promise<void> {
+  if (!tauriIsTauri()) return;
+  await invoke<void>("upsert_thread", { row });
+}
+
 // ── Public API — same shape as the old electronAPI ────────────────────────
 
 export const bonafide = {
@@ -780,6 +820,10 @@ export const bonafide = {
     index: indexCodeGraph,
     query: queryCodeGraph,
   },
+  agent: {
+    listThreads,
+    upsertThread,
+  },
 };
 
 export type BonafideAPI = {
@@ -847,5 +891,9 @@ export type BonafideAPI = {
   graph: {
     index: (workspaceRoot: string) => Promise<IndexSummary>;
     query: (query: string, workspaceRoot: string) => Promise<CodeGraphHit[]>;
+  };
+  agent: {
+    listThreads: (workspaceRoot: string) => Promise<ThreadRow[]>;
+    upsertThread: (row: ThreadRow) => Promise<void>;
   };
 };

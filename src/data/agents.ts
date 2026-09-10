@@ -1,12 +1,19 @@
 // Mock data for the Track A agent surface (Inspector Agent tab + Workflow inbox).
 
-export type AgentRole = "Debugger" | "Scaffolder" | "Planner" | "Researcher";
+import type { ThreadRole, ThreadState as _ThreadState, ThreadBand as _ThreadBand } from "../ipc/tauri";
+
+/** Display role enum for the Inspector Agent tab. Mirrors the IPC
+ *  `ThreadRole` (lowercase snake_case from the Rust orchestrator) but
+ *  keeps `AgentRole` as the friendly alias for code that prefers the
+ *  historical capitalisation. */
+export type AgentRole = ThreadRole;
 
 export const ROLE_META: Record<AgentRole, { icon: string; glyph: string }> = {
-  Debugger: { icon: "search", glyph: "🔍" },
-  Scaffolder: { icon: "box", glyph: "🏗" },
-  Planner: { icon: "line-chart", glyph: "🗺" },
-  Researcher: { icon: "package", glyph: "📎" },
+  debugger: { icon: "search", glyph: "🔍" },
+  scaffolder: { icon: "box", glyph: "🏗" },
+  planner: { icon: "line-chart", glyph: "🗺" },
+  researcher: { icon: "package", glyph: "📎" },
+  critic: { icon: "alert-triangle", glyph: "⚖" },
 };
 
 export type TraceStep = {
@@ -45,72 +52,42 @@ export type Investigation = {
   verification: Verification;
 };
 
-// The featured investigation, reused by the Inspector tab and the Workflow detail view.
-export const INVESTIGATION: Investigation = {
-  runHash: "a3f9c12",
-  goal: "Why did run a3f9c12 diverge at step 4000 while nova-7b held its val_loss?",
-  trace: [
-    {
-      tool: "read_run_metrics",
-      args: "a3f9c12",
-      result: "lr_spike=true, val_loss plateau from step 3800",
-      time: "12s ago",
-    },
-    { tool: "read_config", args: "a3f9c12", time: "11s ago" },
-    { tool: "diff_runs", args: "a3f9c12, b4c8f30", time: "9s ago" },
-    { tool: "read_code", args: '"train.py:L102-L160"', time: "7s ago" },
-  ],
-  hypothesis: {
-    verdict: "Likely",
-    statement: "Warmup schedule overlap with cosine decay caused an LR spike at the wrong step.",
-    evidence: [
-      { text: "a3f9c12:5000 lr=0.0042", jump: "metric" },
-      { text: "a3f9c12 vs b4c8f30 — warmup config delta", jump: "diff" },
-      { text: "train.py:L102 cosine.AnnealingWarmRestarts", jump: "code" },
-    ],
-    confidence: "Medium",
-    ruledOut: "data issue (data hash matches prior)",
-  },
-  patch: {
-    file: "train.py:L102",
-    summary: "1 file · 2 lines",
-    lines: [
-      { sign: "+", text: "scheduler = CosineAnnealingLR(" },
-      { sign: "+", text: "    T_max=epochs, eta_min=1e-5)" },
-      { sign: "-", text: "scheduler = CosineAnnealingWarmRestarts(...)" },
-    ],
-  },
-  verification: {
-    status: "success",
-    lines: [
-      "Smoke run completed (200 steps, 3m 12s)",
-      "val_loss trajectory: 0.51 → 0.42",
-      "No LR spike at any step.",
-    ],
-    upgrade: "Medium → High",
-  },
-};
+// Tracks persisted by the orchestrator and rehydrated from SQLite.
+// The renderer never instantiates these directly; they come back from
+// the `list_threads` Tauri command in `data/threads.ts`.
+export interface ThreadBase {
+  id: string;
+  role: AgentRole;
+  title: string;
+  summary: string;
+  state: ThreadState;
+  detail: string;
+  /** Unix millis — `useThreads` formats relative labels from this. */
+  updatedAt: number;
+  band: ThreadBand;
+  system?: boolean;
+}
 
-export type ThreadState =
-  | "queued"
-  | "investigating"
-  | "hypothesis"
-  | "awaiting"
-  | "verifying"
-  | "done"
-  | "stuck";
+// Re-exported from `ipc/tauri.ts` so the renderer's `Thread` type and
+// the orchestrator's persisted row share one source of truth.
+export type ThreadState = _ThreadState;
+export type ThreadBand = _ThreadBand;
 
+// Friendly labels for the Workflow inbox. Mirrors the renderer-side
+// `THREAD_STATE_META` from earlier mock data; aligned to the Rust
+// orchestrator's `ThreadState` enum (snake_case).
 export const THREAD_STATE_META: Record<ThreadState, { label: string; token: "tertiary" | "primary" | "error" | "outline"; pulse?: boolean }> = {
-  queued: { label: "Queued", token: "outline" },
+  idle: { label: "Idle", token: "outline" },
   investigating: { label: "Investigating", token: "tertiary", pulse: true },
-  hypothesis: { label: "Hypothesis formed", token: "primary" },
-  awaiting: { label: "Awaiting approval", token: "primary", pulse: true },
-  verifying: { label: "Verifying smoke", token: "tertiary", pulse: true },
-  done: { label: "Done", token: "outline" },
-  stuck: { label: "Stuck — needs direction", token: "error" },
+  hypothesis_formed: { label: "Hypothesis formed", token: "primary" },
+  patch_proposed: { label: "Patch proposed", token: "primary" },
+  smoke_verifying: { label: "Verifying smoke", token: "tertiary", pulse: true },
+  awaiting_approval: { label: "Awaiting approval", token: "primary", pulse: true },
+  full_run_verifying: { label: "Verifying full run", token: "tertiary", pulse: true },
+  resolved: { label: "Done", token: "outline" },
+  rejected: { label: "Rejected", token: "outline" },
+  stopped: { label: "Stopped", token: "outline" },
 };
-
-export type ThreadBand = "active" | "awaiting-review" | "closed";
 
 export type Thread = {
   id: string;
@@ -119,7 +96,11 @@ export type Thread = {
   summary: string;
   state: ThreadState;
   detail: string;
+  /** Pre-formatted relative label (e.g. "12s ago"). Rendered as-is. */
   time: string;
+  /** Unix millis — `useThreads` derives `time` from this when rehydrating
+   *  live rows; the mock stores both so the values stay in sync. */
+  updatedAt: number;
   band: ThreadBand;
   system?: boolean;
 };
@@ -127,63 +108,69 @@ export type Thread = {
 export const THREADS: Thread[] = [
   {
     id: "t1",
-    role: "Debugger",
+    role: "debugger",
     title: "Run a3f9c12 diverged?",
     summary: "val_loss plateau + LR spike — proposal ready",
-    state: "awaiting",
+    state: "awaiting_approval",
     detail: "1 hypothesis · 1 patch",
     time: "12s ago",
+    updatedAt: Date.now() - 12_000,
     band: "active",
   },
   {
     id: "t2",
-    role: "Scaffolder",
+    role: "scaffolder",
     title: "Scaffold vision-finetune/",
     summary: "PyTorch + W&B scaffold + smoke test passing",
-    state: "verifying",
+    state: "smoke_verifying",
     detail: "running 200 steps",
     time: "4m ago",
+    updatedAt: Date.now() - 4 * 60_000,
     band: "active",
   },
   {
     id: "t3",
-    role: "Debugger",
+    role: "debugger",
     title: "Compare nova-7b vs orion-3b",
     summary: "Differential diagnosis across 2 runs — reading metrics",
     state: "investigating",
     detail: "3 tool calls",
     time: "6m ago",
+    updatedAt: Date.now() - 6 * 60_000,
     band: "active",
   },
   {
     id: "t4",
-    role: "Debugger",
+    role: "debugger",
     title: "Loss spike last night",
     summary: "Suggested: re-enable grad clip — already tried (#47)",
-    state: "awaiting",
+    state: "awaiting_approval",
     detail: "rejected by project memory",
     time: "2h ago",
-    band: "awaiting-review",
+    updatedAt: Date.now() - 2 * 60 * 60_000,
+    band: "awaiting_review",
     system: true,
   },
   {
     id: "t5",
-    role: "Debugger",
+    role: "debugger",
     title: "orion-3b failed at epoch 2",
     summary: "CUDA OOM — batch size / sequence length",
-    state: "done",
+    state: "resolved",
     detail: "applied · gradient checkpointing",
     time: "yesterday",
+    updatedAt: Date.now() - 24 * 60 * 60_000,
     band: "closed",
   },
   {
     id: "t6",
-    role: "Scaffolder",
+    role: "scaffolder",
     title: "Scaffold recommender/",
     summary: "JAX template + Hydra config",
-    state: "done",
+    state: "resolved",
     detail: "applied",
     time: "2 days ago",
+    updatedAt: Date.now() - 2 * 24 * 60 * 60_000,
     band: "closed",
   },
 ];
@@ -215,9 +202,9 @@ export type Template = {
 };
 
 export const TEMPLATES: Template[] = [
-  { role: "Debugger", title: "Diagnose run divergence", desc: "Bind to a run, trace metrics vs the best prior run.", isDefault: true },
-  { role: "Debugger", title: "Compare K runs", desc: "Multi-run differential diagnosis." },
-  { role: "Scaffolder", title: "Start a new project from spec", desc: "Only available in empty workspaces.", emptyOnly: true },
-  { role: "Planner", title: "Sequence experiments", desc: "Plan experiments across N runs.", soon: true },
-  { role: "Researcher", title: "Cross-reference artifacts", desc: "Cross-reference artifacts / papers.", soon: true },
+  { role: "debugger", title: "Diagnose run divergence", desc: "Bind to a run, trace metrics vs the best prior run.", isDefault: true },
+  { role: "debugger", title: "Compare K runs", desc: "Multi-run differential diagnosis." },
+  { role: "scaffolder", title: "Start a new project from spec", desc: "Only available in empty workspaces.", emptyOnly: true },
+  { role: "planner", title: "Sequence experiments", desc: "Plan experiments across N runs.", soon: true },
+  { role: "researcher", title: "Cross-reference artifacts", desc: "Cross-reference artifacts / papers.", soon: true },
 ];

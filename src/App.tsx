@@ -39,7 +39,8 @@ import { bonafide } from "./ipc/tauri"
 
 import type { TerminalProfile } from "./ipc/tauri"
 import {
-  RUNS,
+  RunsProvider,
+  useRunsData,
   type Run,
 } from "./data/runs"
 
@@ -210,6 +211,10 @@ function AppInner() {
 
   const activeTabId = activeTab?.id ?? null
 
+  // Live runs surface — falls back to the design mock when no
+  // workspace is open or when the backend returns zero rows.
+  const runs = useRunsData();
+
   // Log selector cost. Only logs when a single selector takes >5ms.
 
   const _selCost = _t5 - _renderStart
@@ -238,12 +243,23 @@ function AppInner() {
 
       if (!folderPath) return
 
+      // Open the workspace on the Rust side first so SQLite storage +
+      // keyring scope + tracker resolution are wired before the
+      // renderer starts emitting `bonafide.tracker.*` / `bonafide.graph.*`
+      // calls. Without this, those calls fail with
+      // "Workspace not open. Call open_workspace first.".
+      try {
+        await bonafide.workspace.open(folderPath)
+      } catch (err) {
+        // Best-effort; the renderer's file tree should still hydrate
+        // even when the Rust side rejects (e.g. browser preview).
+        console.warn("[App] open_workspace failed:", err)
+      }
+
       const listing = await bonafide.fs.readDirectory(folderPath)
 
       // Convert from the FsNode shape (from Rust main process) to FileNode
-
       // shape (store's internal format).
-
       const tree: FileNode[] = listing.files.map((f) => ({
         id: f.id,
 
@@ -310,7 +326,7 @@ function AppInner() {
   }, [workspaceRoot, dispatch])
 
   function openRun(id: string) {
-    const found = RUNS.find((r) => r.id === id) ?? null
+    const found = runs.find((r) => r.id === id) ?? null
     setInspectorRun(found)
     setSelectedRun(id)
 
@@ -673,6 +689,7 @@ function AppInner() {
   }
 
   return (
+    <RunsProvider workspaceRoot={workspaceRoot ?? null}>
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-surface-container-lowest text-on-surface">
       <TitleBar />
 
@@ -804,5 +821,6 @@ function AppInner() {
       {/* Command palette (Ctrl+Shift+P) */}
       <CommandPalette />
     </div>
+    </RunsProvider>
   )
 }

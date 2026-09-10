@@ -4,7 +4,7 @@ import { StatusDot } from "./ui/primitives";
 import { Select } from "./ui/Select";
 import { Chart, fmtValue } from "./ui/Chart";
 import { Sparkline } from "./ui/Sparkline";
-import { ARTIFACTS, RUNS, STATE_META, type Artifact, type Run } from "./../data/runs";
+import { ARTIFACTS, STATE_META, useRunsData, type Artifact, type Run } from "./../data/runs";
 
 const ART_ICON: Record<Artifact["kind"], string> = { model: "box", dataset: "database", plot: "image", file: "file" };
 
@@ -39,12 +39,13 @@ function Card({ title, children, right }: { title: string; children: React.React
 }
 
 export function ExperimentsTab({ runId }: { runId: string }) {
-  const run = RUNS.find((r) => r.id === runId) ?? RUNS[0];
+  const runs = useRunsData();
+  const run = runs.find((r) => r.id === runId) ?? runs[0];
   const meta = STATE_META[run.state];
   const [compare, setCompare] = useState("");
   const [chartMode, setChartMode] = useState(false);
   const [cfgQuery, setCfgQuery] = useState("");
-  const others = RUNS.filter((r) => r.id !== run.id);
+  const others = runs.filter((r) => r.id !== run.id);
   const cmpRun = others.find((r) => r.id === compare);
 
   const configRows = Object.entries(run.config).filter(([k]) => k.toLowerCase().includes(cfgQuery.toLowerCase()));

@@ -42,6 +42,18 @@ export function buildPaletteCommands(
   // Helper to open a workspace from a folder path.
   async function openWorkspace(folderPath: string): Promise<void> {
     try {
+      // Tell Rust to (a) open the SQLite store for this workspace and
+      // (b) seed/lookup the per-workspace hash so keyring + tracker
+      // commands can resolve credentials. Without this call, code-graph
+      // indexing and tracker lookups silently no-op because they
+      // require an open storage handle.
+      await bonafide.workspace.open(folderPath).catch((err) => {
+        // Open the workspace DB best-effort; even if Tauri rejects
+        // (e.g. browser preview), we still want the renderer's file
+        // tree to populate.
+        console.warn("[bonafide] open_workspace failed:", err);
+      });
+
       const listing = await bonafide.fs.readDirectory(folderPath);
       const tree: FileNode[] = listing.files.map((f) => ({
         id: f.id,

@@ -1,13 +1,14 @@
 // ShimManager — spawns and manages the W&B adapter Python shim subprocess,
 // communicates with it over stdio JSON-RPC, and handles respawn on crash.
 
-use std::io::{BufRead, Write};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Child, Stdio};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use which::which as which_command;
 
 use crate::shim::protocol::ShimRequest;
@@ -16,6 +17,14 @@ pub mod protocol;
 
 /// Maximum number of automatic respawn attempts before giving up.
 pub const MAX_RESTARTS: u8 = 3;
+
+/// Timeout for waiting on a JSON-RPC response from the shim.
+const REQUEST_TIMEOUT_SECS: u64 = 30;
+
+/// Sentinel key embedded in a `serde_json::Value` returned through the
+/// oneshot channel to mark a JSON-RPC error response (as opposed to a
+/// successful result payload).
+const ERROR_SENTINEL_KEY: &str = "__shim_error__";
 
 /// Errors that can arise during shim lifecycle operations.
 #[derive(Debug, thiserror::Error)]
@@ -40,8 +49,9 @@ pub enum ShimError {
 ///
 /// The shim is a Python script that runs as a child process of this app.
 /// Communication uses line-delimited JSON-RPC over stdin/stdout. A Tokio
-/// task consumes stdout asynchronously and forwards parsed `ShimEvent`s
-/// to the event channel consumer.
+/// task consumes stdout asynchronously, dispatching parsed `ShimEvent`s
+/// to the event channel consumer and parsed `ShimResponse`s to the
+/// matching pending oneshot sender keyed by JSON-RPC `id`.
 pub struct ShimManager {
     /// Path to the Python shim script.
     shim_script: PathBuf,
@@ -67,6 +77,11 @@ pub struct ShimManager {
     /// Sends async events (progress, log lines, etc.) from the stdout reader
     /// task to whoever is listening in the Tauri app.
     event_tx: mpsc::UnboundedSender<protocol::ShimEvent>,
+
+    /// Pending JSON-RPC request ids → oneshot sender for the response.
+    /// Populated by `send()` and drained by the stdout reader task when
+    /// matching `ShimResponse` lines arrive.
+    pending: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
 }
 
 impl ShimManager {
@@ -90,6 +105,7 @@ impl ShimManager {
             next_id: Mutex::new(1),
             restarts: Mutex::new(0),
             event_tx,
+            pending: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
@@ -132,13 +148,62 @@ impl ShimManager {
         *self.child.lock().unwrap() = Some(child);
         *self.writer.lock().unwrap() = Some(writer);
 
-        // Start async stdout reader that parses and forwards ShimEvents.
+        // Start async stdout reader that parses each line and dispatches:
+        //   - "event"-keyed payloads → forwarded to event_tx as a ShimEvent
+        //   - "type"-keyed payloads  → looked up in `pending` by `id`, and
+        //     the corresponding oneshot sender is handed the ShimResponse
+        //     value (result or error).
         let event_tx = self.event_tx.clone();
-        let reader_handle = std::io::BufReader::new(stdout);
+        let pending = Arc::clone(&self.pending);
+
+        // Build the buffered reader inside the closure so its `.lines()`
+        // iterator can take ownership of the reader without competing with
+        // `stdout` having already been moved into the closure.
         tauri::async_runtime::spawn(async move {
-            for line in reader_handle.lines().filter_map(Result::ok) {
-                if let Ok(event) = serde_json::from_str::<protocol::ShimEvent>(&line) {
-                    let _ = event_tx.send(event);
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().filter_map(Result::ok) {
+                let value: serde_json::Value = match serde_json::from_str(&line) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+
+                if value.get("event").is_some() {
+                    if let Ok(event) = serde_json::from_value::<protocol::ShimEvent>(value) {
+                        let _ = event_tx.send(event);
+                    }
+                    continue;
+                }
+
+                if value.get("type").is_some() {
+                    let id = match value.get("id").and_then(|v| v.as_u64()) {
+                        Some(id) => id,
+                        None => continue,
+                    };
+
+                    let sender = {
+                        let mut pending = pending.lock().unwrap();
+                        pending.remove(&id)
+                    };
+
+                    if let Some(sender) = sender {
+                        if let Ok(response) =
+                            serde_json::from_value::<protocol::ShimResponse>(value)
+                        {
+                            let payload = match response {
+                                protocol::ShimResponse::Result { result, .. } => {
+                                    result.unwrap_or(serde_json::Value::Null)
+                                }
+                                protocol::ShimResponse::Error { error, .. } => {
+                                    serde_json::json!({
+                                        ERROR_SENTINEL_KEY: true,
+                                        "code": error.code,
+                                        "message": error.message,
+                                    })
+                                }
+                            };
+                            let _ = sender.send(payload);
+                        }
+                    }
                 }
             }
         });
@@ -147,25 +212,21 @@ impl ShimManager {
         Ok(())
     }
 
-    /// Send a JSON-RPC request to the shim and return the parsed response.
+    /// Send a JSON-RPC request to the shim and asynchronously await the
+    /// matching response.
     ///
-    /// Writes a line-delimited JSON-RPC object to the shim's stdin.
-    ///
-    /// # Phase 0
-    /// This is a **stub** — it writes the request but does not yet read the
-    /// response. The response will be delivered asynchronously via the
-    /// `event_tx` channel. Full implementation will use a `HashMap<u64,
-    /// tokio::sync::oneshot::Sender>` to correlate request ids with pending
-    /// response receivers.
+    /// Allocates a fresh JSON-RPC `id`, registers a oneshot receiver in
+    /// `pending`, writes the request line to the child's stdin, and then
+    /// `await`s the response (with a 30 second timeout).
     ///
     /// # Errors
-    /// Returns `ShimError::NotRunning` if the child is not alive.
-    /// Returns `ShimError::RequestFailed` if the write fails.
-    pub fn send(&self, req: ShimRequest) -> Result<serde_json::Value, ShimError> {
-        let mut writer_guard = self.writer.lock().unwrap();
-        let writer = writer_guard
-            .as_mut()
-            .ok_or(ShimError::NotRunning)?;
+    /// Returns `ShimError::NotRunning` if the child is not alive, or if
+    /// the response channel closes before a value is delivered.
+    /// Returns `ShimError::RequestFailed` for serialization / write
+    /// errors, timeout expiry, or a JSON-RPC `error` response from the
+    /// shim.
+    pub async fn send(&self, req: ShimRequest) -> Result<serde_json::Value, ShimError> {
+        let (tx, rx) = oneshot::channel::<serde_json::Value>();
 
         let id = {
             let mut next = self.next_id.lock().unwrap();
@@ -174,33 +235,75 @@ impl ShimManager {
             id
         };
 
-        let rpc = serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": id,
-            "method": req,
-        });
+        // Register the response receiver *before* writing the request so
+        // the stdout reader can route the response back to us without a
+        // race window.
+        {
+            let mut pending = self.pending.lock().unwrap();
+            pending.insert(id, tx);
+        }
 
-        let line = serde_json::to_string(&rpc)
-            .map_err(|e| ShimError::RequestFailed(format!("serialization failed: {e}")))?;
+        {
+            let mut writer_guard = self.writer.lock().unwrap();
+            let writer = writer_guard
+                .as_mut()
+                .ok_or(ShimError::NotRunning)?;
 
-        writeln!(writer, "{line}").map_err(|e| {
-            ShimError::RequestFailed(format!("write to shim stdin failed: {e}"))
-        })?;
+            let rpc = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": req,
+            });
 
-        writer.flush().map_err(|e| {
-            ShimError::RequestFailed(format!("flush failed: {e}"))
-        })?;
+            let line = serde_json::to_string(&rpc)
+                .map_err(|e| ShimError::RequestFailed(format!("serialization failed: {e}")))?;
 
-        // PHASE0-TODO: implement async response channel using
-        //   HashMap<u64, tokio::sync::oneshot::Sender>
-        //   - on spawn(): read stdout lines, parse ShimResponse,
-        //     look up the oneshot::Sender by `id`, send the result.
-        //   - send() should take a oneshot::Receiver and await it here.
-        Ok(serde_json::Value::Null)
+            writeln!(writer, "{line}").map_err(|e| {
+                ShimError::RequestFailed(format!("write to shim stdin failed: {e}"))
+            })?;
+
+            writer.flush().map_err(|e| {
+                ShimError::RequestFailed(format!("flush failed: {e}"))
+            })?;
+        }
+
+        match tokio::time::timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), rx).await {
+            Ok(Ok(value)) => {
+                // ShimResponse::Error was encoded with the ERROR_SENTINEL_KEY
+                // marker by the stdout reader — unwrap it back into an error.
+                if let Some(obj) = value.as_object() {
+                    if obj.get(ERROR_SENTINEL_KEY).and_then(|v| v.as_bool()) == Some(true) {
+                        let message = obj
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown shim error")
+                            .to_string();
+                        return Err(ShimError::RequestFailed(message));
+                    }
+                }
+                Ok(value)
+            }
+            Ok(Err(_recv_err)) => Err(ShimError::NotRunning),
+            Err(_timeout) => {
+                // Remove the pending entry so a late response is dropped on
+                // the floor instead of being held forever.
+                let mut pending = self.pending.lock().unwrap();
+                pending.remove(&id);
+                Err(ShimError::RequestFailed("timeout".into()))
+            }
+        }
     }
 
-    /// Shut down the child process and clear all handles.
+    /// Shut down the child process, drop all pending response receivers,
+    /// and clear all handles.
     pub fn shutdown(&self) {
+        // Drop all pending oneshot senders — their receivers will resolve
+        // to `RecvError`, which `send()` translates to `ShimError::NotRunning`.
+        {
+            let mut pending = self.pending.lock().unwrap();
+            pending.drain().for_each(|(_, sender)| drop(sender));
+        }
+
         // Signal shutdown by dropping the writer (closes stdin of the child).
         *self.writer.lock().unwrap() = None;
 
@@ -257,6 +360,10 @@ impl ShimManager {
 
 impl Drop for ShimManager {
     fn drop(&mut self) {
-        self.shutdown();
+        // Only run shutdown if the child is still alive — avoids redundant
+        // work and prevents re-locking during unwinding.
+        if self.pid().is_some() {
+            self.shutdown();
+        }
     }
 }

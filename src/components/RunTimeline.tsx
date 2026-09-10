@@ -3,7 +3,7 @@ import { Icon } from "./ui/Icon";
 import { StatusDot } from "./ui/primitives";
 import { Sparkline } from "./ui/Sparkline";
 import { Select } from "./ui/Select";
-import { RUNS, STATE_META, type Run } from "../data/runs";
+import { STATE_META, useRunsData, type Run } from "../data/runs";
 
 type SortKey = "created" | "val_loss" | "acc" | "duration";
 
@@ -27,6 +27,7 @@ export function RunTimeline({
 }) {
   const [sort, setSort] = useState<SortKey>("created");
   const [filter, setFilter] = useState("val_loss");
+  const RUNS = useRunsData();
 
   if (collapsed) {
     return (

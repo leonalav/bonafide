@@ -3,19 +3,20 @@ import { Icon } from "../ui/Icon";
 import { Button, StatusDot } from "../ui/primitives";
 import { ProposalView } from "./ProposalView";
 import { Composer, QuickSuggestions } from "./Composer";
+import { useWorkspaceRoot } from "../../ide/hooks";
 import {
   CLOSED_COUNT,
   CONVERSATION,
   ROLE_META,
   TEMPLATES,
-  THREADS,
   THREAD_STATE_META,
   type Thread,
 } from "../../data/agents";
+import { useThreads } from "../../data/threads";
 
 const BANDS: { key: Thread["band"]; label: string }[] = [
   { key: "active", label: "Active" },
-  { key: "awaiting-review", label: "Awaiting review" },
+  { key: "awaiting_review", label: "Awaiting review" },
   { key: "closed", label: "Closed" },
 ];
 
@@ -47,12 +48,12 @@ function ThreadCard({ t, onOpen }: { t: Thread; onOpen: () => void }) {
   );
 }
 
-function Inbox({ onOpen }: { onOpen: (t: Thread) => void }) {
+function Inbox({ threads, onOpen }: { threads: Thread[]; onOpen: (t: Thread) => void }) {
   const [showClosed, setShowClosed] = useState(false);
   return (
     <div className="flex flex-col gap-5">
       {BANDS.map((band) => {
-        const rows = THREADS.filter((t) => t.band === band.key);
+        const rows = threads.filter((t) => t.band === band.key);
         if (band.key === "closed") {
           return (
             <section key={band.key} className="flex flex-col gap-2">
@@ -132,15 +133,14 @@ function Templates() {
   );
 }
 
-function ThreadDetail({ thread, onBack }: { thread: Thread; onBack: () => void }) {
-  // Derive investigation data from the live thread state instead of the
-  // hardcoded INVESTIGATION mock.
+function ThreadDetail({ thread, onBack, threads }: { thread: Thread; onBack: () => void; threads: Thread[] }) {
+  // Derive investigation data from the live thread state.
   const investigation = {
     runHash: thread.id,
     goal: thread.title,
     trace: [],
     hypothesis: {
-      verdict: thread.state === "awaiting" ? "Likely" : "Pending",
+      verdict: thread.state === "awaiting_approval" ? "Likely" : "Pending",
       statement: thread.summary,
       evidence: [],
       confidence: "Low" as const,
@@ -154,7 +154,7 @@ function ThreadDetail({ thread, onBack }: { thread: Thread; onBack: () => void }
       {/* pushed-left inbox context strip */}
       <div className="w-2/5 shrink-0 overflow-hidden border-r border-outline-variant opacity-60">
         <div className="p-3">
-          <Inbox onOpen={() => {}} />
+          <Inbox threads={threads} onOpen={() => {}} />
         </div>
       </div>
 
@@ -213,6 +213,10 @@ function ThreadDetail({ thread, onBack }: { thread: Thread; onBack: () => void }
 export function WorkflowPanel({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"inbox" | "templates">("inbox");
   const [open, setOpen] = useState<Thread | null>(null);
+  // Live source: list_threads Tauri command when a workspace is open,
+  // static mock otherwise (so the preview keeps working).
+  const workspaceRoot = useWorkspaceRoot();
+  const { threads } = useThreads(workspaceRoot);
 
   return (
     <aside className="flex w-[640px] max-w-[70vw] shrink-0 animate-card-in flex-col border-l border-outline-variant bg-surface">
@@ -231,7 +235,7 @@ export function WorkflowPanel({ onClose }: { onClose: () => void }) {
       </div>
 
       {open ? (
-        <ThreadDetail thread={open} onBack={() => setOpen(null)} />
+        <ThreadDetail thread={open} threads={threads} onBack={() => setOpen(null)} />
       ) : (
         <>
           {/* Tabs + actions */}
@@ -257,7 +261,7 @@ export function WorkflowPanel({ onClose }: { onClose: () => void }) {
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
-            {tab === "inbox" ? <Inbox onOpen={setOpen} /> : <Templates />}
+            {tab === "inbox" ? <Inbox threads={threads} onOpen={setOpen} /> : <Templates />}
           </div>
         </>
       )}

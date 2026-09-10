@@ -21,9 +21,11 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
+use crate::shim::protocol::ShimRequest;
 use crate::shim::ShimManager;
 use crate::tracker::credentials::{delete_credential, set_credential};
 use crate::tracker::error::{TrackerError, TrackerErrorKind};
+use crate::tracker::TrackerStatus;
 
 // ── Shim script discovery ─────────────────────────────────────────────────
 
@@ -53,7 +55,12 @@ fn resolve_shim_script() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("scripts/wandb_shim.py"))
 }
 
-// ── W&B data types ────────────────────────────────────────────────────────
+// ── W&B canonical data types (renderer-facing) ───────────────────────────
+//
+// These structs are camelCase because they serialize straight to the
+// renderer's TypeScript types. The W&B shim returns snake_case, so each
+// provider method deserializes into a private snake_case "raw" struct
+// (below) and maps row-by-row onto these.
 
 /// A page of runs returned by `list_runs`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -126,6 +133,106 @@ pub struct ArtifactRef {
     pub size_bytes: i64,
     #[serde(rename = "createdAt")]
     pub created_at: i64,
+}
+
+// ── W&B shim raw response shapes (snake_case) ─────────────────────────────
+//
+// The Python shim serializes its results with snake_case JSON. We parse
+// each result into a private `Wandb…` struct and then map onto the
+// canonical renderer types above. Keeping the raw shape local means the
+// shim's response contract can drift without rippling out into the
+// public API.
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct WandbRunSummaryRow {
+    id: String,
+    name: String,
+    state: String,
+    #[serde(default)]
+    created_at: i64,
+    #[serde(default)]
+    summary_metrics: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct WandbRunListResponse {
+    runs: Vec<WandbRunSummaryRow>,
+    #[serde(default)]
+    next_cursor: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct WandbRunDetailResponse {
+    id: String,
+    name: String,
+    state: String,
+    #[serde(default)]
+    created_at: i64,
+    #[serde(default)]
+    finished_at: Option<i64>,
+    #[serde(default)]
+    config: serde_json::Value,
+    #[serde(default)]
+    summary_metrics: serde_json::Value,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    notes: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct WandbPointRow {
+    #[serde(default)]
+    step: i64,
+    value: f64,
+    #[serde(default)]
+    ts: i64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct WandbRunConfigResponse {
+    run_id: String,
+    #[serde(default)]
+    config: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+struct WandbArtifactRow {
+    name: String,
+    digest: String,
+    #[serde(default)]
+    size_bytes: i64,
+    #[serde(default)]
+    created_at: i64,
+}
+
+// ── shim → TrackerError helper ────────────────────────────────────────────
+
+/// Translate a `ShimError` into a typed `TrackerError`. Currently every
+/// shim failure (timeout, crash, write error) is mapped onto
+/// `ShimCrashed` because the user-visible "the tracker subprocess is
+/// sick" signal is the same regardless of the underlying root cause.
+fn shim_error_to_tracker(e: crate::shim::ShimError) -> TrackerError {
+    TrackerError::shim_crashed(&e.to_string())
+}
+
+/// Translate a serde deserialization failure into a generic
+/// `TrackerError::Unknown`. The renderer surfaces these as "couldn't
+/// parse the W&B response" — the raw message is included for the dev
+/// tools, but the kind stays broad so the UI doesn't show different
+/// error states for what is effectively one bug class.
+fn decode_error(label: &str, e: serde_json::Error) -> TrackerError {
+    TrackerError {
+        kind: TrackerErrorKind::Unknown,
+        message: format!("Failed to decode W&B {label} response: {e}"),
+        hint: None,
+    }
 }
 
 // ── WandbProvider ─────────────────────────────────────────────────────────
@@ -221,6 +328,171 @@ impl WandbProvider {
     pub fn shim_pid(&self) -> Option<u32> {
         self.shim.pid()
     }
+
+    /// Probe the live shim with a cheap `list_runs` round-trip.
+    ///
+    /// Used by the renderer's "Test connection" action — the request
+    /// has `limit = 1` so the network/disk cost is minimal, but we
+    /// still hit the real pipeline. A successful return means auth,
+    /// shim health, and the W&B API are all OK.
+    pub async fn test_connection(&self) -> Result<(), TrackerError> {
+        self.shim
+            .send(ShimRequest::ListRuns {
+                project: String::new(),
+                limit: 1,
+                cursor: None,
+            })
+            .await
+            .map_err(shim_error_to_tracker)?;
+        Ok(())
+    }
+
+    /// Fetch a page of runs for the given project. Calls
+    /// `ShimRequest::ListRuns` with the supplied paging parameters and
+    /// maps the snake_case response onto the canonical `RunPage`.
+    pub async fn list_runs(
+        &self,
+        project: &str,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> Result<RunPage, TrackerError> {
+        let result = self
+            .shim
+            .send(ShimRequest::ListRuns {
+                project: project.to_string(),
+                limit,
+                cursor: cursor.map(String::from),
+            })
+            .await
+            .map_err(shim_error_to_tracker)?;
+
+        let parsed: WandbRunListResponse =
+            serde_json::from_value(result).map_err(|e| decode_error("list_runs", e))?;
+
+        let runs = parsed
+            .runs
+            .into_iter()
+            .map(|r| RunSummary {
+                id: r.id,
+                name: r.name,
+                state: r.state,
+                created_at: r.created_at,
+                summary_metrics: r.summary_metrics,
+            })
+            .collect();
+
+        Ok(RunPage {
+            runs,
+            next_cursor: parsed.next_cursor,
+        })
+    }
+
+    /// Fetch full metadata for one run, including config, summary, tags,
+    /// and notes. Calls `ShimRequest::GetRun` and maps the snake_case
+    /// payload to the canonical `RunDetail`.
+    pub async fn get_run(&self, run_id: &str) -> Result<RunDetail, TrackerError> {
+        let result = self
+            .shim
+            .send(ShimRequest::GetRun {
+                run_id: run_id.to_string(),
+            })
+            .await
+            .map_err(shim_error_to_tracker)?;
+
+        let parsed: WandbRunDetailResponse =
+            serde_json::from_value(result).map_err(|e| decode_error("get_run", e))?;
+
+        Ok(RunDetail {
+            id: parsed.id,
+            name: parsed.name,
+            state: parsed.state,
+            created_at: parsed.created_at,
+            finished_at: parsed.finished_at,
+            config: parsed.config,
+            summary_metrics: parsed.summary_metrics,
+            tags: parsed.tags,
+            notes: parsed.notes,
+        })
+    }
+
+    /// Fetch the (step, value) time series for one metric key on a run.
+    /// Calls `ShimRequest::GetMetricSeries` and deserializes the array
+    /// of snake_case rows straight into the canonical `Point` shape.
+    pub async fn get_metric_series(
+        &self,
+        run_id: &str,
+        key: &str,
+    ) -> Result<Vec<Point>, TrackerError> {
+        let result = self
+            .shim
+            .send(ShimRequest::GetMetricSeries {
+                run_id: run_id.to_string(),
+                key: key.to_string(),
+            })
+            .await
+            .map_err(shim_error_to_tracker)?;
+
+        let rows: Vec<WandbPointRow> =
+            serde_json::from_value(result).map_err(|e| decode_error("get_metric_series", e))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| Point {
+                step: r.step,
+                value: r.value,
+                ts: r.ts,
+            })
+            .collect())
+    }
+
+    /// Fetch the run config (hyperparameters + metadata fields) for one
+    /// run. Calls `ShimRequest::GetRunConfig` and maps the snake_case
+    /// payload to the canonical `RunConfig`.
+    pub async fn get_run_config(&self, run_id: &str) -> Result<RunConfig, TrackerError> {
+        let result = self
+            .shim
+            .send(ShimRequest::GetRunConfig {
+                run_id: run_id.to_string(),
+            })
+            .await
+            .map_err(shim_error_to_tracker)?;
+
+        let parsed: WandbRunConfigResponse =
+            serde_json::from_value(result).map_err(|e| decode_error("get_run_config", e))?;
+
+        Ok(RunConfig {
+            run_id: parsed.run_id,
+            config: parsed.config,
+        })
+    }
+
+    /// List artifacts logged by a run. Calls `ShimRequest::ListArtifacts`
+    /// and maps each snake_case row onto the canonical `ArtifactRef`.
+    pub async fn list_artifacts(
+        &self,
+        run_id: &str,
+    ) -> Result<Vec<ArtifactRef>, TrackerError> {
+        let result = self
+            .shim
+            .send(ShimRequest::ListArtifacts {
+                run_id: run_id.to_string(),
+            })
+            .await
+            .map_err(shim_error_to_tracker)?;
+
+        let rows: Vec<WandbArtifactRow> =
+            serde_json::from_value(result).map_err(|e| decode_error("list_artifacts", e))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| ArtifactRef {
+                name: r.name,
+                digest: r.digest,
+                size_bytes: r.size_bytes,
+                created_at: r.created_at,
+            })
+            .collect())
+    }
 }
 
 // ── Global registry ───────────────────────────────────────────────────────
@@ -230,6 +502,23 @@ lazy_static! {
     /// Each entry holds an `Arc` so it can be cloned into command handlers.
     static ref TRACKER_REGISTRY: RwLock<std::collections::HashMap<String, Arc<WandbProvider>>> =
         RwLock::new(std::collections::HashMap::new());
+}
+
+/// Compute the registry / keyring key for a workspace root.
+///
+/// Same scheme as `mlflow::hash_workspace` and the canonical
+/// `lib::compute_workspace_hash`: sha256 hex of the canonicalized path.
+/// Exposed at `pub(crate)` so MLflow can reuse it (and stay in sync
+/// across providers for the same workspace).
+pub(crate) fn hash_workspace(root: &Path) -> String {
+    let normalized = root
+        .canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(normalized.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Connect a W&B tracker for the given workspace.
@@ -244,10 +533,7 @@ pub async fn connect_tracker(
     workspace_root: &Path,
     api_key: &str,
 ) -> Result<String, TrackerError> {
-    // Compute workspace hash from the root path using sha256 -> hex
-    let mut hasher = Sha256::new();
-    hasher.update(workspace_root.to_string_lossy().as_bytes());
-    let workspace_hash = hex::encode(hasher.finalize());
+    let workspace_hash = hash_workspace(workspace_root);
 
     // Check if we already have a provider for this workspace
     {
@@ -272,10 +558,7 @@ pub async fn connect_tracker(
 
 /// Disconnect the W&B tracker for the given workspace.
 pub async fn disconnect_tracker(workspace_root: &Path) -> Result<(), TrackerError> {
-    // Compute workspace hash from the root path using sha256 -> hex
-    let mut hasher = Sha256::new();
-    hasher.update(workspace_root.to_string_lossy().as_bytes());
-    let workspace_hash = hex::encode(hasher.finalize());
+    let workspace_hash = hash_workspace(workspace_root);
 
     let provider = {
         let mut registry = TRACKER_REGISTRY.write().await;
@@ -286,7 +569,7 @@ pub async fn disconnect_tracker(workspace_root: &Path) -> Result<(), TrackerErro
         Some(p) => p.disconnect(),
         None => Err(TrackerError {
             kind: TrackerErrorKind::NotFound,
-            message: format!("No tracker connected for workspace"),
+            message: "No W&B tracker connected for this workspace".to_string(),
             hint: None,
         }),
     }
@@ -295,6 +578,46 @@ pub async fn disconnect_tracker(workspace_root: &Path) -> Result<(), TrackerErro
 /// Returns true if a tracker provider is connected for the given workspace hash.
 pub async fn is_tracker_connected(workspace_hash: &str) -> bool {
     TRACKER_REGISTRY.read().await.contains_key(workspace_hash)
+}
+
+/// Look up a registered W&B provider by workspace hash. Clones the
+/// `Arc`, so the returned handle shares ownership with the registry —
+/// callers can call methods on it without holding the registry lock.
+///
+/// Returns `None` if no provider is registered (e.g. the workspace
+/// hasn't been connected yet, or has been disconnected). Used by the
+/// background run-graph sync to dispatch against the live provider
+/// without re-prompting the user for credentials.
+pub async fn get_wandb_provider(workspace_hash: &str) -> Option<Arc<WandbProvider>> {
+    TRACKER_REGISTRY
+        .read()
+        .await
+        .get(workspace_hash)
+        .cloned()
+}
+
+/// Test the live W&B tracker connection by issuing a cheap round-trip
+/// against the shim and timing it. Used by the renderer's "Test"
+/// action; returned `TrackerStatus` is consumed by
+/// `src/components/tracker/ConnectionStatus.tsx`.
+pub async fn test_tracker_connection(
+    workspace_hash: &str,
+) -> Result<TrackerStatus, TrackerError> {
+    let provider = get_wandb_provider(workspace_hash)
+        .await
+        .ok_or_else(|| TrackerError {
+            kind: TrackerErrorKind::NotFound,
+            message: "No W&B tracker connected for this workspace".to_string(),
+            hint: Some(
+                "Call connect_tracker with kind=\"wandb\" first.".to_string(),
+            ),
+        })?;
+
+    let started = std::time::Instant::now();
+    provider.test_connection().await?;
+    let latency_ms = started.elapsed().as_millis() as u64;
+
+    Ok(TrackerStatus::ok(latency_ms))
 }
 
 #[cfg(test)]
@@ -312,5 +635,22 @@ mod tests {
     async fn test_registry_empty() {
         let registry = TRACKER_REGISTRY.read().await;
         assert!(registry.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_get_wandb_provider_missing() {
+        // No provider registered for this synthetic key — must return None.
+        let provider = get_wandb_provider("does-not-exist").await;
+        assert!(provider.is_none());
+    }
+
+    #[test]
+    fn test_hash_workspace_stable() {
+        // Same input → same output, every call.
+        let root = Path::new("/tmp/example");
+        let h1 = hash_workspace(root);
+        let h2 = hash_workspace(root);
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 64); // sha256 hex
     }
 }

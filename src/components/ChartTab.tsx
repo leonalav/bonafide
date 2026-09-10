@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { Chart, fmtValue } from "./ui/Chart";
 import { Chip } from "./ui/primitives";
-import { RUNS } from "../data/runs";
+import { useRunsData } from "../data/runs";
 
 export function ChartTab({ runId, metricKey }: { runId: string; metricKey: string }) {
-  const run = RUNS.find((r) => r.id === runId) ?? RUNS[0];
+  const runs = useRunsData();
+  const run = runs.find((r) => r.id === runId) ?? runs[0];
   const [active, setActive] = useState(metricKey);
   const m = run.metrics.find((x) => x.key === active) ?? run.metrics[0];
   const tone = m.lowerIsBetter ? "positive" : "positive";

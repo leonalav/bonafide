@@ -1,4 +1,4 @@
-use rusqlite::{Connection, Result};
+use rusqlite::{params, Connection, Result};
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -114,7 +114,97 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             workspace_hash TEXT NOT NULL,
             last_verified INTEGER NOT NULL
         );
+
+        -- Tracker connection state per workspace. Replaces the W&B-only
+        -- `tracker_credentials` table above: the new shape supports both
+        -- `wandb` and `mlflow`, carries the actual connection config
+        -- (base_url, project name, etc.) in `config_json`, and is keyed
+        -- by `workspace_hash` so a workspace can hold one active tracker
+        -- connection regardless of provider. The legacy
+        -- `tracker_credentials` table is retained for backwards
+        -- compatibility with existing migrations but should not be used
+        -- for new writes.
+        CREATE TABLE IF NOT EXISTS tracker_connection (
+            workspace_hash TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            last_verified INTEGER NOT NULL
+        );
+
+        -- Agent thread records (Phase 0+: lifecycle persistence).
+        -- One row per Thread; messages/trace/events live in the
+        -- append-only event log at $EVENTS_DIR/<thread_id>.jsonl, not
+        -- here. We only persist the metadata needed to render the
+        -- Workflow inbox and resume a session after restart.
+        CREATE TABLE IF NOT EXISTS threads (
+            id TEXT PRIMARY KEY,
+            workspace_hash TEXT NOT NULL,
+            role TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            state TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '',
+            band TEXT NOT NULL,
+            system INTEGER NOT NULL DEFAULT 0,
+            updated_at INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS threads_workspace ON threads(workspace_hash);
+        CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at DESC);
         "#
+    )
+}
+
+/// Upsert a tracker connection record.
+///
+/// `workspace_hash` is the open-workspace identifier; `kind` is one
+/// of `"wandb"` or `"mlflow"`; `config_json` is a provider-specific
+/// JSON blob (typically `{"base_url": "...", "project": "..."}`
+/// for MLflow, or `{"entity": "...", "project": "..."}` for W&B).
+pub fn upsert_tracker_connection(
+    conn: &Connection,
+    workspace_hash: &str,
+    kind: &str,
+    config_json: &str,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO tracker_connection (workspace_hash, kind, config_json, last_verified)
+         VALUES (?1, ?2, ?3, ?4)",
+        params![workspace_hash, kind, config_json, current_timestamp()],
+    )?;
+    Ok(())
+}
+
+/// Read the tracker connection record for a workspace.
+///
+/// Returns `Ok(Some((kind, config_json)))` if a record exists, or
+/// `Ok(None)` if the workspace has no tracker connection on file.
+/// The caller is responsible for parsing `config_json` itself — the
+/// shape varies by `kind`.
+pub fn get_tracker_connection(
+    conn: &Connection,
+    workspace_hash: &str,
+) -> rusqlite::Result<Option<(String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT kind, config_json FROM tracker_connection WHERE workspace_hash = ?1",
+    )?;
+    let mut rows = stmt.query(params![workspace_hash])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some((row.get(0)?, row.get(1)?)))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Delete the tracker connection record for a workspace. Returns the
+/// number of rows removed (0 if there was nothing to remove).
+pub fn delete_tracker_connection(
+    conn: &Connection,
+    workspace_hash: &str,
+) -> rusqlite::Result<usize> {
+    conn.execute(
+        "DELETE FROM tracker_connection WHERE workspace_hash = ?1",
+        params![workspace_hash],
     )
 }
 

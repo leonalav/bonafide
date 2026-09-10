@@ -1,10 +1,13 @@
 pub mod storage;
 pub mod code_graph;
+pub mod run_graph;
 
 use std::path::{Path, PathBuf};
 
 #[allow(unused_imports)]
 pub use code_graph::{CodeGraphHit, IndexSummary};
+#[allow(unused_imports)]
+pub use run_graph::{query_run_graph, sync_from_mlflow, sync_from_wandb, RunEdgeKind, RunGraphNode, SyncSummary};
 
 /// Lightweight per-workspace metadata stored in Tauri app state.
 ///
