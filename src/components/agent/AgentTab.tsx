@@ -3,11 +3,34 @@ import { Icon } from "../ui/Icon";
 import { StatusDot } from "../ui/primitives";
 import { ProposalView } from "./ProposalView";
 import { Composer, QuickSuggestions } from "./Composer";
-import { INVESTIGATION } from "../../data/agents";
 import type { Run } from "../../data/runs";
+import type { Investigation } from "../../data/agents";
 
 export function AgentTab({ run, onOpenWorkflow }: { run: Run; onOpenWorkflow?: () => void }) {
-  const data = { ...INVESTIGATION, runHash: run.commit };
+  // Phase 0: derive investigation data from state. The thread object shape
+  // matches the spec: { id, state: "idle", role: "debugger", runId, messages }.
+  const [thread] = useState({
+    id: `thread-${Date.now().toString(36)}`,
+    state: "idle" as const,
+    role: "debugger" as const,
+    runId: run.commit,
+    messages: [] as unknown[],
+  });
+
+  const investigation: Investigation = {
+    runHash: thread.runId,
+    goal: `Why did run ${thread.runId} diverge?`,
+    trace: [],
+    hypothesis: {
+      verdict: "Pending",
+      statement: "Start a conversation to begin the investigation.",
+      evidence: [],
+      confidence: "Low",
+    },
+    patch: { file: "", summary: "", lines: [] },
+    verification: { status: "none", lines: [] },
+  };
+
   const [seed, setSeed] = useState(0);
 
   const suggestions = [
@@ -43,7 +66,7 @@ export function AgentTab({ run, onOpenWorkflow }: { run: Run; onOpenWorkflow?: (
         </div>
       </div>
 
-      <ProposalView data={data} />
+      <ProposalView data={investigation} />
 
       <div className="flex flex-col gap-3 border-t border-outline-variant pt-4">
         <QuickSuggestions items={suggestions} onPick={pick} />

@@ -6,7 +6,6 @@ import { Composer, QuickSuggestions } from "./Composer";
 import {
   CLOSED_COUNT,
   CONVERSATION,
-  INVESTIGATION,
   ROLE_META,
   TEMPLATES,
   THREADS,
@@ -134,6 +133,22 @@ function Templates() {
 }
 
 function ThreadDetail({ thread, onBack }: { thread: Thread; onBack: () => void }) {
+  // Derive investigation data from the live thread state instead of the
+  // hardcoded INVESTIGATION mock.
+  const investigation = {
+    runHash: thread.id,
+    goal: thread.title,
+    trace: [],
+    hypothesis: {
+      verdict: thread.state === "awaiting" ? "Likely" : "Pending",
+      statement: thread.summary,
+      evidence: [],
+      confidence: "Low" as const,
+    },
+    patch: { file: "", summary: thread.detail, lines: [] },
+    verification: { status: "none" as const, lines: [] },
+  };
+
   return (
     <div className="flex h-full min-h-0">
       {/* pushed-left inbox context strip */}
@@ -157,7 +172,7 @@ function ThreadDetail({ thread, onBack }: { thread: Thread; onBack: () => void }
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-4">
-          <ProposalView data={INVESTIGATION} />
+          <ProposalView data={investigation} />
 
           {/* Conversation log */}
           <section className="mt-6 flex flex-col gap-2">

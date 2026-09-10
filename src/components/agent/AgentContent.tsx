@@ -24,7 +24,6 @@ import { Icon } from "../ui/Icon";
 import { StatusDot } from "../ui/primitives";
 import { ProposalView } from "./ProposalView";
 import { Composer, QuickSuggestions } from "./Composer";
-import { INVESTIGATION } from "../../data/agents";
 import type { Run } from "../../data/runs";
 import type { Investigation } from "../../data/agents";
 
@@ -611,6 +610,15 @@ function ReturnDialog({
 
 // ── RunSurface ────────────────────────────────────────────────────────────────
 
+/** Thread shape per Phase 0 spec. */
+type DebugThread = {
+  id: string;
+  state: "idle";
+  role: "debugger";
+  runId: string;
+  messages: unknown[];
+};
+
 function RunSurface({
   run,
   onOpenWorkflow,
@@ -618,7 +626,47 @@ function RunSurface({
   run: Run;
   onOpenWorkflow?: () => void;
 }) {
-  const data: Investigation = { ...INVESTIGATION, runHash: run.commit };
+  // Phase 0: threads are seeded from the selected run. The orchestrator
+  // loop is stubbed — submitting the composer shows a loading indicator
+  // but does not make any LLM call.
+  const [threads] = useState<DebugThread[]>(
+    run
+      ? [
+          {
+            id: `thread-${Date.now().toString(36)}`,
+            state: "idle",
+            role: "debugger",
+            runId: run.commit,
+            messages: [],
+          },
+        ]
+      : [],
+  );
+  const [sending, setSending] = useState(false);
+
+  // Derive the investigation data from the thread list so ProposalView
+  // keeps the same visual layout — just sourced from state instead of
+  // a hardcoded constant.
+  const investigation: Investigation = {
+    runHash: threads[0]?.runId ?? run.commit,
+    goal: `Why did run ${threads[0]?.runId ?? run.commit} diverge?`,
+    trace: [],
+    hypothesis: {
+      verdict: "Pending",
+      statement: "Start a conversation to begin the investigation.",
+      evidence: [],
+      confidence: "Low",
+    },
+    patch: {
+      file: "",
+      summary: "",
+      lines: [],
+    },
+    verification: {
+      status: "none",
+      lines: [],
+    },
+  };
 
   const [seed, setSeed] = useState(0);
 
@@ -633,6 +681,19 @@ function RunSurface({
   function pick(s: string) {
     if (s.startsWith("Open in Workflow")) return onOpenWorkflow?.();
     setSeed((n) => n + 1);
+  }
+
+  function handleSubmit() {
+    // Phase 0 stub: show the loading indicator but don't call the LLM.
+    // The thread stays in "idle" state until the orchestrator is wired.
+    setSending(true);
+    // REVIEW(phase0) P-0: wire to orchestrator here. The sending flag
+    // drives the Stop button and read-only textarea in Composer.
+    setTimeout(() => setSending(false), 1200);
+  }
+
+  function handleCancel() {
+    setSending(false);
   }
 
   return (
@@ -663,16 +724,15 @@ function RunSurface({
         </div>
       </div>
 
-      <ProposalView data={data} />
+      <ProposalView data={investigation} />
 
       <div className="flex shrink-0 flex-col gap-3 border-t border-outline-variant pt-4">
         <QuickSuggestions items={suggestions} onPick={pick} />
-        {/* NOTE: the RunSurface composer is not wired to the chat store yet.
-            It uses the seed-key remount pattern (pre-Phase-1 behaviour). */}
         <Composer
           key={seed}
-          onSubmit={() => setSeed((n) => n + 1)}
-          onCancel={undefined}
+          onSubmit={handleSubmit}
+          onCancel={handleCancel}
+          sending={sending}
           mode="debug"
           builtinId="fable"
           onModeChange={() => {}}
