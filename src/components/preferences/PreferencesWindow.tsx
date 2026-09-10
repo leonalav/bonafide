@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
 import { AccountSection } from "./AccountSection";
+import { ModelsSection } from "./ModelsSection";
 import { SettingsSection } from "./SettingsSection";
 
-export type PrefSection = "settings" | "account" | "shortcuts" | "themes" | "extensions";
+export type PrefSection = "settings" | "account" | "shortcuts" | "themes" | "extensions" | "models";
 
 const NAV: { id: PrefSection; icon: string; label: string }[] = [
   { id: "settings", icon: "settings", label: "Settings" },
   { id: "account", icon: "user-circle", label: "Account" },
+  { id: "models", icon: "brain", label: "Models" },
   { id: "shortcuts", icon: "keyboard", label: "Keyboard shortcuts" },
   { id: "themes", icon: "palette", label: "Themes" },
   { id: "extensions", icon: "puzzle", label: "Extensions" },
@@ -123,18 +125,21 @@ export function PreferencesWindow({
             </div>
           </nav>
 
-          {/* Content */}
-          <div ref={scrollRef} className="flex-1 overflow-y-auto p-8">
-            {section === "account" && <AccountSection onManageTracker={manageTracker} />}
-            {section === "settings" && <SettingsSection ref={trackersRef} highlightTrackers={highlightTrackers} />}
-            {(section === "shortcuts" || section === "themes" || section === "extensions") && (
-              <div className="mx-auto flex max-w-[720px] flex-col items-center justify-center gap-3 pt-20 text-center">
-                <Icon name={NAV.find((n) => n.id === section)!.icon} size={30} className="text-outline-variant" />
-                <p className="font-body text-[14px] text-on-surface-variant">
-                  {NAV.find((n) => n.id === section)!.label} preferences coming soon.
-                </p>
-              </div>
-            )}
+          {/* Content — overflow-hidden prevents cards from visually extending into the nav rail */}
+          <div ref={scrollRef} className="flex-1 overflow-hidden p-8">
+            <div className="h-full overflow-y-auto pr-2">
+              {section === "account" && <AccountSection onManageTracker={manageTracker} />}
+              {section === "settings" && <SettingsSection ref={trackersRef} highlightTrackers={highlightTrackers} />}
+              {section === "models" && <ModelsSection />}
+              {(section === "shortcuts" || section === "themes" || section === "extensions") && (
+                <div className="mx-auto flex max-w-[720px] flex-col items-center justify-center gap-3 pt-20 text-center">
+                  <Icon name={NAV.find((n) => n.id === section)!.icon} size={30} className="text-outline-variant" />
+                  <p className="font-body text-[14px] text-on-surface-variant">
+                    {NAV.find((n) => n.id === section)!.label} preferences coming soon.
+                  </p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </div>

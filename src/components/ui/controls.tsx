@@ -2,7 +2,24 @@ import { useState, type ReactNode } from "react";
 import { Icon } from "./Icon";
 
 // Label ............ control row used inside preference cards.
-export function Field({ label, children }: { label: string; children: ReactNode }) {
+// `block` stacks the label above the control so the control can use the full row width.
+export function Field({
+  label,
+  block = false,
+  children,
+}: {
+  label: string;
+  block?: boolean;
+  children: ReactNode;
+}) {
+  if (block) {
+    return (
+      <div className="flex flex-col gap-1.5">
+        <span className="font-body text-[13px] text-on-surface-variant">{label}</span>
+        <div className="flex w-full items-center gap-2">{children}</div>
+      </div>
+    );
+  }
   return (
     <div className="flex min-h-7 items-center justify-between gap-4">
       <span className="font-body text-[13px] text-on-surface-variant">{label}</span>

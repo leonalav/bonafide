@@ -6,6 +6,7 @@
 //! marked PHASE0-TODO.
 
 use rusqlite::Connection;
+use serde::Serialize;
 use std::path::Path;
 use std::time::Instant;
 use tree_sitter::{Node, Parser};
@@ -13,7 +14,8 @@ use uuid::Uuid;
 use walkdir::WalkDir;
 
 /// Summary of a completed code-graph indexing pass.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct IndexSummary {
     /// Number of nodes (functions + classes) inserted into `code_nodes`.
     pub nodes_indexed: u32,
@@ -26,7 +28,8 @@ pub struct IndexSummary {
 }
 
 /// A single entry returned from a code-graph search.
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CodeGraphHit {
     pub id: String,
     pub kind: String,

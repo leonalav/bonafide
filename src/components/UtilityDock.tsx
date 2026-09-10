@@ -10,7 +10,8 @@ export type DockId =
   | "extensions"
   | "workflow"
   | "account"
-  | "settings";
+  | "settings"
+  | "models";
 
 const PRIMARY: { id: DockId; icon: string; label: string; shortcut: string }[] = [
   { id: "explorer", icon: "folder-tree", label: "Explorer", shortcut: "⌘1" },
@@ -26,6 +27,7 @@ const BOTTOM: { id: DockId; icon: string; label: string; shortcut: string }[] = 
   { id: "workflow", icon: "arrow-right-left", label: "Workflow", shortcut: "⌘K" },
   { id: "account", icon: "user-circle", label: "Account", shortcut: "" },
   { id: "settings", icon: "settings", label: "Settings", shortcut: "⌘," },
+  { id: "models", icon: "brain", label: "Models", shortcut: "" },
 ];
 
 function DockButton({

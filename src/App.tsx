@@ -38,6 +38,10 @@ import { ToastHost } from "./components/ToastHost"
 import { bonafide } from "./ipc/tauri"
 
 import type { TerminalProfile } from "./ipc/tauri"
+import {
+  RUNS,
+  type Run,
+} from "./data/runs"
 
 import { IdeStoreProvider } from "./ide/store.tsx"
 
@@ -171,6 +175,9 @@ function AppInner() {
 
   const [inspectorWidth, setInspectorWidth] = useState(320)
 
+  // The run currently selected in the Inspector (may differ from the sidebar selection).
+  const [inspectorRun, setInspectorRun] = useState<Run | null>(null)
+
   // Use reactive selectors — these re-render the component whenever the
 
   // store's workspaceRoot / workspaceName changes (e.g. after openFolder).
@@ -303,6 +310,8 @@ function AppInner() {
   }, [workspaceRoot, dispatch])
 
   function openRun(id: string) {
+    const found = RUNS.find((r) => r.id === id) ?? null
+    setInspectorRun(found)
     setSelectedRun(id)
 
     setInspectorOpen(true)
@@ -633,9 +642,18 @@ function AppInner() {
 
     window.addEventListener("ide:toggle-sidebar", onToggleSidebar)
 
+    window.addEventListener(
+      "bonafide:open-prefs",
+      ((e: CustomEvent<string>) => {
+        const section = e.detail
+        if (section === "models" || section === "settings" || section === "account") {
+          setPrefs(section as PrefSection)
+        }
+      }) as EventListener,
+    )
+
     return () => {
       window.removeEventListener("ide:open-file", onOpenFile)
-
       window.removeEventListener("ide:toggle-sidebar", onToggleSidebar)
     }
   }, [dispatch, store, pushToast])
@@ -649,6 +667,7 @@ function AppInner() {
   function onDockSelect(id: DockId) {
     if (id === "account") setPrefs("account")
     else if (id === "settings") setPrefs("settings")
+    else if (id === "models") setPrefs("models")
     else if (id === "workflow") setWorkflowOpen((v) => !v)
     else setDock(id)
   }
@@ -711,42 +730,50 @@ function AppInner() {
           ariaLabel="Resize sidebar"
         />
 
-        {/* Center column: editor */}
-        <div className="flex min-w-0 flex-1 flex-col">
-          <div className="flex min-h-0 flex-1">
-            <EditorPane
-              activeTabId={activeTabId ?? ""}
-              onActivate={activateTab}
-              onClose={closeTab}
-              onSelectRun={openRun}
-            />
-            {inspectorOpen ? (
-              <>
-                <ResizeHandle
-                  width={inspectorWidth}
-                  onResize={setInspectorWidth}
-                  minWidth={240}
-                  maxWidth={560}
-                  side="left"
-                  ariaLabel="Resize inspector"
-                />
-                <Inspector
-                  width={inspectorWidth}
-                  onClose={() => setInspectorOpen(false)}
-                />
-              </>
-            ) : (
-              <button
-                onClick={() => setInspectorOpen(true)}
-                className="flex w-1 shrink-0 items-center justify-center bg-outline-variant/40 hover:bg-primary"
-                aria-label="Open inspector"
-                title="Open Run Inspector"
+        {/* Right region: editor + panel | inspector.
+            The Panel sits in the same column as the editor so its
+            horizontal bounds never extend under the Inspector tab. */}
+        <div className="flex min-w-0 flex-1">
+          {/* Editor column: editor pane on top, bottom panel below */}
+          <div className="flex min-w-0 min-h-0 flex-1 flex-col">
+            <div className="flex min-h-0 min-w-0 flex-1">
+              <EditorPane
+                activeTabId={activeTabId ?? ""}
+                onActivate={activateTab}
+                onClose={closeTab}
+                onSelectRun={openRun}
               />
-            )}
+            </div>
+            {/* Bottom panel (Problems, Output, Terminal, Debug Console, Ports).
+                Sibling of the editor pane so it only spans the editor's width. */}
+            <Panel />
           </div>
 
-          {/* Bottom panel (Problems, Output, Terminal, Debug Console, Ports) */}
-          <Panel />
+          {inspectorOpen ? (
+            <>
+              <ResizeHandle
+                width={inspectorWidth}
+                onResize={setInspectorWidth}
+                minWidth={240}
+                maxWidth={560}
+                side="left"
+                ariaLabel="Resize inspector"
+              />
+              <Inspector
+                width={inspectorWidth}
+                onClose={() => setInspectorOpen(false)}
+                onOpenWorkflow={() => setWorkflowOpen(true)}
+                run={inspectorRun}
+              />
+            </>
+          ) : (
+            <button
+              onClick={() => setInspectorOpen(true)}
+              className="flex w-1 shrink-0 items-center justify-center bg-outline-variant/40 hover:bg-primary"
+              aria-label="Open inspector"
+              title="Open Run Inspector"
+            />
+          )}
         </div>
       </div>
 

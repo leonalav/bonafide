@@ -1,10 +1,11 @@
 import { useState } from "react"
 import { Icon } from "./ui/Icon"
 import { SectionLabel } from "./ui/primitives"
-import { Select } from "./ui/Select"
 import { Chart } from "./ui/Chart"
+import type { Run } from "../data/runs"
+import { AgentContent } from "./agent/AgentContent"
 
-const TABS = ["Overview", "Metrics", "Config", "Diff"] as const
+const TABS = ["Overview", "Metrics", "Agent", "Config", "Diff"] as const
 type TabName = (typeof TABS)[number]
 
 /**
@@ -18,11 +19,13 @@ type TabName = (typeof TABS)[number]
 export function Inspector({
   run,
   onClose,
+  onOpenWorkflow,
   width = 320,
 }: {
   /** Currently selected run. Pass `null` to show the empty state. */
   run?: { name: string; shortHash: string; state: string; step: number; totalSteps: number } | null
   onClose: () => void
+  onOpenWorkflow?: () => void
   width?: number
 }) {
   const [tab, setTab] = useState<TabName>("Overview")
@@ -64,16 +67,24 @@ export function Inspector({
         </div>
 
         {/* Empty state */}
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface-container">
-            <Icon name="flask-conical" size={24} className="text-outline-variant" />
-          </div>
-          <div>
-            <p className="font-sans text-[14px] font-medium text-on-surface">No run selected</p>
-            <p className="mt-1 font-body text-[12px] text-on-surface-variant">
-              Run tracking is not yet connected. Once W&amp;B or MLflow is wired up, run details will appear here.
-            </p>
-          </div>
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {tab === "Agent" ? (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4">
+              <AgentContent onOpenWorkflow={onOpenWorkflow} />
+            </div>
+          ) : (
+            <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface-container">
+                <Icon name="flask-conical" size={24} className="text-outline-variant" />
+              </div>
+              <div>
+                <p className="font-sans text-[14px] font-medium text-on-surface">No run selected</p>
+                <p className="mt-1 font-body text-[12px] text-on-surface-variant">
+                  Run tracking is not yet connected. Once W&amp;B or MLflow is wired up, run details will appear here.
+                </p>
+              </div>
+            </div>
+          )}
         </div>
       </aside>
     )
@@ -121,6 +132,7 @@ export function Inspector({
       <div className="flex-1 overflow-y-auto p-4">
         {tab === "Overview" && <RunOverview run={run} />}
         {tab === "Metrics" && <RunMetrics run={run} />}
+        {tab === "Agent" && <AgentContent run={run as Run} onOpenWorkflow={onOpenWorkflow} />}
         {tab === "Config" && <RunConfig run={run} />}
         {tab === "Diff" && <RunDiff />}
       </div>

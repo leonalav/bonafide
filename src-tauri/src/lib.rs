@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Serialize;
-use tauri::{Manager, State};
+use sha2::{Digest, Sha256};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::RwLock;
 use walkdir::WalkDir;
 
@@ -28,6 +29,8 @@ mod graph;
 mod agent;
 mod shim;
 mod tracker;
+
+use graph::Storage;
 
 // ── Types shared with the renderer ────────────────────────────────────────
 // These mirror the FsNode / DirListing / ElectronAPI types from the
@@ -65,6 +68,41 @@ struct OpResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<String>,
 }
+
+// ── Phase 0 types ──────────────────────────────────────────────────────────
+
+/// Per-workspace workspace descriptor returned by `open_workspace`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workspace {
+    pub root: String,
+    pub hash: String,
+    pub db_path: String,
+    pub has_tracker: bool,
+}
+
+/// Lightweight workspace summary returned by `list_workspaces`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSummary {
+    pub root: String,
+    pub hash: String,
+    pub last_opened: i64,
+}
+
+/// Result of `test_tracker_connection`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrackerStatus {
+    pub connected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latency_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_kind: Option<String>,
+}
+
+/// Per-workspace storage state — keyed by workspace hash.
+type StorageState = Arc<RwLock<HashMap<String, Storage>>>;
 
 // ── Directory walking ─────────────────────────────────────────────────────
 // Same logic as the Electron main process: skip noisy dirs (node_modules,
@@ -419,6 +457,214 @@ async fn git_init(workspace: String) -> Result<git_service::GitOpResult, String>
     git_service::init(workspace).await
 }
 
+// ── Phase 0: Workspace commands ─────────────────────────────────────────────
+
+fn compute_workspace_hash(root: &Path) -> String {
+    let normalized = root.canonicalize()
+        .unwrap_or_else(|_| root.to_path_buf())
+        .to_string_lossy()
+        .to_string();
+    let mut hasher = Sha256::new();
+    hasher.update(normalized.as_bytes());
+    let digest = hasher.finalize();
+    hex::encode(&digest[..8])
+}
+
+#[tauri::command]
+async fn open_workspace(
+    path: String,
+    storage_state: State<'_, StorageState>,
+    app: AppHandle,
+) -> Result<Workspace, String> {
+    let root = PathBuf::from(&path);
+    if !root.is_dir() {
+        return Err(format!("Not a directory: {path}"));
+    }
+
+    let (_conn, hash) = graph::storage::open_workspace_db(&root)
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+
+    let db_path = graph::storage::bonafide_dir()
+        .join(&hash)
+        .join("store.db")
+        .to_string_lossy()
+        .to_string();
+
+    let storage = Storage::new(root);
+
+    // Store in app state
+    {
+        let mut map = storage_state.write().await;
+        map.insert(hash.clone(), storage);
+    }
+
+    // Emit event so renderer knows workspace is open
+    let _ = app.emit("workspace://opened", serde_json::json!({ "hash": &hash }));
+
+    // Check if tracker is connected for this workspace
+    let has_tracker = tracker::wandb::is_tracker_connected(&hash).await;
+
+    Ok(Workspace {
+        root: path,
+        hash,
+        db_path,
+        has_tracker,
+    })
+}
+
+#[tauri::command]
+async fn list_workspaces(
+    storage_state: State<'_, StorageState>,
+) -> Result<Vec<WorkspaceSummary>, String> {
+    let map = storage_state.read().await;
+    let summaries: Vec<WorkspaceSummary> = map.iter()
+        .map(|(hash, storage)| {
+            WorkspaceSummary {
+                root: storage.root_path()
+                    .map(|p| p.to_string_lossy().to_string())
+                    .unwrap_or_default(),
+                hash: hash.clone(),
+                last_opened: storage.last_opened_ts(),
+            }
+        })
+        .collect();
+    Ok(summaries)
+}
+
+// ── Phase 0: Tracker commands ────────────────────────────────────────────────
+
+#[tauri::command]
+async fn connect_tracker(
+    kind: String,
+    api_key: String,
+    workspace_root: String,
+) -> Result<String, tracker::TrackerError> {
+    if kind != "wandb" {
+        return Err(tracker::TrackerError {
+            kind: tracker::TrackerErrorKind::Unknown,
+            message: format!("Unsupported tracker kind: {kind}"),
+            hint: Some("Supported trackers: wandb".to_string()),
+        });
+    }
+    let root = PathBuf::from(&workspace_root);
+    tracker::wandb::connect_tracker(&root, &api_key).await
+}
+
+#[tauri::command]
+async fn disconnect_tracker(
+    kind: String,
+    workspace_root: String,
+) -> Result<(), tracker::TrackerError> {
+    if kind != "wandb" {
+        return Err(tracker::TrackerError {
+            kind: tracker::TrackerErrorKind::Unknown,
+            message: format!("Unsupported tracker kind: {kind}"),
+            hint: Some("Supported trackers: wandb".to_string()),
+        });
+    }
+    let root = PathBuf::from(&workspace_root);
+    tracker::wandb::disconnect_tracker(&root).await
+}
+
+#[tauri::command]
+async fn test_tracker_connection(
+    kind: String,
+) -> Result<TrackerStatus, tracker::TrackerError> {
+    if kind != "wandb" {
+        return Err(tracker::TrackerError {
+            kind: tracker::TrackerErrorKind::Unknown,
+            message: format!("Unsupported tracker kind: {kind}"),
+            hint: Some("Supported trackers: wandb".to_string()),
+        });
+    }
+    // PHASE0-TODO: actually ping the shim for latency
+    Ok(TrackerStatus {
+        connected: false,
+        latency_ms: None,
+        error_kind: None,
+    })
+}
+
+#[tauri::command]
+async fn list_runs(
+    project: String,
+    _limit: u32,
+    _cursor: Option<String>,
+) -> Result<tracker::wandb::RunPage, tracker::TrackerError> {
+    // PHASE0-TODO: dispatch to the connected provider's shim
+    // For now return empty results.
+    Ok(tracker::wandb::RunPage {
+        runs: vec![],
+        next_cursor: None,
+    })
+}
+
+#[tauri::command]
+async fn get_run(run_id: String) -> Result<tracker::wandb::RunDetail, tracker::TrackerError> {
+    // PHASE0-TODO: dispatch to the connected provider's shim
+    Err(tracker::TrackerError::not_found(&run_id))
+}
+
+#[tauri::command]
+async fn get_metric_series(
+    run_id: String,
+    key: String,
+) -> Result<Vec<tracker::wandb::Point>, tracker::TrackerError> {
+    // PHASE0-TODO: dispatch to the connected provider's shim
+    let _ = (run_id, key);
+    Ok(vec![])
+}
+
+#[tauri::command]
+async fn get_run_config(run_id: String) -> Result<tracker::wandb::RunConfig, tracker::TrackerError> {
+    // PHASE0-TODO: dispatch to the connected provider's shim
+    Err(tracker::TrackerError::not_found(&run_id))
+}
+
+#[tauri::command]
+async fn list_artifacts(
+    run_id: String,
+) -> Result<Vec<tracker::wandb::ArtifactRef>, tracker::TrackerError> {
+    // PHASE0-TODO: dispatch to the connected provider's shim
+    let _ = &run_id;
+    Ok(vec![])
+}
+
+// ── Phase 0: Code graph commands ────────────────────────────────────────────
+
+#[tauri::command]
+async fn index_code_graph(
+    workspace_root: String,
+    storage_state: State<'_, StorageState>,
+) -> Result<graph::code_graph::IndexSummary, String> {
+    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
+    let map = storage_state.read().await;
+    let _storage = map.get(&hash)
+        .ok_or_else(|| "Workspace not open. Call open_workspace first.".to_string())?;
+
+    let root = PathBuf::from(&workspace_root);
+    let (conn, _hash) = graph::storage::open_workspace_db(&root)
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    graph::code_graph::index_code_graph(&conn, &root)
+}
+
+#[tauri::command]
+async fn query_code_graph(
+    query: String,
+    workspace_root: String,
+    storage_state: State<'_, StorageState>,
+) -> Result<Vec<graph::code_graph::CodeGraphHit>, String> {
+    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
+    let map = storage_state.read().await;
+    let _storage = map.get(&hash)
+        .ok_or_else(|| "Workspace not open. Call open_workspace first.".to_string())?;
+
+    let root = PathBuf::from(&workspace_root);
+    let (conn, _hash) = graph::storage::open_workspace_db(&root)
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    graph::code_graph::query_code_graph(&query, &conn)
+}
+
 // Re-exports the git_service module for the integration test in
 // `tests/git_smoke.rs`. This is the canonical pattern for exposing
 // internal modules to tests without making them part of the public
@@ -468,6 +714,18 @@ pub fn run() {
             git_push,
             git_fetch,
             git_init,
+            open_workspace,
+            list_workspaces,
+            connect_tracker,
+            disconnect_tracker,
+            test_tracker_connection,
+            list_runs,
+            get_run,
+            get_metric_series,
+            get_run_config,
+            list_artifacts,
+            index_code_graph,
+            query_code_graph,
         ])
         .setup(|app| {
             // Tauri 2 has a subtle race: `visible: true` shows the
@@ -499,6 +757,14 @@ pub fn run() {
             let watcher_state: fs_watcher::WatcherState =
                 Arc::new(tokio::sync::Mutex::new(fs_watcher::FsWatcherState::default()));
             app.manage(watcher_state);
+
+            // ── Phase 0: Per-workspace storage state ────────────────────
+            // Stores the rusqlite Connection + metadata for each open workspace,
+            // keyed by workspace hash. Command handlers access it via
+            // `State<StorageState>`.
+            let storage_state: StorageState =
+                Arc::new(RwLock::new(HashMap::new()));
+            app.manage(storage_state);
 
             // Start the WebSocket LSP bridge on port 9877.
             // This relay server accepts connections from the browser

@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use lazy_static::lazy_static;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
@@ -56,7 +56,7 @@ fn resolve_shim_script() -> PathBuf {
 // ── W&B data types ────────────────────────────────────────────────────────
 
 /// A page of runs returned by `list_runs`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunPage {
     pub runs: Vec<RunSummary>,
@@ -66,7 +66,7 @@ pub struct RunPage {
 }
 
 /// A run summary returned by `list_runs`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunSummary {
     pub id: String,
@@ -79,7 +79,7 @@ pub struct RunSummary {
 }
 
 /// Full run detail returned by `get_run`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunDetail {
     pub id: String,
@@ -99,7 +99,7 @@ pub struct RunDetail {
 }
 
 /// A single (step, value) point in a metric time series.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Point {
     pub step: i64,
@@ -108,7 +108,7 @@ pub struct Point {
 }
 
 /// Run configuration returned by `get_run_config`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunConfig {
     #[serde(rename = "runId")]
@@ -117,7 +117,7 @@ pub struct RunConfig {
 }
 
 /// Reference to a logged W&B artifact.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ArtifactRef {
     pub name: String,
@@ -290,6 +290,11 @@ pub async fn disconnect_tracker(workspace_root: &Path) -> Result<(), TrackerErro
             hint: None,
         }),
     }
+}
+
+/// Returns true if a tracker provider is connected for the given workspace hash.
+pub async fn is_tracker_connected(workspace_hash: &str) -> bool {
+    TRACKER_REGISTRY.read().await.contains_key(workspace_hash)
 }
 
 #[cfg(test)]

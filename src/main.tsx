@@ -1,6 +1,8 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { ModelsProvider } from './modelsStore'
+import { ChatStoreProvider } from './chats/ChatStoreProvider'
 import './index.css'
 
 // ── Window-level contextmenu interceptor ────────────────────────────────────
@@ -50,6 +52,10 @@ installContextMenuInterceptor();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <ModelsProvider>
+      <ChatStoreProvider>
+        <App />
+      </ChatStoreProvider>
+    </ModelsProvider>
   </React.StrictMode>,
 )
