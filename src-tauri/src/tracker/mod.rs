@@ -1,6 +1,8 @@
 //! Tracker module — shim process management, credential storage, and
 //! communication with the bonafide-run backend.
 
+use serde::{Deserialize, Serialize};
+
 pub mod credentials;
 pub mod error;
 pub mod mlflow;
@@ -18,7 +20,51 @@ pub use wandb::{
     WandbProvider,
 };
 
-use serde::Serialize;
+/// Strongly-typed discriminator for the supported tracker providers.
+///
+/// Use this in place of raw `&str` or `String` comparisons when
+/// dispatching commands to the right provider implementation. The
+/// `FromStr` impl converts the wire string (`"wandb"` / `"mlflow"`)
+/// into the enum and returns a structured `TrackerError` on an
+/// unsupported value, so Tauri commands can fail fast at the boundary
+/// instead of falling through to a hand-rolled `match kind.as_str()`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackerKind {
+    Wandb,
+    Mlflow,
+}
+
+impl TrackerKind {
+    /// Wire string used by the renderer and the registry.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Wandb => "wandb",
+            Self::Mlflow => "mlflow",
+        }
+    }
+}
+
+impl std::fmt::Display for TrackerKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for TrackerKind {
+    type Err = TrackerError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "wandb" => Ok(Self::Wandb),
+            "mlflow" => Ok(Self::Mlflow),
+            other => Err(TrackerError {
+                kind: TrackerErrorKind::Unknown,
+                message: format!("Unsupported tracker kind: {other}"),
+                hint: Some("Supported trackers: wandb, mlflow".to_string()),
+            }),
+        }
+    }
+}
 
 /// Result of probing a tracker connection — `connected` is the headline
 /// field, with `latency_ms` populated when the probe succeeded and

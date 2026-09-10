@@ -3,6 +3,7 @@ import { Icon } from "../ui/Icon";
 import { AccountSection } from "./AccountSection";
 import { ModelsSection } from "./ModelsSection";
 import { SettingsSection } from "./SettingsSection";
+import type { TrackerKind } from "@/ipc/tauri";
 
 export type PrefSection = "settings" | "account" | "shortcuts" | "themes" | "extensions" | "models";
 
@@ -18,9 +19,17 @@ const NAV: { id: PrefSection; icon: string; label: string }[] = [
 export function PreferencesWindow({
   initialSection,
   onClose,
+  workspaceRoot,
+  trackerKind,
+  onTrackerConnected,
+  onTrackerDisconnected,
 }: {
   initialSection: PrefSection;
   onClose: () => void;
+  workspaceRoot: string | null;
+  trackerKind: TrackerKind | null;
+  onTrackerConnected?: (kind: "wandb" | "mlflow") => void;
+  onTrackerDisconnected?: (kind: "wandb" | "mlflow") => void;
 }) {
   const [section, setSection] = useState<PrefSection>(initialSection);
   const [pinned, setPinned] = useState(false);
@@ -128,7 +137,15 @@ export function PreferencesWindow({
           {/* Content — overflow-hidden prevents cards from visually extending into the nav rail */}
           <div ref={scrollRef} className="flex-1 overflow-hidden p-8">
             <div className="h-full overflow-y-auto pr-2">
-              {section === "account" && <AccountSection onManageTracker={manageTracker} />}
+              {section === "account" && (
+                <AccountSection
+                  onManageTracker={manageTracker}
+                  workspaceRoot={workspaceRoot}
+                  trackerKind={trackerKind}
+                  onTrackerConnected={onTrackerConnected}
+                  onTrackerDisconnected={onTrackerDisconnected}
+                />
+              )}
               {section === "settings" && <SettingsSection ref={trackersRef} highlightTrackers={highlightTrackers} />}
               {section === "models" && <ModelsSection />}
               {(section === "shortcuts" || section === "themes" || section === "extensions") && (

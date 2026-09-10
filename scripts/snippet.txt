@@ -1,0 +1,21 @@
+﻿async function attachExperimentRun(
+  row: ExperimentRunRow,
+  workspaceRoot: string,
+): Promise<void> {
+  if (!tauriIsTauri()) return;
+  // Stringify the two JSON-object columns on the wire; the Rust
+  // `ExperimentRunRow.config_overrides` and `.metrics_summary` are
+  // `String` fields that store serialized JSON for cheap SELECT
+  // roundtrips without a Rust-side parser hop.
+  await invoke<void>("attach_experiment_run", {
+    row: {
+      id: row.id,
+      experimentId: row.experimentId,
+      runId: row.runId,
+      configOverrides: JSON.stringify(row.configOverrides ?? {}),
+      metricsSummary: JSON.stringify(row.metricsSummary ?? {}),
+      status: row.status,
+      createdAt: row.createdAt,
+    },
+    workspaceRoot,
+  }

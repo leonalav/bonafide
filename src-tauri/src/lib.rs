@@ -490,8 +490,48 @@ async fn open_workspace(
     // Emit event so renderer knows workspace is open
     let _ = app.emit("workspace://opened", serde_json::json!({ "hash": &hash }));
 
-    // Check if tracker is connected for this workspace
-    let has_tracker = tracker::wandb::is_tracker_connected(&hash).await
+    // Check if tracker is connected for this workspace.
+    // `mut` because we re-evaluate below after MLflow rehydration from
+    // the keyring — a freshly-rehydrated provider should count as a
+    // connected tracker for both the background sync spawn and the
+    // `Workspace.hasTracker` payload returned to the renderer.
+    let mut has_tracker = tracker::wandb::is_tracker_connected(&hash).await
+        || tracker::mlflow::is_mlflow_connected(&hash).await;
+
+    // Auto-rehydrate any MLflow provider that has stored credentials in
+    // the keyring but isn't currently in the in-memory registry. This
+    // covers the post-restart reconnect path: the user opened Bonafide
+    // and connected to MLflow, quit, relaunched, and now opens the same
+    // workspace. Without this hook the keyring entry sits unused and the
+    // user has to go through `connect_tracker` again. `load_mlflow_from_keyring`
+    // is a no-op when no entry exists, and only registers a provider
+    // when rehydration succeeds — a stale entry with a dead server
+    // just logs a warning and the user keeps the original error path.
+    // The provider is inserted into `MLFLOW_REGISTRY` inside the
+    // function itself, so we just drop the returned handle here.
+    if !tracker::mlflow::is_mlflow_connected(&hash).await {
+        match tracker::mlflow::load_mlflow_from_keyring(&hash).await {
+            Ok(Some(_provider)) => {
+                log::info!(
+                    "[tracker] rehydrated MLflow provider for workspace {hash}"
+                );
+            }
+            Ok(None) => { /* no keyring entry — nothing to do */ }
+            Err(e) => {
+                log::warn!("[tracker] failed to rehydrate MLflow provider: {e}");
+            }
+        }
+    }
+
+    // Recompute `has_tracker` after the rehydration step above. The
+    // initial check on line ~494 runs before rehydration, so a
+    // workspace that was previously connected to MLflow but lost its
+    // in-memory provider on restart would have captured `false` here.
+    // Without this re-evaluation, both the background sync spawn and
+    // the `Workspace.hasTracker` returned to the renderer would
+    // incorrectly report "no tracker" for a workspace whose
+    // credentials were just successfully restored from the keyring.
+    has_tracker = tracker::wandb::is_tracker_connected(&hash).await
         || tracker::mlflow::is_mlflow_connected(&hash).await;
 
     // If a tracker is connected, kick off a background run-graph sync.
@@ -543,6 +583,22 @@ async fn list_workspaces(
 // bodies live in this file, dispatching to the matching free function
 // in `tracker::{wandb,mlflow}`.
 
+/// Validate the renderer-supplied tracker `kind` string up front so
+/// each command doesn't have to repeat the unknown-kind error arm.
+///
+/// Returns the input slice unchanged when it's a supported kind so
+/// callers can match on it directly without an extra clone.
+fn dispatch_kind(kind: &str) -> Result<&str, tracker::TrackerError> {
+    match kind {
+        "wandb" | "mlflow" => Ok(kind),
+        other => Err(tracker::TrackerError {
+            kind: tracker::TrackerErrorKind::Unknown,
+            message: format!("Unsupported tracker kind: {other}"),
+            hint: Some("Supported trackers: wandb, mlflow".to_string()),
+        }),
+    }
+}
+
 /// JSON payload the renderer sends for an MLflow `connect_tracker`
 /// invocation. The renderer's `api_key` field is overloaded: for
 /// W&B it's the plain API key string, for MLflow we parse it as this
@@ -561,10 +617,21 @@ async fn connect_tracker(
     kind: String,
     api_key: String,
     workspace_root: String,
+    project: Option<String>,  // NEW: optional project for W&B
 ) -> Result<String, tracker::TrackerError> {
+    let validated = dispatch_kind(&kind)?;
     let root = PathBuf::from(&workspace_root);
-    let hash = match kind.as_str() {
-        "wandb" => tracker::wandb::connect_tracker(&root, &api_key).await,
+
+    // Resolve `hash` and `project_for_sync` per provider. The connect
+    // call returns the workspace hash; the project name is extracted
+    // from the per-provider input (MLflow's JSON payload, or the new
+    // `project` argument for W&B).
+    let (hash, project_for_sync) = match validated {
+        "wandb" => {
+            let h = tracker::wandb::connect_tracker(&root, &api_key).await?;
+            let p = project.clone().unwrap_or_default();
+            (h, p)
+        }
         "mlflow" => {
             // For MLflow, `api_key` is actually a JSON string of the form
             // `{"baseUrl": "...", "token": "...", "project": "..."}`.
@@ -579,20 +646,63 @@ async fn connect_tracker(
                             .to_string(),
                     ),
                 })?;
-            tracker::mlflow::connect_mlflow(
+            let h = tracker::mlflow::connect_mlflow(
                 &root,
                 payload.base_url,
                 payload.token,
-                payload.project,
+                payload.project.clone(),
             )
-            .await
+            .await?;
+            (h, payload.project)
         }
-        _ => Err(tracker::TrackerError {
-            kind: tracker::TrackerErrorKind::Unknown,
-            message: format!("Unsupported tracker kind: {kind}"),
-            hint: Some("Supported trackers: wandb, mlflow".to_string()),
-        }),
-    }?;
+        // dispatch_kind validated the kind above, so this arm is unreachable.
+        _ => unreachable!("dispatch_kind validated the kind"),
+    };
+
+    // Persist the connection (kind + project) so `run_background_sync`
+    // can scope its W&B / MLflow query to the right project. A
+    // serialization failure or DB error here is logged but does not
+    // fail the connect — the in-memory provider is already live.
+    let config_json = serde_json::to_string(&serde_json::json!({
+        "project": project_for_sync,
+    }))
+    .map_err(|e| tracker::TrackerError {
+        kind: tracker::TrackerErrorKind::Unknown,
+        message: format!("config serialize failed: {e}"),
+        hint: None,
+    })?;
+
+    let root_for_persist = PathBuf::from(&workspace_root);
+    let hash_for_persist = hash.clone();
+    let kind_for_persist = kind.clone();
+    let result_persist = tokio::task::spawn_blocking(move || -> Result<(), String> {
+        let (conn, _) = graph::storage::open_workspace_db(&root_for_persist)
+            .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+        graph::storage::upsert_tracker_connection(
+            &conn,
+            &hash_for_persist,
+            &kind_for_persist,
+            &config_json,
+        )
+        .map_err(|e| format!("Failed to upsert tracker connection: {e}"))
+    })
+    .await;
+
+    // The outer Result is from the JoinHandle (spawn failure / panic),
+    // the inner Result is from the closure (persistence error). Both
+    // layers must be inspected — the previous `if let Err(e)` pattern
+    // only matched the JoinError and silently dropped inner failures,
+    // so a real persistence error would never reach the log.
+    // `kind_for_persist` / `hash_for_persist` are moved into the
+    // closure above, so the outer scope only sees the still-owned
+    // `kind` / `hash` here.
+    match result_persist {
+        Ok(Ok(())) => {
+            log::info!("[tracker] persistence ok for {kind} hash={hash}");
+        }
+        Ok(Err(e)) => log::error!("[tracker] persistence failed: {e}"),
+        Err(join_err) => log::error!("[tracker] persistence task panicked: {join_err}"),
+    }
 
     // Kick off a background run-graph sync so the graph is populated
     // as soon as the user connects. Errors are logged but not
@@ -614,15 +724,12 @@ async fn disconnect_tracker(
     kind: String,
     workspace_root: String,
 ) -> Result<(), tracker::TrackerError> {
+    let validated = dispatch_kind(&kind)?;
     let root = PathBuf::from(&workspace_root);
-    match kind.as_str() {
+    match validated {
         "wandb" => tracker::wandb::disconnect_tracker(&root).await,
         "mlflow" => tracker::mlflow::disconnect_mlflow(&root).await,
-        _ => Err(tracker::TrackerError {
-            kind: tracker::TrackerErrorKind::Unknown,
-            message: format!("Unsupported tracker kind: {kind}"),
-            hint: Some("Supported trackers: wandb, mlflow".to_string()),
-        }),
+        _ => unreachable!("dispatch_kind validated the kind"),
     }
 }
 
@@ -631,9 +738,10 @@ async fn test_tracker_connection(
     kind: String,
     workspace_root: String,
 ) -> Result<tracker::TrackerStatus, tracker::TrackerError> {
+    let validated = dispatch_kind(&kind)?;
     let root = PathBuf::from(&workspace_root);
     let hash = compute_workspace_hash(&root);
-    match kind.as_str() {
+    match validated {
         "wandb" => tracker::wandb::test_tracker_connection(&hash).await,
         "mlflow" => {
             let provider = tracker::mlflow::get_mlflow_provider(&hash).await.ok_or_else(|| {
@@ -648,11 +756,7 @@ async fn test_tracker_connection(
             let latency_ms = start.elapsed().as_millis() as u64;
             Ok(tracker::TrackerStatus::ok(latency_ms))
         }
-        _ => Err(tracker::TrackerError {
-            kind: tracker::TrackerErrorKind::Unknown,
-            message: format!("Unsupported tracker kind: {kind}"),
-            hint: Some("Supported trackers: wandb, mlflow".to_string()),
-        }),
+        _ => unreachable!("dispatch_kind validated the kind"),
     }
 }
 
@@ -674,9 +778,10 @@ async fn list_runs(
     limit: u32,
     cursor: Option<String>,
 ) -> Result<tracker::wandb::RunPage, tracker::TrackerError> {
+    let validated = dispatch_kind(&kind)?;
     let root = PathBuf::from(&workspace_root);
     let hash = compute_workspace_hash(&root);
-    match kind.as_str() {
+    match validated {
         "wandb" => {
             let provider = tracker::wandb::get_wandb_provider(&hash).await.ok_or_else(|| {
                 tracker::TrackerError {
@@ -688,21 +793,16 @@ async fn list_runs(
             provider.list_runs(&project, limit, cursor.as_deref()).await
         }
         "mlflow" => {
-            let provider =
-                tracker::mlflow::get_mlflow_provider(&hash).await.ok_or_else(|| {
-                    tracker::TrackerError {
-                        kind: tracker::TrackerErrorKind::NotFound,
-                        message: "No MLflow tracker connected for this workspace".into(),
-                        hint: Some("Call connect_tracker with kind=\"mlflow\" first.".into()),
-                    }
-                })?;
+            let provider = tracker::mlflow::get_mlflow_provider(&hash).await.ok_or_else(|| {
+                tracker::TrackerError {
+                    kind: tracker::TrackerErrorKind::NotFound,
+                    message: "No MLflow tracker connected for this workspace".into(),
+                    hint: Some("Call connect_tracker with kind=\"mlflow\" first.".into()),
+                }
+            })?;
             provider.list_runs(&project, limit, cursor.as_deref()).await
         }
-        _ => Err(tracker::TrackerError {
-            kind: tracker::TrackerErrorKind::Unknown,
-            message: format!("Unsupported tracker kind: {kind}"),
-            hint: Some("Supported trackers: wandb, mlflow".to_string()),
-        }),
+        _ => unreachable!("dispatch_kind validated the kind"),
     }
 }
 
@@ -712,9 +812,10 @@ async fn get_run(
     workspace_root: String,
     run_id: String,
 ) -> Result<tracker::wandb::RunDetail, tracker::TrackerError> {
+    let validated = dispatch_kind(&kind)?;
     let root = PathBuf::from(&workspace_root);
     let hash = compute_workspace_hash(&root);
-    match kind.as_str() {
+    match validated {
         "wandb" => {
             let provider = tracker::wandb::get_wandb_provider(&hash).await.ok_or_else(|| {
                 tracker::TrackerError {
@@ -736,11 +837,7 @@ async fn get_run(
                 })?;
             provider.get_run(&run_id).await
         }
-        _ => Err(tracker::TrackerError {
-            kind: tracker::TrackerErrorKind::Unknown,
-            message: format!("Unsupported tracker kind: {kind}"),
-            hint: Some("Supported trackers: wandb, mlflow".to_string()),
-        }),
+        _ => unreachable!("dispatch_kind validated the kind"),
     }
 }
 
@@ -751,9 +848,10 @@ async fn get_metric_series(
     run_id: String,
     key: String,
 ) -> Result<Vec<tracker::wandb::Point>, tracker::TrackerError> {
+    let validated = dispatch_kind(&kind)?;
     let root = PathBuf::from(&workspace_root);
     let hash = compute_workspace_hash(&root);
-    match kind.as_str() {
+    match validated {
         "wandb" => {
             let provider = tracker::wandb::get_wandb_provider(&hash).await.ok_or_else(|| {
                 tracker::TrackerError {
@@ -775,11 +873,7 @@ async fn get_metric_series(
                 })?;
             provider.get_metric_series(&run_id, &key).await
         }
-        _ => Err(tracker::TrackerError {
-            kind: tracker::TrackerErrorKind::Unknown,
-            message: format!("Unsupported tracker kind: {kind}"),
-            hint: Some("Supported trackers: wandb, mlflow".to_string()),
-        }),
+        _ => unreachable!("dispatch_kind validated the kind"),
     }
 }
 
@@ -789,9 +883,10 @@ async fn get_run_config(
     workspace_root: String,
     run_id: String,
 ) -> Result<tracker::wandb::RunConfig, tracker::TrackerError> {
+    let validated = dispatch_kind(&kind)?;
     let root = PathBuf::from(&workspace_root);
     let hash = compute_workspace_hash(&root);
-    match kind.as_str() {
+    match validated {
         "wandb" => {
             let provider = tracker::wandb::get_wandb_provider(&hash).await.ok_or_else(|| {
                 tracker::TrackerError {
@@ -813,11 +908,7 @@ async fn get_run_config(
                 })?;
             provider.get_run_config(&run_id).await
         }
-        _ => Err(tracker::TrackerError {
-            kind: tracker::TrackerErrorKind::Unknown,
-            message: format!("Unsupported tracker kind: {kind}"),
-            hint: Some("Supported trackers: wandb, mlflow".to_string()),
-        }),
+        _ => unreachable!("dispatch_kind validated the kind"),
     }
 }
 
@@ -827,9 +918,10 @@ async fn list_artifacts(
     workspace_root: String,
     run_id: String,
 ) -> Result<Vec<tracker::wandb::ArtifactRef>, tracker::TrackerError> {
+    let validated = dispatch_kind(&kind)?;
     let root = PathBuf::from(&workspace_root);
     let hash = compute_workspace_hash(&root);
-    match kind.as_str() {
+    match validated {
         "wandb" => {
             let provider = tracker::wandb::get_wandb_provider(&hash).await.ok_or_else(|| {
                 tracker::TrackerError {
@@ -851,11 +943,7 @@ async fn list_artifacts(
                 })?;
             provider.list_artifacts(&run_id).await
         }
-        _ => Err(tracker::TrackerError {
-            kind: tracker::TrackerErrorKind::Unknown,
-            message: format!("Unsupported tracker kind: {kind}"),
-            hint: Some("Supported trackers: wandb, mlflow".to_string()),
-        }),
+        _ => unreachable!("dispatch_kind validated the kind"),
     }
 }
 
@@ -973,47 +1061,81 @@ async fn query_run_graph(
 
 /// Run a background sync of the run graph for `workspace_hash` against
 /// whichever tracker provider is currently registered for it. Dispatches
-/// to W&B or MLflow based on registry membership; returns `Err` if no
-/// tracker is registered or if the sync itself fails.
+/// to W&B and/or MLflow based on registry membership; returns `Err` if
+/// no tracker is registered or if the sync itself fails.
 ///
-/// Always opens its own SQLite connection so the task doesn't fight the
-/// caller for the same `Connection`. The async parts are the tracker
-/// API round-trips; the SQLite writes are short and cheap.
+/// The workspace DB is opened **once** and that connection is shared
+/// across the config read and the sync functions — both
+/// `sync_from_wandb` and `sync_from_mlflow` accept a borrowed
+/// `Connection` now. All SQLite work runs inside `block_in_place` so
+/// the non-`Send` handle never crosses an `.await` boundary.
 async fn run_background_sync(root: &Path, workspace_hash: &str) -> Result<(), String> {
-    // Look up the persisted connection record so we know which project
-    // to scope the sync to. If the user connected without going through
-    // `tracker_connection` (legacy path) we fall back to a wildcard
-    // project name; the renderer will populate `config_json` later.
-    let (conn, _hash) = graph::storage::open_workspace_db(root)
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    let connection = graph::storage::get_tracker_connection(&conn, workspace_hash)
-        .map_err(|e| format!("Failed to read tracker_connection: {e}"))?;
+    // Decide which providers to use without holding a DB connection.
+    let wandb = tracker::wandb::get_wandb_provider(workspace_hash).await;
+    let mlflow = tracker::mlflow::get_mlflow_provider(workspace_hash).await;
 
-    let project = match &connection {
-        Some((kind, config_json)) => match kind.as_str() {
-            "mlflow" => serde_json::from_str::<serde_json::Value>(config_json)
-                .ok()
-                .and_then(|v| v.get("project").and_then(|p| p.as_str().map(String::from)))
-                .unwrap_or_default(),
-            _ => String::new(),
-        },
-        None => String::new(),
-    };
-
-    if let Some(provider) = tracker::wandb::get_wandb_provider(workspace_hash).await {
-        return graph::run_graph::sync_from_wandb(workspace_hash, &project, &conn, &provider)
-            .await
-            .map(|_| ())
-            .map_err(|e| format!("W&B sync failed: {e}"));
-    }
-    if let Some(provider) = tracker::mlflow::get_mlflow_provider(workspace_hash).await {
-        return graph::run_graph::sync_from_mlflow(workspace_hash, &project, &conn, &provider)
-            .await
-            .map(|_| ())
-            .map_err(|e| format!("MLflow sync failed: {e}"));
+    if wandb.is_none() && mlflow.is_none() {
+        return Err("No tracker provider is registered for this workspace".to_string());
     }
 
-    Err("No tracker provider is registered for this workspace".to_string())
+    // Open the DB once, read the configured project, then run the
+    // sync functions — all on the blocking pool so we can hold a
+    // `Connection` across both phases.
+    let root_owned = root.to_path_buf();
+    let hash_owned = workspace_hash.to_string();
+    tokio::task::block_in_place(move || -> Result<(), String> {
+        let (conn, _hash) = graph::storage::open_workspace_db(&root_owned)
+            .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+
+        // Read the persisted connection record for the project scope.
+        // Falls back to an empty string when no project is recorded
+        // (e.g. for W&B, which doesn't store a project in
+        // `tracker_connection.config_json`).
+        let project: String = match graph::storage::get_tracker_connection(&conn, &hash_owned)
+            .map_err(|e| format!("Failed to read tracker_connection: {e}"))?
+        {
+            Some((_kind, config_json)) => {
+                serde_json::from_str::<serde_json::Value>(&config_json)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("project")
+                            .and_then(|p| p.as_str().map(String::from))
+                    })
+                    .unwrap_or_default()
+            }
+            None => String::new(),
+        };
+
+        // Drive the async sync functions on this blocking-pool thread.
+        // `block_on` from inside `block_in_place` is safe because
+        // `Handle::current()` is the multi-thread tokio runtime that
+        // spawned this worker; the future's HTTP I/O yields to the
+        // reactor and we resume once it completes.
+        let runtime = tokio::runtime::Handle::current();
+
+        if let Some(provider) = wandb {
+            runtime
+                .block_on(graph::run_graph::sync_from_wandb(
+                    &hash_owned,
+                    &project,
+                    &conn,
+                    &provider,
+                ))
+                .map_err(|e| format!("W&B sync failed: {e}"))?;
+        }
+        if let Some(provider) = mlflow {
+            runtime
+                .block_on(graph::run_graph::sync_from_mlflow(
+                    &hash_owned,
+                    &project,
+                    &conn,
+                    &provider,
+                ))
+                .map_err(|e| format!("MLflow sync failed: {e}"))?;
+        }
+
+        Ok(())
+    })
 }
 
 // Re-exports the git_service module for the integration test in
@@ -1024,6 +1146,26 @@ async fn run_background_sync(root: &Path, workspace_hash: &str) -> Result<(), St
 #[doc(hidden)]
 pub mod git_service_for_tests {
     pub use crate::git_service::*;
+}
+
+// Re-exports the tracker module's MLflow parse/mapping helpers for the
+// integration tests in `tests/tracker_roundtrip.rs`. Without this module
+// the snake_case `MlflowRun` / `MlflowRunInfo` / mapping functions are
+// unreachable from `tests/…` because they live below the
+// `pub mod tracker { ... }` visibility boundary.
+#[doc(hidden)]
+pub mod tracker_for_tests {
+    pub use crate::tracker::error::{TrackerError, TrackerErrorKind};
+    pub use crate::tracker::mlflow::{
+        run_to_detail, run_to_summary, ExperimentRef, GetExperimentByNameResponse,
+        GetHistoryRequest, GetRunRequest, GetRunResponse, ListArtifactsRequest,
+        ListArtifactsResponse, MetricHistoryEntry, MlflowArtifactFile, MlflowMetric,
+        MlflowParam, MlflowRun, MlflowRunData, MlflowRunInfo, MlflowTag, MlflowProvider,
+        SearchRunsRequest, SearchRunsResponse,
+    };
+    pub use crate::tracker::wandb::{
+        ArtifactRef, Point, RunConfig, RunDetail, RunPage, RunSummary,
+    };
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

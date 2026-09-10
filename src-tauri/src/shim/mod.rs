@@ -60,7 +60,12 @@ pub struct ShimManager {
     python_path: PathBuf,
 
     /// W&B API key passed to the shim via environment.
-    api_key: String,
+    ///
+    /// Wrapped in an `Arc<Mutex<_>>` so the key can be updated in place
+    /// (e.g. when the user changes their W&B API key via the renderer).
+    /// `spawn()` reads the current value every time, so a key change
+    /// followed by a respawn hands the new value to the child process.
+    api_key: Arc<std::sync::Mutex<String>>,
 
     /// Active child process, if any.
     child: Mutex<Option<Child>>,
@@ -71,8 +76,20 @@ pub struct ShimManager {
     /// Monotonically increasing JSON-RPC id counter.
     next_id: Mutex<u64>,
 
-    /// Number of respawn attempts made.
+    /// Number of automatic (crash-loop) respawn attempts made.
+    ///
+    /// Bounded by `MAX_RESTARTS` — `respawn()` returns
+    /// `ShimError::TooManyRestarts` once this exceeds the cap. User-
+    /// triggered respawns (`respawn_with_key`) bypass this counter so
+    /// that key changes cannot accidentally exhaust the crash budget.
     restarts: Mutex<u8>,
+
+    /// Number of user-triggered respawns (API key changes, etc.).
+    ///
+    /// Unbounded counter — used purely for telemetry and so we can
+    /// distinguish "child kept crashing" from "user re-connected with
+    /// a different key" when triaging failures.
+    key_respawns: Mutex<u64>,
 
     /// Sends async events (progress, log lines, etc.) from the stdout reader
     /// task to whoever is listening in the Tauri app.
@@ -99,14 +116,34 @@ impl ShimManager {
         Ok(Self {
             shim_script,
             python_path,
-            api_key,
+            api_key: Arc::new(std::sync::Mutex::new(api_key)),
             child: Mutex::new(None),
             writer: Mutex::new(None),
             next_id: Mutex::new(1),
             restarts: Mutex::new(0),
+            key_respawns: Mutex::new(0),
             event_tx,
             pending: Arc::new(Mutex::new(HashMap::new())),
         })
+    }
+
+    /// Update the W&B API key that will be passed to the shim subprocess
+    /// on the next `spawn()` / `respawn()` call. Poison-safe — a poisoned
+    /// mutex is recovered via `into_inner()` instead of panicking, since
+    /// key updates can race with the reader task during shutdown.
+    pub fn set_api_key(&self, key: String) {
+        let mut guard = self.api_key.lock().unwrap_or_else(|p| p.into_inner());
+        *guard = key;
+    }
+
+    /// Return a clone of the current W&B API key. Read on every
+    /// `spawn()` so a key change is picked up the next time the child
+    /// is launched.
+    fn current_api_key(&self) -> String {
+        self.api_key
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     /// Locate the Python interpreter.
@@ -125,6 +162,12 @@ impl ShimManager {
 
     /// Spawn the shim subprocess, connecting stdin/stdout/stderr to pipes.
     ///
+    /// The current value of `api_key` is read at spawn time and
+    /// forwarded to the child via the `WANDB_API_KEY` env var. Callers
+    /// who need to update the key (e.g. when the user changes their
+    /// W&B credentials) should invoke `set_api_key` *before* calling
+    /// `spawn` / `respawn_with_key`.
+    ///
     /// # Errors
     /// Returns `ShimError::RequestFailed` if the process cannot be started.
     pub fn spawn(&self) -> Result<(), ShimError> {
@@ -133,15 +176,29 @@ impl ShimManager {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("WANDB_API_KEY", &self.api_key)
+            .env("WANDB_API_KEY", &self.current_api_key())
             .spawn()
             .map_err(|e| ShimError::RequestFailed(format!("failed to spawn shim: {e}")))?;
 
         let stdin = child.stdin.take().expect("stdin was piped");
         let stdout = child.stdout.take().expect("stdout was piped");
 
-        // Take stderr as-is so it surfaces in the terminal / logs.
-        let _stderr = child.stderr.take();
+        // Drain stderr in a dedicated thread so the shim's pipe buffer
+        // doesn't fill up and block the child once it produces enough
+        // output (e.g. during the venv-install progress events). Each
+        // line is forwarded to the app log; non-UTF-8 bytes are
+        // silently skipped by `lines()`.
+        if let Some(stderr) = child.stderr.take() {
+            let _ = std::thread::Builder::new()
+                .name("shim-stderr-drain".into())
+                .spawn(move || {
+                    use std::io::BufRead;
+                    let reader = std::io::BufReader::new(stderr);
+                    for line in reader.lines().filter_map(Result::ok) {
+                        log::warn!("[shim stderr] {line}");
+                    }
+                });
+        }
 
         let writer: Box<dyn Write + Send> = Box::new(stdin);
 
@@ -206,6 +263,40 @@ impl ShimManager {
                     }
                 }
             }
+
+            // EOF reached — the shim exited cleanly or crashed. Until
+            // this point, `pending` oneshot senders were parked on
+            // `rx` inside `send()` calls. Without this block those
+            // calls would hang until the 30s timeout fires, even
+            // though the child is unambiguously dead. Notify every
+            // pending sender with a synthetic JSON-RPC error so they
+            // unblock immediately and the renderer sees a real
+            // diagnostic instead of a timeout.
+            //
+            // `unwrap_or_else(|p| p.into_inner())` recovers from a
+            // poisoned mutex — this task can run after a panic in
+            // another `send()` call, and we don't want a poisoned
+            // lock here to mask the actual root cause.
+            let mut pending_guard =
+                pending.lock().unwrap_or_else(|p| p.into_inner());
+            let drained: Vec<(u64, oneshot::Sender<serde_json::Value>)> =
+                pending_guard.drain().collect();
+            drop(pending_guard);
+            let drained_count = drained.len();
+            for (_, sender) in drained {
+                let _ = sender.send(serde_json::json!({
+                    ERROR_SENTINEL_KEY: true,
+                    "code": -32001,
+                    "message": "shim subprocess exited",
+                }));
+            }
+            if drained_count > 0 {
+                log::warn!(
+                    "[shim] stdout reader EOF — shim exited, notified {drained_count} pending request(s)"
+                );
+            } else {
+                log::warn!("[shim] stdout reader EOF — shim exited");
+            }
         });
 
         log::info!("[shim] spawned shim process (pid={})", self.pid().unwrap_or(0));
@@ -226,6 +317,41 @@ impl ShimManager {
     /// errors, timeout expiry, or a JSON-RPC `error` response from the
     /// shim.
     pub async fn send(&self, req: ShimRequest) -> Result<serde_json::Value, ShimError> {
+        // Crash recovery: detect a previously-dead child before trying
+        // to write to its (closed) stdin. Without this, a crash in the
+        // shim leaves us holding a `Some(child)` whose stdin writer
+        // has already been broken by the OS; the next write fails
+        // with EPIPE and the user waits 30s for the request timeout
+        // — and on the *following* request the broken pipe error
+        // repeats indefinitely until app restart.
+        //
+        // `try_wait` is non-blocking: it returns the exit status if
+        // the child has exited, or `Ok(None)` if it's still alive.
+        // If the child died, drop the stale handle and spawn a fresh
+        // one (which also re-opens a working stdin writer).
+        {
+            let mut child_guard = self.child.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(child) = child_guard.as_mut() {
+                match child.try_wait() {
+                    Ok(Some(_status)) => {
+                        log::warn!("[shim] detected dead child — respawning");
+                        *child_guard = None;
+                        // Also drop the stale writer so spawn() doesn't
+                        // short-circuit thinking we're already initialized.
+                        *self.writer.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                    }
+                    Ok(None) => { /* still running — nothing to do */ }
+                    Err(e) => {
+                        log::warn!("[shim] try_wait failed: {e}");
+                    }
+                }
+            }
+            if child_guard.is_none() {
+                drop(child_guard);
+                self.spawn()?;
+            }
+        }
+
         let (tx, rx) = oneshot::channel::<serde_json::Value>();
 
         let id = {
@@ -249,11 +375,42 @@ impl ShimManager {
                 .as_mut()
                 .ok_or(ShimError::NotRunning)?;
 
-            let rpc = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "method": req,
-            });
+            let rpc = match &req {
+                ShimRequest::ListRuns { project, limit, cursor } => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "list_runs",
+                    "params": {
+                        "project": project,
+                        "limit": limit,
+                        "cursor": cursor,
+                    }
+                }),
+                ShimRequest::GetRun { run_id } => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "get_run",
+                    "params": { "run_id": run_id }
+                }),
+                ShimRequest::GetMetricSeries { run_id, key } => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "get_metric_series",
+                    "params": { "run_id": run_id, "key": key }
+                }),
+                ShimRequest::GetRunConfig { run_id } => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "get_run_config",
+                    "params": { "run_id": run_id }
+                }),
+                ShimRequest::ListArtifacts { run_id } => serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "method": "list_artifacts",
+                    "params": { "run_id": run_id }
+                }),
+            };
 
             let line = serde_json::to_string(&rpc)
                 .map_err(|e| ShimError::RequestFailed(format!("serialization failed: {e}")))?;
@@ -299,13 +456,15 @@ impl ShimManager {
     pub fn shutdown(&self) {
         // Drop all pending oneshot senders — their receivers will resolve
         // to `RecvError`, which `send()` translates to `ShimError::NotRunning`.
+        // Poison-safe: recover from a poisoned mutex instead of panicking,
+        // since this can run during unwind via `Drop`.
         {
-            let mut pending = self.pending.lock().unwrap();
+            let mut pending = self.pending.lock().unwrap_or_else(|p| p.into_inner());
             pending.drain().for_each(|(_, sender)| drop(sender));
         }
 
         // Signal shutdown by dropping the writer (closes stdin of the child).
-        *self.writer.lock().unwrap() = None;
+        *self.writer.lock().unwrap_or_else(|p| p.into_inner()) = None;
 
         if let Ok(mut guard) = self.child.lock() {
             if let Some(mut child) = guard.take() {
@@ -347,14 +506,54 @@ impl ShimManager {
         self.spawn()
     }
 
+    /// Restart the shim subprocess for a user-driven reason (typically:
+    /// the W&B API key changed). Unlike `respawn()`, this **does not**
+    /// count toward `MAX_RESTARTS` — a user changing their key has
+    /// nothing to do with the child crashing, so it must not exhaust
+    /// the crash-loop budget.
+    ///
+    /// Bumps the `key_respawns` counter (uncapped, telemetry-only) so
+    /// the failure triage path can tell the two respawn causes apart.
+    pub fn respawn_with_key(&self) -> Result<(), ShimError> {
+        {
+            let mut kr = self.key_respawns.lock().unwrap_or_else(|p| p.into_inner());
+            *kr += 1;
+            log::info!(
+                "[shim] user-triggered respawn (key change) #{}",
+                *kr
+            );
+        }
+
+        self.shutdown();
+
+        // Brief pause so the OS fully releases the previous child's
+        // port/PID before the new one tries to bind. The
+        // crash-loop `respawn` uses exponential back-off, but a user-
+        // key change is intentionally fast — there's no failure to
+        // back away from.
+        let backoff = Duration::from_millis(200);
+        std::thread::sleep(backoff);
+
+        self.spawn()
+    }
+
     /// Return the OS pid of the shim child process, if it is running.
     pub fn pid(&self) -> Option<u32> {
         self.child.lock().ok().and_then(|g| g.as_ref().map(|c| c.id()))
     }
 
-    /// Return the current restart count.
+    /// Return the current crash-loop restart count.
     pub fn restart_count(&self) -> u8 {
         self.restarts.lock().map(|g| *g).unwrap_or(0)
+    }
+
+    /// Return the number of user-triggered (key-change) respawns since
+    /// construction. Unbounded; purely for telemetry / debug.
+    pub fn key_respawn_count(&self) -> u64 {
+        self.key_respawns
+            .lock()
+            .map(|g| *g)
+            .unwrap_or(0)
     }
 }
 

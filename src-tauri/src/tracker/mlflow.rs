@@ -7,6 +7,7 @@
 //! path) and stores its server URL, bearer token, and project name in the
 //! OS keyring under `tracker:mlflow:{workspace_hash}` as a JSON blob.
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use lazy_static::lazy_static;
@@ -14,7 +15,7 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::tracker::credentials::{delete_credential, get_credential, set_credential};
 use crate::tracker::error::{TrackerError, TrackerErrorKind};
@@ -28,56 +29,54 @@ pub use crate::tracker::wandb::{ArtifactRef, Point, RunConfig, RunDetail, RunPag
 //
 // MLflow's REST API uses snake_case JSON. We define internal structs with
 // `#[serde(rename_all = "snake_case")]` for parsing, then map onto the
-// camelCase renderer types from `wandb.rs`.
+// camelCase renderer types from `wandb.rs`. The structs are exposed via
+// the `tracker_for_tests` module in lib.rs so integration tests can
+// roundtrip real MLflow responses through them. They're `pub` (rather
+// than fully hidden) so the doc-hidden `pub mod tracker_for_tests` in
+// lib.rs can re-export them; the doc-hidden attribute keeps them out
+// of the renderer-facing API surface.
 
-/// JSON body for `search-runs` requests.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-struct SearchRunsRequest<'a> {
-    experiment_names: Vec<&'a str>,
+pub struct SearchRunsRequest<'a> {
+    experiment_ids: Vec<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     max_results: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     page_token: Option<&'a str>,
 }
 
-/// Response from `search-runs`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct SearchRunsResponse {
+pub struct SearchRunsResponse {
     runs: Vec<MlflowRun>,
     #[serde(default)]
     next_page_token: Option<String>,
 }
 
-/// JSON body for `runs/get` requests.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-struct GetRunRequest<'a> {
+pub struct GetRunRequest<'a> {
     run_id: &'a str,
 }
 
-/// Response from `runs/get`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct GetRunResponse {
+pub struct GetRunResponse {
     run: MlflowRun,
 }
 
-/// JSON body for `metrics/get-history` requests. Sent as query params per
-/// the MLflow 2.x REST spec.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-struct GetHistoryRequest<'a> {
+pub struct GetHistoryRequest<'a> {
     run_id: &'a str,
     #[serde(rename = "metric_key")]
     key: &'a str,
 }
 
-/// Response from `metrics/get-history` — a list of `{key, step, value, timestamp}`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct MetricHistoryEntry {
+pub struct MetricHistoryEntry {
     #[serde(default)]
     step: i64,
     value: f64,
@@ -87,29 +86,44 @@ struct MetricHistoryEntry {
     key: Option<String>,
 }
 
-/// JSON body for `artifacts/list` requests.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
-struct ListArtifactsRequest<'a> {
+pub struct ListArtifactsRequest<'a> {
     run_id: &'a str,
     #[serde(default)]
     path: &'a str,
 }
 
-/// Response from `artifacts/list`.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct ListArtifactsResponse {
+pub struct ListArtifactsResponse {
     #[serde(default)]
     files: Vec<MlflowArtifactFile>,
     #[serde(default)]
     root_uri: Option<String>,
 }
 
-/// Single artifact file from `artifacts/list`.
+/// Response from `experiments/get-by-name`. The server returns the
+/// full experiment metadata nested under `experiment`; we only need
+/// the ID so we keep the struct minimal.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct MlflowArtifactFile {
+pub struct GetExperimentByNameResponse {
+    experiment: ExperimentRef,
+}
+
+/// Subset of MLflow's `Experiment` shape that we actually consume —
+/// kept narrow on purpose so a server-side field rename doesn't break
+/// the rest of the parser.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExperimentRef {
+    experiment_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct MlflowArtifactFile {
     path: String,
     #[serde(default)]
     file_size: Option<i64>,
@@ -117,10 +131,9 @@ struct MlflowArtifactFile {
     is_dir: Option<bool>,
 }
 
-/// Run as returned by MLflow. Shape mirrors MLflow's `Run` dataclass.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct MlflowRun {
+pub struct MlflowRun {
     info: MlflowRunInfo,
     #[serde(default)]
     data: MlflowRunData,
@@ -128,7 +141,7 @@ struct MlflowRun {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct MlflowRunInfo {
+pub struct MlflowRunInfo {
     run_id: String,
     #[serde(default)]
     run_name: String,
@@ -146,7 +159,7 @@ struct MlflowRunInfo {
 
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-struct MlflowRunData {
+pub struct MlflowRunData {
     #[serde(default)]
     metrics: Vec<MlflowMetric>,
     #[serde(default)]
@@ -157,7 +170,7 @@ struct MlflowRunData {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct MlflowMetric {
+pub struct MlflowMetric {
     key: String,
     value: f64,
     #[serde(default)]
@@ -168,14 +181,14 @@ struct MlflowMetric {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct MlflowParam {
+pub struct MlflowParam {
     key: String,
     value: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct MlflowTag {
+pub struct MlflowTag {
     key: String,
     value: String,
 }
@@ -212,6 +225,13 @@ pub struct MlflowProvider {
 
     /// Shared HTTP client. Cheap to construct; we reuse for connection pooling.
     client: reqwest::Client,
+
+    /// Cache of experiment name → experiment ID. Populated lazily by
+    /// `resolve_experiment_id` so we don't re-resolve the configured
+    /// project on every `list_runs` call. Holding a `tokio::sync::Mutex`
+    /// (rather than `std::sync::Mutex`) because the cache lookup spans
+    /// an `.await` while the resolver hits the server.
+    experiment_id_cache: Mutex<HashMap<String, String>>,
 }
 
 impl MlflowProvider {
@@ -244,6 +264,7 @@ impl MlflowProvider {
             token,
             project,
             client,
+            experiment_id_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -267,21 +288,20 @@ impl MlflowProvider {
             message: format!("Failed to serialize MLflow credentials: {e}"),
             hint: None,
         })?;
-        set_credential("mlflow", &self.workspace_hash, &serialized).map_err(|e| {
-            TrackerError {
-                kind: TrackerErrorKind::AuthFailed,
-                message: format!("Failed to store MLflow credentials in keyring: {e}"),
-                hint: None,
-            }
-        })?;
 
-        // Probe the server. MLflow's tracking root returns either the
-        // version JSON or a redirect; both indicate reachability.
-        let url = format!("{}/api/2.0/mlflow/experiments/search", self.base_url);
+        // Probe the server FIRST. If the probe fails, do NOT store the credentials.
+        //
+        // We call `experiments/get-by-name` with the configured project so a
+        // bad project name surfaces as a 404 (vs. the empty-list
+        // `experiments/search` probe which silently returns every
+        // experiment on the server). A real liveness check should also
+        // verify the user's project actually exists.
+        let url = format!("{}/api/2.0/mlflow/experiments/get-by-name", self.base_url);
         let response = self
             .client
-            .get(&url)
+            .post(&url)
             .headers(auth_headers(self.token.as_deref())?)
+            .json(&serde_json::json!({"experiment_name": &self.project}))
             .send()
             .await
             .map_err(|e| TrackerError {
@@ -300,7 +320,13 @@ impl MlflowProvider {
             )));
         }
         if status == StatusCode::NOT_FOUND {
-            return Err(TrackerError::not_found("MLflow tracking endpoint"));
+            return Err(TrackerError {
+                kind: TrackerErrorKind::NotFound,
+                message: format!("MLflow experiment '{}' not found", self.project),
+                hint: Some(format!(
+                    "Create the experiment in the MLflow UI, or change the project name in Bonafide settings."
+                )),
+            });
         }
         if status == StatusCode::TOO_MANY_REQUESTS {
             return Err(TrackerError::rate_limited(60));
@@ -312,6 +338,13 @@ impl MlflowProvider {
                 hint: None,
             });
         }
+
+        // Probe succeeded — persist the credentials.
+        set_credential("mlflow", &self.workspace_hash, &serialized).map_err(|e| TrackerError {
+            kind: TrackerErrorKind::AuthFailed,
+            message: format!("Failed to store MLflow credentials in keyring: {e}"),
+            hint: None,
+        })?;
 
         Ok(())
     }
@@ -330,17 +363,22 @@ impl MlflowProvider {
 
     /// List runs in the given experiment (project), paged by `cursor`.
     ///
-    /// Calls MLflow's `POST /api/2.0/mlflow/search-runs` with a JSON
-    /// body. Returns a `RunPage` (the canonical renderer type).
+    /// Calls MLflow's `POST /api/2.0/mlflow/runs/search` with a JSON
+    /// body. The renderer's `project` is a friendly experiment *name*;
+    /// the server's search endpoint filters by *experiment_id*, so we
+    /// resolve the name once via `experiments/get-by-name` (cached for
+    /// subsequent calls) and pass the ID in `experiment_ids`.
+    /// Returns a `RunPage` (the canonical renderer type).
     pub async fn list_runs(
         &self,
         project: &str,
         limit: u32,
         cursor: Option<&str>,
     ) -> Result<RunPage, TrackerError> {
-        let url = format!("{}/api/2.0/mlflow/search-runs", self.base_url);
+        let experiment_id = self.resolve_experiment_id(project).await?;
+        let url = format!("{}/api/2.0/mlflow/runs/search", self.base_url);
         let body = SearchRunsRequest {
-            experiment_names: vec![project],
+            experiment_ids: vec![&experiment_id],
             max_results: Some(limit),
             page_token: cursor,
         };
@@ -354,7 +392,7 @@ impl MlflowProvider {
             .await
             .map_err(|e| TrackerError {
                 kind: TrackerErrorKind::Unknown,
-                message: format!("MLflow search-runs transport error: {e}"),
+                message: format!("MLflow runs/search transport error: {e}"),
                 hint: None,
             })?;
 
@@ -467,8 +505,8 @@ impl MlflowProvider {
     }
 
     /// List artifacts for a run. Calls
-    /// `POST /api/2.0/mlflow/artifacts/list` with `path = ""` to fetch
-    /// the run root.
+    /// `GET /api/2.0/mlflow/artifacts/list` with `run_id` and `path` as
+    /// query parameters; `path = ""` fetches the run root.
     pub async fn list_artifacts(
         &self,
         run_id: &str,
@@ -478,9 +516,9 @@ impl MlflowProvider {
 
         let response = self
             .client
-            .post(&url)
+            .get(&url)
             .headers(auth_headers(self.token.as_deref())?)
-            .json(&body)
+            .query(&body)
             .send()
             .await
             .map_err(|e| TrackerError {
@@ -496,16 +534,17 @@ impl MlflowProvider {
         // The MLflow list response doesn't include created_at or digest
         // (those live on artifact metadata, not the listing), so we
         // synthesize placeholders that the renderer can use. The `digest`
-        // field is filled with the path so it's still useful as a stable
-        // identifier; `created_at` is left at 0 to indicate "unknown".
+        // field is filled with the prefixed path so it's still useful as
+        // a stable identifier; `created_at` is left at 0 to indicate
+        // "unknown".
         let now = chrono_millis_now();
         let refs = parsed
             .files
             .into_iter()
             .filter(|f| !f.is_dir.unwrap_or(false))
             .map(|f| ArtifactRef {
-                name: f.path,
-                digest: String::new(),
+                name: f.path.clone(),
+                digest: format!("mlflow:{}", f.path),
                 size_bytes: f.file_size.unwrap_or(0),
                 created_at: now,
             })
@@ -538,39 +577,110 @@ impl MlflowProvider {
     /// A 2xx, 3xx, or 401/403 response all count as "reachable"; 5xx
     /// and transport errors propagate as `TrackerError`.
     pub async fn ping(&self) -> Result<std::time::Duration, TrackerError> {
-        let started = std::time::Instant::now();
-        let url = format!("{}/", self.base_url);
-
-        let response = self
-            .client
-            .head(&url)
+        let start = std::time::Instant::now();
+        // Probe the configured project via experiments/get-by-name —
+        // verifies the server is up AND that the configured experiment
+        // exists, which is a stronger liveness signal than the previous
+        // empty-list search probe (which returned every experiment on
+        // the server and so couldn't distinguish "alive" from "wrong
+        // server").
+        let url = format!("{}/api/2.0/mlflow/experiments/get-by-name", self.base_url);
+        let response = self.client
+            .post(&url)
             .headers(auth_headers(self.token.as_deref())?)
+            .json(&serde_json::json!({"experiment_name": &self.project}))
             .send()
             .await
             .map_err(|e| TrackerError {
                 kind: TrackerErrorKind::Unknown,
                 message: format!("MLflow server unreachable: {e}"),
-                hint: Some(format!(
-                    "Check that the MLflow tracking server is running at {}",
-                    self.base_url
-                )),
+                hint: Some(format!("Check that MLflow tracking is running at {}", self.base_url)),
             })?;
-
         let status = response.status();
-        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(TrackerError::auth_failed(&format!(
-                "MLflow server rejected credentials ({status})"
-            )));
-        }
-        if status.is_server_error() {
+        if !status.is_success() {
             return Err(TrackerError {
                 kind: TrackerErrorKind::Unknown,
                 message: format!("MLflow server returned {status}"),
                 hint: None,
             });
         }
+        Ok(start.elapsed())
+    }
 
-        Ok(started.elapsed())
+    /// Resolve a friendly experiment name to its MLflow `experiment_id`.
+    ///
+    /// MLflow's `/api/2.0/mlflow/runs/search` endpoint filters by
+    /// `experiment_ids` (numeric/string ID), not by name. The
+    /// "names" filter is a client-side convenience that doesn't exist
+    /// on the server. This helper performs the missing translation via
+    /// `experiments/get-by-name` and caches the result so we don't
+    /// pay an extra round-trip on every `list_runs` call.
+    ///
+    /// Body sent: `{"experiment_name": "<name>"}`.
+    /// Response shape: `{"experiment": {"experiment_id": "0", "name": "...", ...}}`.
+    async fn resolve_experiment_id(&self, name: &str) -> Result<String, TrackerError> {
+        // Fast path: already resolved this experiment in this provider's
+        // lifetime. Cache hits avoid an HTTP round-trip on every page
+        // fetch.
+        {
+            let cache = self.experiment_id_cache.lock().await;
+            if let Some(id) = cache.get(name) {
+                return Ok(id.clone());
+            }
+        }
+
+        let url = format!("{}/api/2.0/mlflow/experiments/get-by-name", self.base_url);
+        let response = self
+            .client
+            .post(&url)
+            .headers(auth_headers(self.token.as_deref())?)
+            .json(&serde_json::json!({"experiment_name": name}))
+            .send()
+            .await
+            .map_err(|e| TrackerError {
+                kind: TrackerErrorKind::Unknown,
+                message: format!("MLflow experiments/get-by-name transport error: {e}"),
+                hint: None,
+            })?;
+
+        let status = response.status();
+        // 404 means the experiment simply doesn't exist on this server
+        // — surface it as a NotFound so the renderer can prompt the
+        // user to fix the configured project name.
+        if status == StatusCode::NOT_FOUND {
+            return Err(TrackerError {
+                kind: TrackerErrorKind::NotFound,
+                message: format!("MLflow experiment '{name}' not found"),
+                hint: Some(
+                    "Check the project name in Bonafide's MLflow connection settings.".to_string(),
+                ),
+            });
+        }
+
+        let parsed: GetExperimentByNameResponse = map_status_and_parse(
+            response,
+            status,
+            "experiments/get-by-name",
+        )
+        .await?;
+
+        let id = parsed.experiment.experiment_id;
+        if id.is_empty() {
+            return Err(TrackerError {
+                kind: TrackerErrorKind::Unknown,
+                message: format!("MLflow returned empty experiment_id for '{name}'"),
+                hint: None,
+            });
+        }
+
+        // Populate the cache before returning so the next call is a
+        // pure hashmap lookup.
+        {
+            let mut cache = self.experiment_id_cache.lock().await;
+            cache.insert(name.to_string(), id.clone());
+        }
+
+        Ok(id)
     }
 }
 
@@ -645,14 +755,31 @@ async fn map_status_and_parse<T: for<'de> Deserialize<'de>>(
 }
 
 /// Map an MLflow `Run` onto the canonical `RunSummary`.
-fn run_to_summary(r: MlflowRun) -> RunSummary {
+///
+/// `pub` so the `tracker_for_tests` re-export in lib.rs can reach it
+/// for the integration tests in `tests/tracker_roundtrip.rs`.
+pub fn run_to_summary(r: MlflowRun) -> RunSummary {
     let MlflowRun { info, data } = r;
     // The renderer expects `summaryMetrics` as a JSON object — collect
-    // the last metric value per key, matching W&B's convention where
-    // `summary` is a flat {key: value} map.
-    let mut summary = serde_json::Map::new();
+    // the metric value with the highest (step, timestamp) per key.
+    // MLflow may return metric rows in arbitrary order (the API doesn't
+    // guarantee step ordering), so we track the best write per key
+    // rather than relying on iteration order. Higher step wins; ties
+    // are broken by higher timestamp so the most recent write at the
+    // same step also wins.
+    let mut best: std::collections::HashMap<String, (i64, i64, f64)> =
+        std::collections::HashMap::new();
     for m in data.metrics {
-        summary.insert(m.key, serde_json::json!(m.value));
+        let step = m.step.unwrap_or(0);
+        let ts = m.timestamp.unwrap_or(0);
+        let entry = best.entry(m.key).or_insert((i64::MIN, i64::MIN, m.value));
+        if (step, ts) > (entry.0, entry.1) {
+            *entry = (step, ts, m.value);
+        }
+    }
+    let mut summary = serde_json::Map::new();
+    for (k, (_, _, v)) in best {
+        summary.insert(k, serde_json::json!(v));
     }
 
     let name = if info.run_name.is_empty() {
@@ -671,13 +798,31 @@ fn run_to_summary(r: MlflowRun) -> RunSummary {
 }
 
 /// Map an MLflow `Run` onto the canonical `RunDetail`.
-fn run_to_detail(r: MlflowRun) -> RunDetail {
+///
+/// `pub` so integration tests can exercise the full
+/// summary/detail/params/tags mapping path.
+pub fn run_to_detail(r: MlflowRun) -> RunDetail {
     let MlflowRun { info, data } = r;
     let MlflowRunData { metrics, params, tags } = data;
 
-    let mut summary = serde_json::Map::new();
+    // Mirror `run_to_summary`: track the metric value with the highest
+    // (step, timestamp) per key. MLflow may return metric rows in any
+    // order, so a simple "last write wins" loop would surface whatever
+    // happened to be last in the array — not necessarily the final
+    // training step. See `run_to_summary` for the same rationale.
+    let mut best: std::collections::HashMap<String, (i64, i64, f64)> =
+        std::collections::HashMap::new();
     for m in metrics {
-        summary.insert(m.key, serde_json::json!(m.value));
+        let step = m.step.unwrap_or(0);
+        let ts = m.timestamp.unwrap_or(0);
+        let entry = best.entry(m.key).or_insert((i64::MIN, i64::MIN, m.value));
+        if (step, ts) > (entry.0, entry.1) {
+            *entry = (step, ts, m.value);
+        }
+    }
+    let mut summary = serde_json::Map::new();
+    for (k, (_, _, v)) in best {
+        summary.insert(k, serde_json::json!(v));
     }
     let mut config = serde_json::Map::new();
     for p in params {
@@ -742,23 +887,32 @@ pub async fn connect_mlflow(
 ) -> Result<String, TrackerError> {
     let workspace_hash = hash_workspace(workspace_root);
 
-    // Drop any existing provider for this workspace so we don't leak
-    // stale `reqwest::Client`s.
-    {
-        let mut registry = MLFLOW_REGISTRY.write().await;
-        registry.remove(&workspace_hash);
-    }
-
-    let provider = MlflowProvider::new(
+    // Build + probe the NEW provider OUTSIDE the registry lock.
+    //
+    // Holding a write lock across a network round-trip would block every
+    // other MLflow operation in the app for the duration of the probe,
+    // and would also make a probe failure tear down the OLD provider
+    // (since the previous version of this function `remove()`d the old
+    // entry before probing). By doing build+probe first and only taking
+    // the lock for the brief registry swap, a failed probe leaves the
+    // existing provider registered — the user's connection is preserved
+    // across a flaky reconnect attempt.
+    let new_provider = MlflowProvider::new(
         workspace_hash.clone(),
         base_url,
         token,
         project,
     )?;
-    provider.connect().await?;
+    new_provider.connect().await?;
 
+    // Probe succeeded — atomically swap the registry entry. We use a
+    // brief write lock so concurrent readers either see the old
+    // provider or the new one, never nothing.
     let mut registry = MLFLOW_REGISTRY.write().await;
-    registry.insert(workspace_hash.clone(), std::sync::Arc::new(provider));
+    registry.insert(
+        workspace_hash.clone(),
+        std::sync::Arc::new(new_provider),
+    );
 
     Ok(workspace_hash)
 }
@@ -794,11 +948,18 @@ pub async fn is_mlflow_connected(workspace_hash: &str) -> bool {
     MLFLOW_REGISTRY.read().await.contains_key(workspace_hash)
 }
 
-/// Reconstruct an `MlflowProvider` from keyring-stored credentials.
+/// Reconstruct an `MlflowProvider` from keyring-stored credentials and
+/// register it in the global MLFLOW_REGISTRY.
 ///
-/// Used on app startup to rehydrate providers after a restart, or by
-/// command handlers that want to dispatch to MLflow without re-prompting
-/// the user. Returns `Ok(None)` if no credentials are stored.
+/// Used on app startup (via `open_workspace`) to rehydrate providers
+/// after a restart, or by command handlers that want to dispatch to
+/// MLflow without re-prompting the user. Returns `Ok(None)` if no
+/// credentials are stored.
+///
+/// Side effects: on success, the new provider is inserted into
+/// `MLFLOW_REGISTRY` under `workspace_hash`. If a provider is already
+/// registered for this hash, the existing entry wins — rehydration
+/// only fills a gap, never overwrites a live in-memory connection.
 pub async fn load_mlflow_from_keyring(
     workspace_hash: &str,
 ) -> Result<Option<std::sync::Arc<MlflowProvider>>, TrackerError> {
@@ -823,7 +984,20 @@ pub async fn load_mlflow_from_keyring(
         stored.token,
         stored.project,
     )?;
-    Ok(Some(std::sync::Arc::new(provider)))
+    let provider = std::sync::Arc::new(provider);
+
+    // Register under a brief write lock. If the registry already has an
+    // entry (e.g. another task rehydrated first), leave it alone — the
+    // existing in-memory provider has live state that would be lost on
+    // an unconditional overwrite.
+    {
+        let mut registry = MLFLOW_REGISTRY.write().await;
+        registry
+            .entry(workspace_hash.to_string())
+            .or_insert_with(|| provider.clone());
+    }
+
+    Ok(Some(provider))
 }
 
 /// Compute the workspace hash used as the keyring key and registry key.

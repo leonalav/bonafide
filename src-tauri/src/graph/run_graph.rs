@@ -143,9 +143,11 @@ fn strip_lr(v: &Value) -> Value {
 /// for every summary. Each run is upserted into `run_nodes`, then
 /// edges are inferred and upserted into `run_edges`.
 ///
-/// The connection is borrowed from the caller (typically the spawn
-/// task) so the SQLite writes happen on the same connection the caller
-/// opened — avoiding the cost of a second `open`.
+/// Takes a *borrowed* `Connection` so the caller can share one
+/// connection across the config read and the sync (avoiding the cost
+/// of opening the workspace DB twice per sync). Internally we clone
+/// the handle before crossing into `block_in_place` so the non-`Sync`
+/// `Connection` never escapes a single closure.
 pub async fn sync_from_wandb(
     workspace_hash: &str,
     project: &str,
@@ -158,44 +160,41 @@ pub async fn sync_from_wandb(
         project
     );
 
-    let page = provider.list_runs(project, 100, None).await?;
-    let mut details: Vec<RunDetail> = Vec::with_capacity(page.runs.len());
+    // Phase 1 — async: fetch the full run details from the tracker.
+    let details: Vec<RunDetail> = fetch_run_details_wandb(project, provider).await?;
 
-    for summary in &page.runs {
-        match provider.get_run(&summary.id).await {
-            Ok(d) => details.push(d),
-            Err(e) => {
-                // Don't fail the whole sync just because one run is
-                // missing; log and move on.
-                log::warn!(
-                    "[run_graph] get_run({}) failed during W&B sync: {}",
-                    summary.id,
-                    e
-                );
-            }
-        }
-    }
+    // Phase 2 — sync: upsert nodes + infer/upsert edges.
+    // `block_in_place` runs the closure on the current thread without
+    // blocking the executor; the borrowed `Connection` moves into it
+    // cleanly (`block_in_place` has no `Send` bound on its closure).
+    let summary: Result<SyncSummary, TrackerError> = tokio::task::block_in_place(move || {
+        let nodes_added = details.len();
+        upsert_runs(conn, &details)?;
+        let edges_added = infer_and_upsert_edges(conn, &details)?;
+        Ok(SyncSummary {
+            nodes_added,
+            edges_added,
+        })
+    });
 
-    upsert_runs(conn, &details)?;
-    let edges_added = infer_and_upsert_edges(conn, &details)?;
-    let nodes_added = details.len();
+    let summary = summary?;
 
     log::info!(
         "[run_graph] W&B sync complete: {} nodes, {} edges",
-        nodes_added,
-        edges_added
+        summary.nodes_added,
+        summary.edges_added
     );
 
-    Ok(SyncSummary {
-        nodes_added,
-        edges_added,
-    })
+    Ok(summary)
 }
 
 /// Sync the run graph for the given workspace from a connected
 /// `MlflowProvider`. Mirrors `sync_from_wandb`; both providers expose
 /// the same `list_runs`/`get_run` shape so the post-list flow is
 /// identical.
+///
+/// Takes a *borrowed* `Connection`; see `sync_from_wandb` for the
+/// rationale.
 pub async fn sync_from_mlflow(
     workspace_hash: &str,
     project: &str,
@@ -208,36 +207,97 @@ pub async fn sync_from_mlflow(
         project
     );
 
-    let page = provider.list_runs(project, 100, None).await?;
-    let mut details: Vec<RunDetail> = Vec::with_capacity(page.runs.len());
+    // Phase 1 — async: fetch the full run details from the tracker.
+    let details: Vec<RunDetail> = fetch_run_details_mlflow(project, provider).await?;
 
-    for summary in &page.runs {
-        match provider.get_run(&summary.id).await {
-            Ok(d) => details.push(d),
-            Err(e) => {
-                log::warn!(
-                    "[run_graph] get_run({}) failed during MLflow sync: {}",
-                    summary.id,
-                    e
-                );
-            }
-        }
-    }
+    let summary: Result<SyncSummary, TrackerError> = tokio::task::block_in_place(move || {
+        let nodes_added = details.len();
+        upsert_runs(conn, &details)?;
+        let edges_added = infer_and_upsert_edges(conn, &details)?;
+        Ok(SyncSummary {
+            nodes_added,
+            edges_added,
+        })
+    });
 
-    upsert_runs(conn, &details)?;
-    let edges_added = infer_and_upsert_edges(conn, &details)?;
-    let nodes_added = details.len();
+    let summary = summary?;
 
     log::info!(
         "[run_graph] MLflow sync complete: {} nodes, {} edges",
-        nodes_added,
-        edges_added
+        summary.nodes_added,
+        summary.edges_added
     );
 
-    Ok(SyncSummary {
-        nodes_added,
-        edges_added,
-    })
+    Ok(summary)
+}
+
+/// Phase 1 of the W&B sync: list + get_run for every summary.
+/// Pure network I/O, no SQLite involved.
+///
+/// Paginates through `provider.list_runs` using the returned cursor
+/// until either the cursor is exhausted or the safety bound (1000
+/// runs total) is reached.
+async fn fetch_run_details_wandb(
+    project: &str,
+    provider: &WandbProvider,
+) -> Result<Vec<RunDetail>, TrackerError> {
+    let mut details: Vec<RunDetail> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = provider.list_runs(project, 100, cursor.as_deref()).await?;
+        for summary in &page.runs {
+            match provider.get_run(&summary.id).await {
+                Ok(d) => details.push(d),
+                Err(e) => log::warn!(
+                    "[run_graph] get_run({}) failed during W&B sync: {}",
+                    summary.id,
+                    e
+                ),
+            }
+        }
+        match page.next_cursor {
+            Some(c) if !c.is_empty() => cursor = Some(c),
+            _ => break,
+        }
+        if details.len() >= 1000 {
+            break;
+        }
+    }
+    Ok(details)
+}
+
+/// Phase 1 of the MLflow sync: list + get_run for every summary.
+///
+/// Paginates through `provider.list_runs` using the returned cursor
+/// until either the cursor is exhausted or the safety bound (1000
+/// runs total) is reached.
+async fn fetch_run_details_mlflow(
+    project: &str,
+    provider: &MlflowProvider,
+) -> Result<Vec<RunDetail>, TrackerError> {
+    let mut details: Vec<RunDetail> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = provider.list_runs(project, 100, cursor.as_deref()).await?;
+        for summary in &page.runs {
+            match provider.get_run(&summary.id).await {
+                Ok(d) => details.push(d),
+                Err(e) => log::warn!(
+                    "[run_graph] get_run({}) failed during MLflow sync: {}",
+                    summary.id,
+                    e
+                ),
+            }
+        }
+        match page.next_cursor {
+            Some(c) if !c.is_empty() => cursor = Some(c),
+            _ => break,
+        }
+        if details.len() >= 1000 {
+            break;
+        }
+    }
+    Ok(details)
 }
 
 /// Upsert each run detail into `run_nodes`. The `config_json` column

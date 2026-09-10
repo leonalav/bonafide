@@ -502,6 +502,18 @@ function emptyGitStatus(): GitStatus {
 
 // ── Phase 0: Tracker / Workspace / Code Graph types ────────────────────────
 
+/** Tracker kinds the renderer can connect. */
+export type TrackerKind = "wandb" | "mlflow";
+
+/** JSON payload the renderer sends for an MLflow `connect_tracker`
+ *  invocation. For W&B, the `api_key` argument is the plain API key
+ *  string; for MLflow, we parse it as this struct. */
+export type MlflowConnectPayload = {
+  baseUrl: string;
+  token?: string;
+  project: string;
+};
+
 /** W&B tracker error variants returned by the Rust backend. */
 export type TrackerErrorKind =
   | "no_python"
@@ -607,6 +619,17 @@ export type CodeGraphHit = {
   spanEnd: number;
 };
 
+/** A single node returned from a run-graph query. The renderer uses
+ *  these to draw cross-run relationships (framework × dataset × GPU).
+ *  Mirrors the `RunGraphNode` shape on the Rust side. */
+export type RunGraphNode = {
+  id: string;
+  framework: string;
+  gpu: string;
+  datasetRef: string;
+  createdAt: number;
+};
+
 // ── Phase 0: IPC function implementations ────────────────────────────────
 
 /** Open a workspace directory, creating its local DB on first access. */
@@ -623,67 +646,106 @@ async function listWorkspaces(): Promise<WorkspaceSummary[]> {
   return invoke<WorkspaceSummary[]>("list_workspaces");
 }
 
-/** Connect a W&B tracker for the given workspace root. */
+/** Connect a tracker for the given workspace root.
+ *
+ *  For `"wandb"` the second argument is the plain W&B API key string.
+ *  For `"mlflow"` it should be `JSON.stringify(...)` of an
+ *  {@link MlflowConnectPayload} (`{baseUrl, token?, project}`).
+ *
+ *  The optional 4th `project` argument is the tracker project / MLflow
+ *  experiment name; pass `undefined` for W&B (the project's own entity
+ *  determines the destination) and the project name for MLflow.
+ *
+ *  Returns the workspace hash on success.
+ */
 async function connectTracker(
-  kind: string,
+  kind: TrackerKind,
   apiKey: string,
   workspaceRoot: string,
+  project?: string,
 ): Promise<string> {
   if (!tauriIsTauri()) return "preview";
-  return invoke<string>("connect_tracker", { kind, apiKey, workspaceRoot });
+  return invoke<string>("connect_tracker", {
+    kind,
+    apiKey,
+    workspaceRoot,
+    project,
+  });
 }
 
 /** Disconnect the tracker for the given workspace root. */
-async function disconnectTracker(kind: string, workspaceRoot: string): Promise<void> {
+async function disconnectTracker(
+  kind: TrackerKind,
+  workspaceRoot: string,
+): Promise<void> {
   if (!tauriIsTauri()) return;
   return invoke<void>("disconnect_tracker", { kind, workspaceRoot });
 }
 
 /** Test connectivity to the tracker service without storing credentials. */
-async function testTrackerConnection(kind: string): Promise<TrackerStatus> {
+async function testTrackerConnection(
+  kind: TrackerKind,
+  workspaceRoot: string,
+): Promise<TrackerStatus> {
   if (!tauriIsTauri()) return { connected: false };
-  return invoke<TrackerStatus>("test_tracker_connection", { kind });
+  return invoke<TrackerStatus>("test_tracker_connection", { kind, workspaceRoot });
 }
 
-/** List runs for a W&B project. */
+/** List runs for a project on the given tracker. */
 async function listRuns(
+  kind: TrackerKind,
+  workspaceRoot: string,
   project: string,
   limit: number,
   cursor?: string,
 ): Promise<RunPage> {
   if (!tauriIsTauri()) return { runs: [] };
-  return invoke<RunPage>("list_runs", { project, limit, cursor });
+  return invoke<RunPage>("list_runs", { kind, workspaceRoot, project, limit, cursor });
 }
 
 /** Get full detail for a single run. */
-async function getRun(runId: string): Promise<RunDetail> {
+async function getRun(
+  kind: TrackerKind,
+  workspaceRoot: string,
+  runId: string,
+): Promise<RunDetail> {
   if (!tauriIsTauri()) {
     throw new Error("getRun not available outside Tauri");
   }
-  return invoke<RunDetail>("get_run", { runId });
+  return invoke<RunDetail>("get_run", { kind, workspaceRoot, runId });
 }
 
 /** Get the time-series values for one metric of a run. */
 async function getMetricSeries(
+  kind: TrackerKind,
+  workspaceRoot: string,
   runId: string,
   key: string,
 ): Promise<Point[]> {
   if (!tauriIsTauri()) return [];
-  return invoke<Point[]>("get_metric_series", { runId, key });
+  return invoke<Point[]>("get_metric_series", { kind, workspaceRoot, runId, key });
 }
 
 /** Get the config dict for a single run. */
-async function getRunConfig(runId: string): Promise<RunConfig> {
+async function getRunConfig(
+  kind: TrackerKind,
+  workspaceRoot: string,
+  runId: string,
+): Promise<RunConfig> {
   if (!tauriIsTauri()) {
     throw new Error("getRunConfig not available outside Tauri");
   }
-  return invoke<RunConfig>("get_run_config", { runId });
+  return invoke<RunConfig>("get_run_config", { kind, workspaceRoot, runId });
 }
 
 /** List artifacts logged to a run. */
-async function listArtifacts(runId: string): Promise<ArtifactRef[]> {
+async function listArtifacts(
+  kind: TrackerKind,
+  workspaceRoot: string,
+  runId: string,
+): Promise<ArtifactRef[]> {
   if (!tauriIsTauri()) return [];
-  return invoke<ArtifactRef[]>("list_artifacts", { runId });
+  return invoke<ArtifactRef[]>("list_artifacts", { kind, workspaceRoot, runId });
 }
 
 /** Index all Python files under a workspace root into the code graph. */
@@ -701,6 +763,18 @@ async function queryCodeGraph(
 ): Promise<CodeGraphHit[]> {
   if (!tauriIsTauri()) return [];
   return invoke<CodeGraphHit[]>("query_code_graph", { query, workspaceRoot });
+}
+
+/** Query the run-graph for nodes matching an optional `framework` and
+ *  `dataset` filter. Both filters are ANDed; passing neither returns
+ *  every node, newest-first. */
+async function queryRunGraph(
+  workspaceRoot: string,
+  framework?: string,
+  dataset?: string,
+): Promise<RunGraphNode[]> {
+  if (!tauriIsTauri()) return [];
+  return invoke<RunGraphNode[]>("query_run_graph", { workspaceRoot, framework, dataset });
 }
 
 // ── Phase 0+: Agent thread IPC ──────────────────────────────────────────────
@@ -819,6 +893,7 @@ export const bonafide = {
   graph: {
     index: indexCodeGraph,
     query: queryCodeGraph,
+    queryRunGraph,
   },
   agent: {
     listThreads,
@@ -879,18 +954,42 @@ export type BonafideAPI = {
     list: () => Promise<WorkspaceSummary[]>;
   };
   tracker: {
-    connect: (kind: string, apiKey: string, workspaceRoot: string) => Promise<string>;
-    disconnect: (kind: string, workspaceRoot: string) => Promise<void>;
-    test: (kind: string) => Promise<TrackerStatus>;
-    listRuns: (project: string, limit: number, cursor?: string) => Promise<RunPage>;
-    getRun: (runId: string) => Promise<RunDetail>;
-    getMetricSeries: (runId: string, key: string) => Promise<Point[]>;
-    getRunConfig: (runId: string) => Promise<RunConfig>;
-    listArtifacts: (runId: string) => Promise<ArtifactRef[]>;
+    connect: (kind: TrackerKind, apiKey: string, workspaceRoot: string, project?: string) => Promise<string>;
+    disconnect: (kind: TrackerKind, workspaceRoot: string) => Promise<void>;
+    test: (kind: TrackerKind, workspaceRoot: string) => Promise<TrackerStatus>;
+    listRuns: (
+      kind: TrackerKind,
+      workspaceRoot: string,
+      project: string,
+      limit: number,
+      cursor?: string,
+    ) => Promise<RunPage>;
+    getRun: (kind: TrackerKind, workspaceRoot: string, runId: string) => Promise<RunDetail>;
+    getMetricSeries: (
+      kind: TrackerKind,
+      workspaceRoot: string,
+      runId: string,
+      key: string,
+    ) => Promise<Point[]>;
+    getRunConfig: (
+      kind: TrackerKind,
+      workspaceRoot: string,
+      runId: string,
+    ) => Promise<RunConfig>;
+    listArtifacts: (
+      kind: TrackerKind,
+      workspaceRoot: string,
+      runId: string,
+    ) => Promise<ArtifactRef[]>;
   };
   graph: {
     index: (workspaceRoot: string) => Promise<IndexSummary>;
     query: (query: string, workspaceRoot: string) => Promise<CodeGraphHit[]>;
+    queryRunGraph: (
+      workspaceRoot: string,
+      framework?: string,
+      dataset?: string,
+    ) => Promise<RunGraphNode[]>;
   };
   agent: {
     listThreads: (workspaceRoot: string) => Promise<ThreadRow[]>;

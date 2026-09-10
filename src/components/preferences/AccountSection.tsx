@@ -1,8 +1,12 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "../ui/Icon";
 import { Button, StatusDot } from "../ui/primitives";
 import { Card, CardHeader, Checkbox } from "../ui/controls";
-import { bonafide } from "@/ipc/tauri";
+import {
+  bonafide,
+  type MlflowConnectPayload,
+  type TrackerKind,
+} from "@/ipc/tauri";
 
 type Provider = { name: string; account?: string; connected: boolean; meta?: string; note?: string };
 
@@ -58,35 +62,162 @@ function ProviderRow({ p, onManage }: { p: Provider; onManage?: () => void }) {
   );
 }
 
-export function AccountSection({ onManageTracker }: { onManageTracker: () => void }) {
+export function AccountSection({
+  onManageTracker,
+  workspaceRoot,
+  trackerKind,
+  onTrackerConnected,
+  onTrackerDisconnected,
+}: {
+  onManageTracker: () => void;
+  workspaceRoot: string | null;
+  trackerKind: TrackerKind | null;
+  onTrackerConnected?: (kind: "wandb" | "mlflow") => void;
+  onTrackerDisconnected?: (kind: "wandb" | "mlflow") => void;
+}) {
   const [wbApiKey, setWbApiKey] = useState("");
   const [wbConnecting, setWbConnecting] = useState(false);
   const [wbError, setWbError] = useState<string | null>(null);
-  const [wbConnected, setWbConnected] = useState(false);
 
-  // Phase 0: hardcoded workspace root stub — replace with app store when available.
-  const workspaceRoot = "/tmp/bonafide-workspace";
+  // MLflow form state — same parallel structure as W&B so the two cards
+  // stay visually consistent.
+  const [mlflowBaseUrl, setMlflowBaseUrl] = useState("http://localhost:5000");
+  const [mlflowToken, setMlflowToken] = useState("");
+  const [mlflowProject, setMlflowProject] = useState("Default");
+  const [mlflowConnecting, setMlflowConnecting] = useState(false);
+  const [mlflowError, setMlflowError] = useState<string | null>(null);
+
+  // Workspace is opened from the App shell; when `null` the Connect
+  // actions are gated so we never call `connect_tracker` with an
+  // empty/missing workspace root.
+  const workspaceOpen = workspaceRoot != null;
+
+  // Mirror `workspaceRoot` into a ref so the async connect handlers
+  // can detect a workspace switch mid-flight. Capturing the prop
+  // directly in the closure (the previous behaviour) meant the
+  // post-await setters could land on the wrong workspace.
+  const workspaceRootRef = useRef<string | null>(workspaceRoot);
+  useEffect(() => {
+    workspaceRootRef.current = workspaceRoot;
+  }, [workspaceRoot]);
+
+  // Derive the connected state from the `trackerKind` prop so the
+  // "Connected" pill survives a remount of the prefs window (the
+  // source of truth lives in App's `trackerKindByWs` map, not in
+  // local component state).
+  const wbConnected = trackerKind === "wandb";
+  const mlflowConnected = trackerKind === "mlflow";
 
   async function handleWbConnect() {
-    if (!wbApiKey.trim()) return;
+    if (!wbApiKey.trim() || !workspaceRoot) return;
+    // Snapshot the workspace root so we can detect a mid-flight switch.
+    const targetRoot = workspaceRoot;
     setWbConnecting(true);
     setWbError(null);
     try {
-      await bonafide.tracker.connect("wandb", wbApiKey, workspaceRoot);
-      setWbConnected(true);
+      await bonafide.tracker.connect("wandb", wbApiKey, targetRoot, undefined);
+      // Guard: only update state if we're still targeting the same workspace.
+      if (targetRoot !== workspaceRootRef.current) return;
+      onTrackerConnected?.("wandb");
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.toLowerCase().includes("auth")) {
+      // Same guard on the error path — if the workspace changed while
+      // we were awaiting, leave the new workspace's state alone.
+      if (targetRoot !== workspaceRootRef.current) return;
+      const kind = (err as { kind?: string }).kind;
+      if (kind === "auth_failed") {
         setWbError("Auth failed — check your W&B API key.");
-      } else if (msg.toLowerCase().includes("no_python") || msg.toLowerCase().includes("python")) {
+      } else if (kind === "no_python") {
         setWbError("Python 3.10+ not found. Set path in Settings → Python.");
+      } else if (kind === "not_found") {
+        setWbError("Workspace not found. Open a folder first.");
+      } else if (kind === "shim_crashed") {
+        setWbError("W&B shim crashed. Check the logs.");
       } else {
-        setWbError(msg);
+        setWbError((err as Error)?.message ?? String(err) ?? "Connection failed");
       }
-      setWbConnected(false);
     } finally {
-      setWbConnecting(false);
+      // Only clear the spinner if we're still on the same workspace —
+      // otherwise the new workspace's own connect cycle owns the flag.
+      if (targetRoot === workspaceRootRef.current) {
+        setWbConnecting(false);
+      }
     }
+  }
+
+  async function handleMlflowConnect() {
+    if (!mlflowBaseUrl.trim() || !workspaceRoot) return;
+    // Snapshot the workspace root so we can detect a mid-flight switch.
+    const targetRoot = workspaceRoot;
+    setMlflowConnecting(true);
+    setMlflowError(null);
+    try {
+      const payload: MlflowConnectPayload = {
+        baseUrl: mlflowBaseUrl,
+        token: mlflowToken || undefined,
+        project: mlflowProject || "Default",
+      };
+      await bonafide.tracker.connect(
+        "mlflow",
+        JSON.stringify(payload),
+        targetRoot,
+        mlflowProject,
+      );
+      // Guard: only update state if we're still targeting the same workspace.
+      if (targetRoot !== workspaceRootRef.current) return;
+      onTrackerConnected?.("mlflow");
+    } catch (err: unknown) {
+      // Same guard on the error path — if the workspace changed while
+      // we were awaiting, leave the new workspace's state alone.
+      if (targetRoot !== workspaceRootRef.current) return;
+      const kind = (err as { kind?: string }).kind;
+      if (kind === "auth_failed") {
+        setMlflowError("Auth failed — check your MLflow token.");
+      } else if (kind === "unknown") {
+        setMlflowError("Connection refused — check that the MLflow server is running.");
+      } else {
+        setMlflowError((err as Error)?.message ?? String(err) ?? "Connection failed");
+      }
+    } finally {
+      // Only clear the spinner if we're still on the same workspace —
+      // otherwise the new workspace's own connect cycle owns the flag.
+      if (targetRoot === workspaceRootRef.current) {
+        setMlflowConnecting(false);
+      }
+    }
+  }
+
+  // Disconnect clears the OS-keyring credential, kills the W&B shim
+  // process, and drops the workspace's tracker entry. Without the IPC
+  // call the local React flag would clear but the keyring would still
+  // hold the API key and the shim process would keep running. Guarded
+  // by the same workspace snapshot pattern as the connect handlers so
+  // a mid-flight click during a workspace switch can't write into the
+  // wrong workspace's state.
+  async function handleWbDisconnect() {
+    const targetRoot = workspaceRoot;
+    if (!targetRoot) return;
+    try {
+      await bonafide.tracker.disconnect("wandb", targetRoot);
+    } catch (err) {
+      console.error("[AccountSection] wandb disconnect failed:", err);
+      // Continue — still update local state so UI is consistent
+    }
+    if (targetRoot !== workspaceRootRef.current) return;
+    setWbError(null);
+    onTrackerDisconnected?.("wandb");
+  }
+
+  async function handleMlflowDisconnect() {
+    const targetRoot = workspaceRoot;
+    if (!targetRoot) return;
+    try {
+      await bonafide.tracker.disconnect("mlflow", targetRoot);
+    } catch (err) {
+      console.error("[AccountSection] mlflow disconnect failed:", err);
+    }
+    if (targetRoot !== workspaceRootRef.current) return;
+    setMlflowError(null);
+    onTrackerDisconnected?.("mlflow");
   }
   return (
     <div className="mx-auto flex max-w-[720px] flex-col gap-8">
@@ -144,6 +275,14 @@ export function AccountSection({ onManageTracker }: { onManageTracker: () => voi
           }
         />
         <div className="flex flex-col gap-2">
+          {!workspaceOpen && (
+            <div className="flex items-center gap-2 rounded border border-outline-variant/60 bg-surface-container-high/40 p-2.5">
+              <Icon name="folder-open" size={13} className="shrink-0 text-on-surface-variant" />
+              <span className="font-body text-[12px] text-on-surface-variant">
+                Open a workspace before connecting a tracker.
+              </span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
               <input
@@ -174,11 +313,22 @@ export function AccountSection({ onManageTracker }: { onManageTracker: () => voi
             <Button
               variant="primary"
               size="sm"
-              disabled={!wbApiKey.trim() || wbConnecting}
+              disabled={!wbApiKey.trim() || wbConnecting || !workspaceOpen}
               onClick={() => void handleWbConnect()}
             >
               {wbConnecting ? "Connecting…" : wbConnected ? "Reconnect" : "Connect"}
             </Button>
+            {wbConnected && !wbConnecting && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleWbDisconnect}
+                className="hover:!text-error"
+                aria-label="Disconnect W&B"
+              >
+                Disconnect
+              </Button>
+            )}
           </div>
           {wbError && (
             <div className="flex items-center gap-2 rounded border border-error/30 bg-error-container/20 p-2.5">
@@ -199,6 +349,104 @@ export function AccountSection({ onManageTracker }: { onManageTracker: () => voi
               >
                 wandb.ai/authorize
               </a>
+            </p>
+          )}
+        </div>
+      </Card>
+
+      {/* MLflow Connect Card */}
+      <Card>
+        <CardHeader
+          title="MLflow"
+          right={
+            mlflowConnected ? (
+              <div className="flex items-center gap-1.5">
+                <StatusDot token="primary" />
+                <span className="font-body text-[12px] text-primary">Connected</span>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                <StatusDot token="outline" />
+                <span className="font-body text-[12px] text-outline">Not connected</span>
+              </div>
+            )
+          }
+        />
+        <div className="flex flex-col gap-2">
+          {!workspaceOpen && (
+            <div className="flex items-center gap-2 rounded border border-outline-variant/60 bg-surface-container-high/40 p-2.5">
+              <Icon name="folder-open" size={13} className="shrink-0 text-on-surface-variant" />
+              <span className="font-body text-[12px] text-on-surface-variant">
+                Open a workspace before connecting a tracker.
+              </span>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={mlflowBaseUrl}
+              onChange={(e) => {
+                setMlflowBaseUrl(e.target.value);
+                setMlflowError(null);
+              }}
+              placeholder="http://localhost:5000"
+              className="h-8 w-full rounded border border-outline-variant bg-surface px-3 font-sans text-[13px] text-on-surface placeholder:text-outline focus:border-primary focus:outline-none"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="password"
+              value={mlflowToken}
+              onChange={(e) => {
+                setMlflowToken(e.target.value);
+                setMlflowError(null);
+              }}
+              placeholder="Bearer token (optional)"
+              className="h-8 w-full rounded border border-outline-variant bg-surface px-3 font-sans text-[13px] text-on-surface placeholder:text-outline focus:border-primary focus:outline-none"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={mlflowProject}
+              onChange={(e) => {
+                setMlflowProject(e.target.value);
+                setMlflowError(null);
+              }}
+              placeholder="Default"
+              className="h-8 w-full rounded border border-outline-variant bg-surface px-3 font-sans text-[13px] text-on-surface placeholder:text-outline focus:border-primary focus:outline-none"
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!mlflowBaseUrl.trim() || mlflowConnecting || !workspaceOpen}
+              onClick={() => void handleMlflowConnect()}
+            >
+              {mlflowConnecting ? "Connecting…" : mlflowConnected ? "Reconnect" : "Connect"}
+            </Button>
+            {mlflowConnected && !mlflowConnecting && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleMlflowDisconnect}
+                className="hover:!text-error"
+                aria-label="Disconnect MLflow"
+              >
+                Disconnect
+              </Button>
+            )}
+          </div>
+          {mlflowError && (
+            <div className="flex items-center gap-2 rounded border border-error/30 bg-error-container/20 p-2.5">
+              <Icon name="alert-triangle" size={13} className="shrink-0 text-error" />
+              <span className="font-body text-[12px] text-error">{mlflowError}</span>
+            </div>
+          )}
+          {!mlflowConnected && !mlflowError && (
+            <p className="font-body text-[12px] text-on-surface-variant">
+              Default URL works for a local{" "}
+              <code className="rounded bg-surface-container px-1 font-mono text-[11px]">mlflow server</code>
+              . For hosted MLflow, paste the tracking URL and an access token.
             </p>
           )}
         </div>

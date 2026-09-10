@@ -37,7 +37,7 @@ import { ToastHost } from "./components/ToastHost"
 
 import { bonafide } from "./ipc/tauri"
 
-import type { TerminalProfile } from "./ipc/tauri"
+import type { TerminalProfile, TrackerKind } from "./ipc/tauri"
 import {
   RunsProvider,
   useRunsData,
@@ -194,6 +194,41 @@ function AppInner() {
   const _t2 = performance.now()
 
   const workspaceName = useWorkspaceName()
+
+  // Phase 1: which tracker backend to query for runs. The Account
+  // preferences panel flips this to "wandb" / "mlflow" via
+  // `setTrackerKind` once the user connects a tracker. The value is
+  // passed into `RunsProvider` so the live `listRuns` IPC targets the
+  // correct backend.
+  //
+  // Keyed by workspace root so each workspace remembers its own
+  // tracker. A single global `trackerKind` would leak across
+  // workspaces — connecting MLflow in workspace A would make the runs
+  // panel in workspace B query MLflow even though B never had an
+  // MLflow provider attached. `trackerKind` is `null` for workspaces
+  // that haven't connected any tracker yet; `RunsProvider` falls back
+  // to "wandb" for the IPC call and surfaces `noTrackerConnected`
+  // through `useRunsStatus`.
+  const [trackerKindByWs, setTrackerKindByWs] = useState<
+    Record<string, TrackerKind>
+  >({})
+  const trackerKind: TrackerKind | null =
+    workspaceRoot && trackerKindByWs[workspaceRoot]
+      ? trackerKindByWs[workspaceRoot]
+      : null
+  const setTrackerKind = (kind: TrackerKind) => {
+    if (!workspaceRoot) return
+    setTrackerKindByWs((prev) => ({ ...prev, [workspaceRoot]: kind }))
+  }
+  const clearTrackerKind = () => {
+    if (!workspaceRoot) return
+    setTrackerKindByWs((prev) => {
+      if (!(workspaceRoot in prev)) return prev
+      const next = { ...prev }
+      delete next[workspaceRoot]
+      return next
+    })
+  }
 
   const _t3 = performance.now()
 
@@ -689,7 +724,7 @@ function AppInner() {
   }
 
   return (
-    <RunsProvider workspaceRoot={workspaceRoot ?? null}>
+    <RunsProvider workspaceRoot={workspaceRoot ?? null} trackerKind={trackerKind}>
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-surface-container-lowest text-on-surface">
       <TitleBar />
 
@@ -814,6 +849,10 @@ function AppInner() {
         <PreferencesWindow
           initialSection={prefs}
           onClose={() => setPrefs(null)}
+          workspaceRoot={workspaceRoot ?? null}
+          trackerKind={trackerKind}
+          onTrackerConnected={(kind) => setTrackerKind(kind)}
+          onTrackerDisconnected={() => clearTrackerKind()}
         />
       )}
       {workflowOpen && <WorkflowPanel onClose={() => setWorkflowOpen(false)} />}

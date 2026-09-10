@@ -4,7 +4,7 @@ import { StatusDot } from "./ui/primitives";
 import { Select } from "./ui/Select";
 import { Chart, fmtValue } from "./ui/Chart";
 import { Sparkline } from "./ui/Sparkline";
-import { ARTIFACTS, STATE_META, useRunsData, type Artifact, type Run } from "./../data/runs";
+import { ARTIFACTS, STATE_META, useRunsData, useRunsStatus, type Artifact, type Run } from "./../data/runs";
 
 const ART_ICON: Record<Artifact["kind"], string> = { model: "box", dataset: "database", plot: "image", file: "file" };
 
@@ -40,7 +40,27 @@ function Card({ title, children, right }: { title: string; children: React.React
 
 export function ExperimentsTab({ runId }: { runId: string }) {
   const runs = useRunsData();
+  const { noTrackerConnected, loading, error } = useRunsStatus();
   const run = runs.find((r) => r.id === runId) ?? runs[0];
+
+  if (noTrackerConnected) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="max-w-sm text-center">
+          <Icon name="zap" size={32} className="mx-auto mb-3 text-outline" />
+          <div className="font-body text-[14px] text-on-surface">
+            Connect a tracker to see live runs
+          </div>
+          <div className="mt-1 font-body text-[12px] text-on-surface-variant">
+            Open Preferences → Account to connect W&amp;B or MLflow.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (loading) return <div>Loading…</div>;
+  if (error) return <div>Error: {error}</div>;
   const meta = STATE_META[run.state];
   const [compare, setCompare] = useState("");
   const [chartMode, setChartMode] = useState(false);

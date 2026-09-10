@@ -638,17 +638,24 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
             placeholder="Message (Ctrl+Enter to commit)"
             className="w-full resize-none rounded border border-outline-variant bg-surface px-2 py-1.5 font-body text-[13px] text-on-surface placeholder:text-outline focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/30"
           />
-          <div className="mt-1.5 flex items-center gap-2 rounded bg-surface-container/50 px-2 py-1 font-sans text-[11px] text-on-surface-variant">
-            <span className="label-caps text-outline">checks</span>
-            <span className="flex items-center gap-1">
-              <Icon name="check" size={11} className="text-primary" /> lint
-            </span>
-            <span className="flex items-center gap-1">
-              <Icon name="check" size={11} className="text-primary" /> tests
-            </span>
-            <span className="ml-auto text-outline">
-              {counts.staged > 0 ? "ready" : "nothing staged"}
-            </span>
+          <div className="mt-1.5 overflow-hidden rounded bg-surface-container/50 px-2 py-1 font-sans text-[11px] text-on-surface-variant">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+              <span className="label-caps text-outline whitespace-nowrap">checks</span>
+              <span className="flex items-center gap-1 whitespace-nowrap">
+                <Icon name="check" size={11} className="text-primary" /> lint
+              </span>
+              <span className="flex items-center gap-1 whitespace-nowrap">
+                <Icon name="check" size={11} className="text-primary" /> tests
+              </span>
+              <span
+                className={`ml-auto whitespace-nowrap ${
+                  counts.staged > 0 ? "text-primary" : "text-outline"
+                }`}
+                title={counts.staged > 0 ? "Staged changes ready to commit" : "No staged changes"}
+              >
+                {counts.staged > 0 ? "ready" : "nothing staged"}
+              </span>
+            </div>
           </div>
           <div className="mt-2 flex gap-1.5">
             <Button
@@ -1210,7 +1217,13 @@ function TabBtn({
     <button
       type="button"
       onClick={onClick}
-      className={`relative flex items-center px-2.5 font-sans text-[12px] uppercase tracking-wide transition-colors ${
+      // `whitespace-nowrap` keeps tab labels (e.g. "BRANCHES") from wrapping
+      // onto two lines when the sidebar is narrow (~240px) or the workspace
+      // has many file changes inflating the count badge. `min-w-0` lets the
+      // badge shrink/truncate if it ever really can't fit, instead of forcing
+      // the label to break. `overflow-hidden` ensures the badge clips cleanly
+      // inside the tab rather than bleeding past its right edge.
+      className={`relative flex min-w-0 items-center overflow-hidden whitespace-nowrap px-2.5 font-sans text-[12px] uppercase tracking-wide transition-colors ${
         active ? "text-on-surface" : "text-on-surface-variant hover:text-on-surface"
       }`}
     >

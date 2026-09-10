@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 
 use crate::shim::protocol::ShimRequest;
 use crate::shim::ShimManager;
-use crate::tracker::credentials::{delete_credential, set_credential};
+use crate::tracker::credentials::{delete_credential, get_credential, set_credential};
 use crate::tracker::error::{TrackerError, TrackerErrorKind};
 use crate::tracker::TrackerStatus;
 
@@ -287,20 +287,39 @@ impl WandbProvider {
     /// Connect to W&B: spawn the Python shim and persist the API key.
     ///
     /// Stores the API key in the OS keyring under
-    /// `tracker:wandb:{workspace_hash}` so it survives app restarts.
+    /// `tracker:wandb:{workspace_hash}` so it survives app restarts,
+    /// and pushes it into the live `ShimManager` so the next `spawn()`
+    /// call (initial spawn or key-change respawn) forwards it via the
+    /// `WANDB_API_KEY` env var.
     pub fn connect(&self, api_key: &str) -> Result<(), TrackerError> {
-        // Store the API key in the keyring
-        set_credential("wandb", &self.workspace_hash, api_key)
-            .map_err(|e| TrackerError {
-                kind: TrackerErrorKind::AuthFailed,
-                message: format!("Failed to store API key in keyring: {e}"),
-                hint: None,
-            })?;
+        // Read the previously stored key to detect a change.
+        let previous = crate::tracker::credentials::get_credential("wandb", &self.workspace_hash)
+            .map_err(|e| TrackerError::auth_failed(&format!("keyring read failed: {e}")))?
+            .unwrap_or_default();
+        let key_changed = !previous.is_empty() && previous != api_key;
 
-        // Spawn the shim
-        self.shim
-            .spawn()
-            .map_err(|e| TrackerError::shim_crashed(&format!("spawn failed: {e}")))
+        // Store the new key.
+        set_credential("wandb", &self.workspace_hash, api_key)
+            .map_err(|e| TrackerError::auth_failed(&format!("keyring write failed: {e}")))?;
+
+        // ALWAYS push the freshly-supplied key into the shim manager
+        // before any spawn/respawn. Without this the env var would
+        // carry the value captured at `WandbProvider::new()` time
+        // (which is the pre-existing key, or an empty default on
+        // first connect), and auth would silently fail downstream.
+        self.shim.set_api_key(api_key.to_string());
+
+        // Spawn the shim if not already running.
+        if self.shim.pid().is_none() {
+            self.shim.spawn().map_err(|e| TrackerError::shim_crashed(&format!("spawn failed: {e}")))?;
+        } else if key_changed {
+            // Respawn so the new env var is loaded. Use the
+            // user-triggered variant — this must NOT count toward
+            // MAX_RESTARTS, since the child isn't crashing; the user
+            // is just supplying fresh credentials.
+            self.shim.respawn_with_key().map_err(|e| TrackerError::shim_crashed(&format!("respawn failed: {e}")))?;
+        }
+        Ok(())
     }
 
     /// Disconnect from W&B: shut down the shim and remove the API key.
@@ -506,8 +525,13 @@ lazy_static! {
 
 /// Compute the registry / keyring key for a workspace root.
 ///
-/// Same scheme as `mlflow::hash_workspace` and the canonical
-/// `lib::compute_workspace_hash`: sha256 hex of the canonicalized path.
+/// Same scheme as `mlflow::hash_workspace`, `graph::storage::workspace_hash`,
+/// and `lib::compute_workspace_hash`: sha256 hex of the canonicalized
+/// workspace root path, **truncated to the first 8 bytes (16 hex chars)**.
+/// Truncating keeps the value matching what the renderer stores on
+/// `Workspace.hash` after `open_workspace`, so the registry lookups in
+/// `is_tracker_connected` actually find the provider.
+///
 /// Exposed at `pub(crate)` so MLflow can reuse it (and stay in sync
 /// across providers for the same workspace).
 pub(crate) fn hash_workspace(root: &Path) -> String {
@@ -518,7 +542,8 @@ pub(crate) fn hash_workspace(root: &Path) -> String {
         .to_string();
     let mut hasher = Sha256::new();
     hasher.update(normalized.as_bytes());
-    hex::encode(hasher.finalize())
+    let digest = hasher.finalize();
+    hex::encode(&digest[..8])
 }
 
 /// Connect a W&B tracker for the given workspace.
@@ -533,26 +558,18 @@ pub async fn connect_tracker(
     workspace_root: &Path,
     api_key: &str,
 ) -> Result<String, TrackerError> {
-    let workspace_hash = hash_workspace(workspace_root);
+    let workspace_hash = hash_workspace(workspace_root);  // 16-char hash after A1 fix
 
-    // Check if we already have a provider for this workspace
-    {
-        let registry = TRACKER_REGISTRY.read().await;
-        if let Some(provider) = registry.get(&workspace_hash) {
-            // Provider already exists — call connect to (re)store key and respawn shim
-            provider.connect(api_key)?;
-            return Ok(workspace_hash);
-        }
+    // Hold a single write lock across the whole check-and-insert path.
+    let mut registry = TRACKER_REGISTRY.write().await;
+    if let Some(provider) = registry.get(&workspace_hash) {
+        provider.connect(api_key)?;
+        return Ok(workspace_hash);
     }
 
-    // Create and connect a new provider
     let provider = Arc::new(WandbProvider::new(workspace_hash.clone())?);
     provider.connect(api_key)?;
-
-    // Insert into registry
-    let mut registry = TRACKER_REGISTRY.write().await;
     registry.insert(workspace_hash.clone(), provider);
-
     Ok(workspace_hash)
 }
 
@@ -651,6 +668,9 @@ mod tests {
         let h1 = hash_workspace(root);
         let h2 = hash_workspace(root);
         assert_eq!(h1, h2);
-        assert_eq!(h1.len(), 64); // sha256 hex
+        // Truncated to first 8 bytes of sha256 = 16 hex chars, matching
+        // `mlflow::hash_workspace`, `graph::storage::workspace_hash`,
+        // and `lib::compute_workspace_hash`.
+        assert_eq!(h1.len(), 16);
     }
 }
