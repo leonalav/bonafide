@@ -336,6 +336,37 @@ export function Composer({
     setAttachments([])
   }, [seedText, resetKey])
 
+  // Budget status — drives the expensive-model lockout in the model
+  // picker per spec §10. Polled once on mount + whenever the workspace
+  // changes; the value is re-fetched after every successful send so
+  // the picker reflects the latest spend ratio.
+  const [budget, setBudget] = useState<BudgetStatus | null>(null)
+  useEffect(() => {
+    if (!workspaceRoot) {
+      setBudget(null)
+      return
+    }
+    let cancelled = false
+    void bonafide.agent
+      .getBudgetStatus(workspaceRoot)
+      .then((b) => {
+        if (!cancelled) setBudget(b)
+      })
+      .catch(() => {
+        // Surface budget lookup failures silently — the picker
+        // degrades to "all models enabled" when we can't read the
+        // status, which is a safe default.
+        if (!cancelled) setBudget(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceRoot])
+
+  const expensiveLocked = budget
+    ? shouldDisableExpensiveModels(budget.escalation)
+    : false
+
   const modeBtnRef = useRef<HTMLButtonElement | null>(null)
   const modelBtnRef = useRef<HTMLButtonElement | null>(null)
   const [modeAnchor, setModeAnchor] = useState<DOMRect | null>(null)
@@ -600,18 +631,27 @@ export function Composer({
               <div className="label-caps px-1.5 pb-0.5 pt-0.5 text-outline">
                 {config.endpoints.length === 0 ? "Model" : ""}
               </div>
-              {BUILT_IN_MODELS.map((m) => (
-                <ModelRow
-                  key={m.id}
-                  m={m}
-                  active={selectedEndpoint === null && builtinId === m.id}
-                  onClick={() => {
-                    changeBuiltinId(m.id as ModelFamily)
-                    selectEndpoint(null)
-                    setMenu(null)
-                  }}
-                />
-              ))}
+              {BUILT_IN_MODELS.map((m) => {
+                const isExpensive = EXPENSIVE_MODEL_IDS.has(m.id)
+                const disabled = expensiveLocked && isExpensive
+                const reason = disabled
+                  ? `Disabled — budget is ${budget?.escalation ?? "critical"}. Switch to a cheaper model or raise the budget in Preferences → Budget.`
+                  : undefined
+                return (
+                  <ModelRow
+                    key={m.id}
+                    m={m}
+                    active={selectedEndpoint === null && builtinId === m.id}
+                    disabled={disabled}
+                    disabledReason={reason}
+                    onClick={() => {
+                      changeBuiltinId(m.id as ModelFamily)
+                      selectEndpoint(null)
+                      setMenu(null)
+                    }}
+                  />
+                )
+              })}
 
               <div className="my-0.5 h-px bg-outline-variant/50" />
               <a

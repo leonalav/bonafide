@@ -48,6 +48,8 @@ import { buildApiChatMessage, chatCompletion } from "../../llm/client"
 
 import { buildSystemPrompt } from "../../llm/systemPrompt"
 
+import { useWorkspaceRoot } from "../../ide/hooks"
+
 import type { ApiChatMessage } from "../../llm/types"
 
 import { ChatHeader } from "../chat/ChatHeader"
@@ -137,6 +139,7 @@ function WelcomePanel({
  */
 
 function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
+  const workspaceRoot = useWorkspaceRoot()
   const {
     activeThread,
 
@@ -648,6 +651,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
           // state so the next send uses the new model.
 
           onBuiltinChange={(id) => setBuiltinId(id)}
+          workspaceRoot={workspaceRoot}
         />
       </div>
 
