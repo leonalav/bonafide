@@ -350,6 +350,70 @@ async function listTerminalProfiles(): Promise<TerminalProfile[]> {
   return invoke<TerminalProfile[]>("list_terminal_profiles")
 }
 
+// ── Phase 0: Recent workspaces + tracker / service probes ──────────────────
+//
+// These power the Preferences → Account panel. The renderer calls
+// `listRecentWorkspaces` on mount, then `getRecentWorkspace` to
+// populate the active-workspace card. `getTrackerStatus` /
+// `listServices` / `getUserProfile` fill the four cards in the
+// Connected Trackers / Connected Services / Profile rows. All
+// commands fall back to `[]` / `null` outside Tauri so the
+// preferences panel can still render its empty state in browser
+// preview mode.
+
+/** Read the recent-workspaces list (Preferences → Account → Recent). */
+async function listRecentWorkspaces(): Promise<RecentWorkspace[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<RecentWorkspace[]>("list_recent_workspaces")
+}
+
+/** Look up one recent workspace by path; `null` if never seen. */
+async function getRecentWorkspace(
+  path: string,
+): Promise<RecentWorkspace | null> {
+  if (!tauriIsTauri()) return null
+  return invoke<RecentWorkspace | null>("get_recent_workspace", { path })
+}
+
+/** Insert or refresh a recent-workspace entry (called when the user
+ *  opens a folder). If `path` already exists, its `lastOpened` is
+ *  bumped and `runCount` is incremented; otherwise a new entry is
+ *  prepended. */
+async function addRecentWorkspace(path: string): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke<void>("add_recent_workspace", { path })
+}
+
+/** Probe every known tracker (`wandb`, `mlflow`, `comet`, `neptune`)
+ *  and return a status row per kind. Always returns all four rows,
+ *  even disconnected, so the UI can render the full list. */
+async function getTrackerStatus(): Promise<TrackerStatusRow[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<TrackerStatusRow[]>("get_tracker_status")
+}
+
+/** Read the persisted config for a tracker kind (`baseUrl`,
+ *  `project`). Returns `null` if no config has been saved for the
+ *  kind. */
+async function getTrackerConfig(kind: TrackerKindFull): Promise<TrackerConfig | null> {
+  if (!tauriIsTauri()) return null
+  return invoke<TrackerConfig | null>("get_tracker_config", { kind })
+}
+
+/** Probe every known service (`github`, `huggingface`, `slack`). */
+async function listServices(): Promise<ServiceStatus[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<ServiceStatus[]>("list_services")
+}
+
+/** Return the user's profile for the top Account card. Phase 0.0
+ *  always returns `null`; the renderer falls back to dashed/empty
+ *  placeholders in that case. */
+async function getUserProfile(): Promise<UserProfile | null> {
+  if (!tauriIsTauri()) return null
+  return invoke<UserProfile | null>("get_user_profile")
+}
+
 // ── Git / source-control ──────────────────────────────────────────────────
 //
 // All commands are thin wrappers over the Rust git_service module. Each
@@ -531,6 +595,62 @@ function emptyGitStatus(): GitStatus {
 /** Tracker kinds the renderer can connect. */
 export type TrackerKind = "wandb" | "mlflow"
 
+/** All tracker kinds the preferences panel renders, including the
+ *  read-only `comet` / `neptune` probes that don't yet have full
+ *  connect flows. */
+export type TrackerKindFull = TrackerKind | "comet" | "neptune"
+
+/** All service kinds the preferences panel renders. */
+export type ServiceKind = "github" | "huggingface" | "slack"
+
+/** Per-tracker status row from `getTrackerStatus`. `account` is the
+ *  best-effort identifier we found for the user (email, org, etc.)
+ *  and `meta` is a free-form human-readable string surfaced under
+ *  the tracker row (e.g. "Synced 12s ago · 27 runs" or "No URL
+ *  configured"). The renderer is free to show "—" when `meta` is
+ *  `null` rather than empty-string. */
+export type TrackerStatusRow = {
+  kind: TrackerKindFull
+  account: string | null
+  connected: boolean
+  meta: string | null
+}
+
+/** Per-tracker configuration from `getTrackerConfig`. The renderer
+ *  uses this to pre-populate the connection forms with the
+ *  last-used URL / project without round-tripping through
+ *  `getSettings()`. */
+export type TrackerConfig = {
+  baseUrl: string | null
+  project: string | null
+}
+
+/** Connected-service status row from `listServices`. Mirrors
+ *  `TrackerStatusRow` but with the service kinds. */
+export type ServiceStatus = {
+  kind: ServiceKind
+  account: string | null
+  connected: boolean
+  meta: string | null
+}
+
+/** User profile for the top card in Account. Phase 0.0 always
+ *  returns `null` from `getUserProfile` (no Bonafide account
+ *  backend yet), so the renderer falls back to dashed/empty
+ *  placeholders. */
+export type UserProfile = {
+  name: string
+  email: string
+  joined: string
+}
+
+/** Result of `testTrackerConnection`. */
+export type TrackerStatus = {
+  connected: boolean
+  latencyMs?: number
+  errorKind?: string
+}
+
 /** JSON payload the renderer sends for an MLflow `connect_tracker`
  *  invocation. For W&B, the `api_key` argument is the plain API key
  *  string; for MLflow, we parse it as this struct. */
@@ -550,11 +670,14 @@ export type TrackerError = {
   hint?: string
 }
 
-/** Result of `test_tracker_connection`. */
-export type TrackerStatus = {
-  connected: boolean
-  latencyMs?: number
-  errorKind?: string
+/** One entry in the Preferences → Account → Recent Workspaces list. */
+export type RecentWorkspace = {
+  /** Absolute filesystem path of the workspace root. */
+  path: string
+  /** ISO-8601 timestamp of the last time the user opened this path. */
+  lastOpened: string
+  /** How many times the user has opened this workspace. */
+  runCount: number
 }
 
 /** Full workspace descriptor returned by `open_workspace`. */
@@ -1201,6 +1324,184 @@ async function detectAnomalies(
   })
 }
 
+// ── Phase 0.0: Settings store ──────────────────────────────────────────────
+//
+// Replaces hardcoded values in PreferencesWindow, SettingsSection, and
+// BudgetMeter. Reads/writes ~/.bonafide/settings.json on the Rust side
+// through `commands::settings::*`. The browser-preview fallbacks all
+// return DEFAULT_SETTINGS so the UI renders with sane defaults instead
+// of crashing.
+
+import { DEFAULT_SETTINGS, type Settings as SettingsShape } from "../data/settings"
+
+export type { Settings, ModelEndpoint } from "../data/settings"
+
+async function getSettings(): Promise<SettingsShape> {
+  if (!tauriIsTauri()) {
+    return { ...DEFAULT_SETTINGS }
+  }
+  return invoke<SettingsShape>("get_settings")
+}
+
+/** Read a single setting key. Returns `null` if the key is absent. */
+async function getSetting(key: string): Promise<unknown> {
+  if (!tauriIsTauri()) return null
+  return invoke<unknown>("get_setting", { key })
+}
+
+/**
+ * Update a single setting key. The value is any JSON-serializable
+ * primitive or object; the Rust side merges it into the typed
+ * `Settings` struct via key-name dispatch.
+ */
+async function setSetting(key: string, value: unknown): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke("set_setting", { key, value })
+}
+
+/** Persist the full settings object to ~/.bonafide/settings.json. */
+async function setSettings(settings: SettingsShape): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke("set_settings", { settings })
+}
+
+// ── Phase 0.0: Python interpreter detection ────────────────────────────────
+//
+// Replaces hardcoded Python values in SettingsSection. Walks the
+// workspace `.venv`, then probes `$PATH`, then falls back to defaults.
+
+/** A discovered Python package installed in the environment. */
+export interface PackageInfo {
+  name: string
+  version: string
+}
+
+/** Full description of a discovered Python environment. */
+export interface PythonEnvironment {
+  interpreter: string | null
+  version: string | null
+  virtualEnv: string | null
+  packages: PackageInfo[]
+}
+
+/**
+ * Detect the best available Python interpreter for `workspaceRoot`.
+ * Search order: `workspaceRoot/.venv` → `$PATH` (`python3`, `python`).
+ * Returns an empty `PythonEnvironment` when no interpreter is found.
+ */
+async function detectPython(
+  workspaceRoot?: string,
+): Promise<PythonEnvironment> {
+  if (!tauriIsTauri()) {
+    return { interpreter: null, version: null, virtualEnv: null, packages: [] }
+  }
+  return invoke<PythonEnvironment>("detect_python", { workspaceRoot })
+}
+
+/** List all installed packages for a given interpreter path. */
+async function listPythonPackages(interpreter: string): Promise<PackageInfo[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<PackageInfo[]>("list_python_packages", { interpreter })
+}
+
+// ── Phase 0.0: GPU detection ───────────────────────────────────────────────
+//
+// Replaces the hardcoded GPU segment in BudgetMeter. Cross-platform:
+// tries `nvidia-smi` first, then `rocm-smi` on Linux.
+
+export interface GpuInfo {
+  name: string
+  /** 0–100 percent utilization. */
+  utilizationPct: number
+  /** Memory currently used, in megabytes. */
+  memoryUsedMb: number
+  /** Total GPU memory, in megabytes. */
+  memoryTotalMb: number
+}
+
+export interface GpuVisibility {
+  visible: boolean
+  count: number
+}
+
+/** Detect all available GPUs on this machine. */
+async function detectGpus(): Promise<GpuInfo[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<GpuInfo[]>("detect_gpus")
+}
+
+/** Get GPU visibility state (called synchronously by BudgetMeter). */
+async function getGpuVisibility(): Promise<GpuVisibility> {
+  if (!tauriIsTauri()) return { visible: false, count: 0 }
+  return invoke<GpuVisibility>("get_gpu_visibility")
+}
+
+// ── Phase 0.0: App info + cache ─────────────────────────────────────────────
+//
+// Replaces hardcoded cache size, version, paths in Settings. Returns
+// `CARGO_PKG_VERSION`, git short hash, `dirs::cache_dir()`, etc.
+
+/** Aggregate app metadata returned by `get_app_info`. */
+export interface AppInfoBackend {
+  /** Package version from Cargo.toml. */
+  version: string
+  /** Git short-hash from `git rev-parse --short HEAD`. */
+  build: string
+  /** `std::env::consts::OS`. */
+  platform: string
+  /** `std::env::consts::ARCH`. */
+  arch: string
+  /** Platform-specific cache directory. */
+  cacheDir: string
+  /** Path to the local SQLite DB. */
+  dbPath: string
+  /** IPC port (default 7654 for the local Tauri-side bridge). */
+  ipcPort: number
+  /** Path to the Python shim Unix-domain socket. */
+  shimSocket: string
+}
+
+/** Return all app metadata for the renderer. */
+async function getAppInfo(): Promise<AppInfoBackend> {
+  if (!tauriIsTauri()) {
+    return {
+      version: "1.0.0",
+      build: "preview",
+      platform: typeof navigator !== "undefined" && navigator.platform
+        ? (navigator.platform.toLowerCase().includes("mac")
+            ? "darwin"
+            : navigator.platform.toLowerCase().includes("linux")
+              ? "linux"
+              : "windows")
+        : "windows",
+      arch: "x86_64",
+      cacheDir: "",
+      dbPath: "",
+      ipcPort: 7654,
+      shimSocket: "",
+    }
+  }
+  return invoke<AppInfoBackend>("get_app_info")
+}
+
+/** Recursively sum the size of all files in the cache directory. */
+async function getCacheSize(): Promise<number> {
+  if (!tauriIsTauri()) return 0
+  return invoke<number>("get_cache_size")
+}
+
+/** Delete all files in the cache directory. Returns bytes cleared. */
+async function clearCache(): Promise<number> {
+  if (!tauriIsTauri()) return 0
+  return invoke<number>("clear_cache")
+}
+
+/** Open a path in the platform's file manager (Explorer / Finder / xdg-open). */
+async function openInFolder(path: string): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke("open_in_folder", { path })
+}
+
 // ── Public API — same shape as the old electronAPI ────────────────────────
 
 export const bonafide = {
@@ -1263,6 +1564,15 @@ export const bonafide = {
   workspace: {
     open: openWorkspace,
     list: listWorkspaces,
+    listRecent: listRecentWorkspaces,
+    getRecent: getRecentWorkspace,
+    addRecent: addRecentWorkspace,
+  },
+  account: {
+    getTrackerStatus,
+    getTrackerConfig,
+    listServices,
+    getUserProfile,
   },
   tracker: {
     connect: connectTracker,
@@ -1278,6 +1588,26 @@ export const bonafide = {
     index: indexCodeGraph,
     query: queryCodeGraph,
     queryRunGraph,
+  },
+  appInfo: {
+    get: getAppInfo,
+    getCacheSize,
+    clearCache,
+    openInFolder,
+  },
+  settings: {
+    getAll: getSettings,
+    get: getSetting,
+    set: setSetting,
+    setAll: setSettings,
+  },
+  python: {
+    detect: detectPython,
+    listPackages: listPythonPackages,
+  },
+  gpu: {
+    detect: detectGpus,
+    getVisibility: getGpuVisibility,
   },
   agent: {
     listThreads,
@@ -1366,6 +1696,15 @@ export type BonafideAPI = {
   workspace: {
     open: (path: string) => Promise<Workspace>
     list: () => Promise<WorkspaceSummary[]>
+    listRecent: () => Promise<RecentWorkspace[]>
+    getRecent: (path: string) => Promise<RecentWorkspace | null>
+    addRecent: (path: string) => Promise<void>
+  }
+  account: {
+    getTrackerStatus: () => Promise<TrackerStatusRow[]>
+    getTrackerConfig: (kind: TrackerKindFull) => Promise<TrackerConfig | null>
+    listServices: () => Promise<ServiceStatus[]>
+    getUserProfile: () => Promise<UserProfile | null>
   }
   tracker: {
     connect: (
@@ -1510,5 +1849,25 @@ export type BonafideAPI = {
       workspaceRoot: string,
       runId: string,
     ) => Promise<import("../data/memory").AnomalyReport>
+  }
+  appInfo: {
+    get: () => Promise<import("./tauri").AppInfoBackend>
+    getCacheSize: () => Promise<number>
+    clearCache: () => Promise<number>
+    openInFolder: (path: string) => Promise<void>
+  }
+  settings: {
+    getAll: () => Promise<SettingsShape>
+    get: (key: string) => Promise<unknown>
+    set: (key: string, value: unknown) => Promise<void>
+    setAll: (settings: SettingsShape) => Promise<void>
+  }
+  python: {
+    detect: (workspaceRoot?: string) => Promise<PythonEnvironment>
+    listPackages: (interpreter: string) => Promise<PackageInfo[]>
+  }
+  gpu: {
+    detect: () => Promise<GpuInfo[]>
+    getVisibility: () => Promise<GpuVisibility>
   }
 }
