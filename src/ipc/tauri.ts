@@ -209,6 +209,7 @@ function onMaximizeChanged(cb: (maximized: boolean) => void): () => void {
 
 async function getInfo(): Promise<AppInfo> {
   if (!tauriIsTauri()) {
+    // Intentionally stubbed for browser preview mode — Tauri provides real values at runtime
     return {
       version: "1.0.0",
       name: "Bonafide",
@@ -295,10 +296,9 @@ function onFsEvent(cb: (events: FsEvent[]) => void): () => void {
 // ── LSP bridge + ruff CLI ──────────────────────────────────────────────────
 
 /** Get the WebSocket URL of the LSP bridge hosted by the Tauri backend. */
-async function getLspBridgeUrl(): Promise<string> {
+async function getLspBridgeUrl(): Promise<string | null> {
   if (!tauriIsTauri()) {
-    // Fall back to a localhost URL when running standalone in the browser.
-    return "ws://127.0.0.1:9877"
+    return null
   }
   return invoke<string>("get_lsp_bridge_url")
 }
@@ -325,8 +325,8 @@ async function ruffCheck(filePath: string): Promise<string> {
 }
 
 /** Get the WebSocket URL for the PTY bridge (xterm.js terminal sessions). */
-async function getPtyWsUrl(): Promise<string> {
-  if (!tauriIsTauri()) return "ws://127.0.0.1:9878"
+async function getPtyWsUrl(): Promise<string | null> {
+  if (!tauriIsTauri()) return null
   return invoke<string>("get_pty_ws_url")
 }
 
@@ -345,18 +345,7 @@ export type TerminalProfile = {
  */
 async function listTerminalProfiles(): Promise<TerminalProfile[]> {
   if (!tauriIsTauri()) {
-    // Browser preview fallback: return a single demo profile so the UI
-    // still renders. The "Connect" button won't actually spawn a shell,
-    // but the dropdown won't be empty.
-    return [
-      {
-        id: "demo",
-        label: "Demo (browser preview)",
-        program: "",
-        args: [],
-        available: true,
-      },
-    ]
+    return []
   }
   return invoke<TerminalProfile[]>("list_terminal_profiles")
 }
@@ -966,8 +955,8 @@ async function getBudgetStatus(
   if (!tauriIsTauri()) {
     return {
       workspaceHash: "preview",
-      budgetDollars: 10,
-      budgetGpuHours: 4,
+      budgetDollars: 0,
+      budgetGpuHours: 0,
       spentDollars: 0,
       spentGpuHours: 0,
       escalation: "normal",
@@ -986,16 +975,7 @@ async function updateBudget(
   budgetGpuHours: number,
 ): Promise<import("../data/budget").BudgetStatus> {
   if (!tauriIsTauri()) {
-    return {
-      workspaceHash: "preview",
-      budgetDollars,
-      budgetGpuHours,
-      spentDollars: 0,
-      spentGpuHours: 0,
-      escalation: "normal",
-      spendRatio: 0,
-      requiresApproval: false,
-    }
+    throw new Error("Budget updates require the Tauri backend")
   }
   return invoke<import("../data/budget").BudgetStatus>("update_budget", {
     workspaceRoot,
@@ -1043,8 +1023,8 @@ async function proposeExperiment(
     return {
       experimentId: `exp_preview_${Date.now()}`,
       title: input.title,
-      escalation: "normal",
-      withinBudget: true,
+      escalation: "escalate",
+      withinBudget: false,
     }
   }
   return invoke<import("../data/planner").ProposeExperimentOutput>(
@@ -1103,11 +1083,11 @@ async function runSmokeTest(
 ): Promise<import("../data/scaffolder").SmokeTestResult> {
   if (!tauriIsTauri()) {
     return {
-      exitCode: 0,
-      stdout: "(browser preview — smoke test skipped)",
-      stderr: "",
+      exitCode: -1,
+      stdout: "",
+      stderr: "(browser preview — smoke test skipped)",
       timedOut: false,
-      summary: "✅ Smoke test passed (preview)",
+      summary: "Skipped in browser preview",
     }
   }
   return invoke<import("../data/scaffolder").SmokeTestResult>(
@@ -1118,6 +1098,107 @@ async function runSmokeTest(
       maxSteps,
     },
   )
+}
+
+// ── Phase 3: Project Memory, Researcher, Critic, Monitoring ─────────────────
+
+export type {
+  ProjectInsight,
+  ProjectDeadEnd,
+  ArxivPaper,
+  ArxivSearchResult,
+  CriticReview,
+  AnomalyReport,
+} from "../data/memory"
+
+async function queryProjectMemory(
+  workspaceRoot: string,
+  kind?: "insight" | "dead_end",
+): Promise<{
+  insights: import("../data/memory").ProjectInsight[]
+  deadEnds: import("../data/memory").ProjectDeadEnd[]
+}> {
+  if (!tauriIsTauri()) {
+    return { insights: [], deadEnds: [] }
+  }
+  return invoke<{
+    insights: import("../data/memory").ProjectInsight[]
+    deadEnds: import("../data/memory").ProjectDeadEnd[]
+  }>("query_project_memory", { workspaceRoot, kind })
+}
+
+async function writeProjectInsight(
+  workspaceRoot: string,
+  insight: Omit<import("../data/memory").ProjectInsight, "id" | "createdAt">,
+): Promise<string> {
+  if (!tauriIsTauri()) return "preview-id"
+  return invoke<string>("write_project_insight", { workspaceRoot, insight })
+}
+
+async function writeProjectDeadEnd(
+  workspaceRoot: string,
+  deadEnd: Omit<import("../data/memory").ProjectDeadEnd, "id" | "createdAt">,
+): Promise<string> {
+  if (!tauriIsTauri()) return "preview-id"
+  return invoke<string>("write_project_dead_end", { workspaceRoot, deadEnd })
+}
+
+async function searchArxiv(
+  query: string,
+  maxResults?: number,
+): Promise<import("../data/memory").ArxivSearchResult> {
+  if (!tauriIsTauri()) {
+    return { query, results: [], totalResults: 0 }
+  }
+  return invoke<import("../data/memory").ArxivSearchResult>("search_arxiv", {
+    query,
+    maxResults,
+  })
+}
+
+async function getArxivPaper(
+  arxivId: string,
+): Promise<import("../data/memory").ArxivPaper> {
+  if (!tauriIsTauri()) {
+    throw new Error("ArXiv not available in browser preview")
+  }
+  return invoke<import("../data/memory").ArxivPaper>("get_arxiv_paper", {
+    arxivId,
+  })
+}
+
+async function reviewCode(
+  workspaceRoot: string,
+  filePath: string,
+  patch?: string,
+): Promise<import("../data/memory").CriticReview> {
+  if (!tauriIsTauri()) {
+    return {
+      score: 0,
+      issues: [],
+      recommendations: [],
+      verdict: "skip",
+      summary: "(browser preview — critic skipped)",
+    }
+  }
+  return invoke<import("../data/memory").CriticReview>("review_code", {
+    workspaceRoot,
+    filePath,
+    patch,
+  })
+}
+
+async function detectAnomalies(
+  workspaceRoot: string,
+  runId: string,
+): Promise<import("../data/memory").AnomalyReport> {
+  if (!tauriIsTauri()) {
+    return { runId, anomalies: [], summary: "(browser preview)" }
+  }
+  return invoke<import("../data/memory").AnomalyReport>("detect_anomalies", {
+    workspaceRoot,
+    runId,
+  })
 }
 
 // ── Public API — same shape as the old electronAPI ────────────────────────
@@ -1217,6 +1298,13 @@ export const bonafide = {
     listExperimentsForPlanner,
     scaffoldScript,
     runSmokeTest,
+    queryProjectMemory,
+    writeProjectInsight,
+    writeProjectDeadEnd,
+    searchArxiv,
+    getArxivPaper,
+    reviewCode,
+    detectAnomalies,
   },
 }
 
@@ -1247,13 +1335,13 @@ export type BonafideAPI = {
     onEvent: (cb: (events: FsEvent[]) => void) => () => void
   }
   lsp: {
-    getBridgeUrl: () => Promise<string>
+    getBridgeUrl: () => Promise<string | null>
     getServers: () => Promise<{ id: string status: string }[]>
     stopServer: (serverId: string) => Promise<void>
   }
   linters: { ruffCheck: (filePath: string) => Promise<string> }
   pty: {
-    getWsUrl: () => Promise<string>
+    getWsUrl: () => Promise<string | null>
     listProfiles: () => Promise<TerminalProfile[]>
   }
   git: {
@@ -1388,5 +1476,39 @@ export type BonafideAPI = {
       scriptPath: string,
       maxSteps?: number,
     ) => Promise<import("../data/scaffolder").SmokeTestResult>
+    queryProjectMemory: (
+      workspaceRoot: string,
+      kind?: "insight" | "dead_end",
+    ) => Promise<{
+      insights: import("../data/memory").ProjectInsight[]
+      deadEnds: import("../data/memory").ProjectDeadEnd[]
+    }>
+    writeProjectInsight: (
+      workspaceRoot: string,
+      insight: Omit<
+        import("../data/memory").ProjectInsight,
+        "id" | "createdAt"
+      >,
+    ) => Promise<string>
+    writeProjectDeadEnd: (
+      workspaceRoot: string,
+      deadEnd: Omit<import("../data/memory").ProjectDeadEnd, "id" | "createdAt">,
+    ) => Promise<string>
+    searchArxiv: (
+      query: string,
+      maxResults?: number,
+    ) => Promise<import("../data/memory").ArxivSearchResult>
+    getArxivPaper: (
+      arxivId: string,
+    ) => Promise<import("../data/memory").ArxivPaper>
+    reviewCode: (
+      workspaceRoot: string,
+      filePath: string,
+      patch?: string,
+    ) => Promise<import("../data/memory").CriticReview>
+    detectAnomalies: (
+      workspaceRoot: string,
+      runId: string,
+    ) => Promise<import("../data/memory").AnomalyReport>
   }
 }
