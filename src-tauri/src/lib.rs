@@ -29,6 +29,7 @@ mod graph;
 mod agent;
 mod shim;
 mod tracker;
+mod commands;
 
 use graph::Storage;
 
@@ -1475,6 +1476,28 @@ pub fn run() {
             list_experiments_for_planner,
             scaffold_script,
             run_smoke_test,
+            // Phase 0.0: Settings store, Python detect, GPU detect, App info
+            commands::settings::get_settings,
+            commands::settings::get_setting,
+            commands::settings::set_setting,
+            commands::settings::set_settings,
+            commands::python_detect::detect_python,
+            commands::python_detect::list_python_packages,
+            commands::gpu_detect::detect_gpus,
+            commands::gpu_detect::get_gpu_visibility,
+            commands::app_info::get_app_info,
+            commands::app_info::get_cache_size,
+            commands::app_info::clear_cache,
+            commands::app_info::open_in_folder,
+            // Phase 0.0: Recent workspaces (P0-T4)
+            commands::workspace::list_recent_workspaces,
+            commands::workspace::get_recent_workspace,
+            commands::workspace::add_recent_workspace,
+            // Phase 0.0: Tracker / Services / User profile probes (P0-T5)
+            commands::tracker::get_tracker_status,
+            commands::tracker::get_tracker_config,
+            commands::tracker::list_services,
+            commands::tracker::get_user_profile,
         ])
         .setup(|app| {
             // Tauri 2 has a subtle race: `visible: true` shows the
