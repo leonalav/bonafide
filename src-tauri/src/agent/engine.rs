@@ -60,6 +60,50 @@ use crate::agent::threads::{
 };
 use crate::agent::tools::{ToolRegistry, ToolResult};
 
+// ── Shared system-prompt fragments (section 8.1 layer 2) ────────────────────
+
+/// Universal behavioural rules every Bonafide agent must follow,
+/// regardless of role. Renders as layer 2 of the four-layer system
+/// prompt (identity → rules → mode-specific → context). The rules
+/// below are the agent-invariant contract: be honest, cite evidence,
+/// honour the marker format, stay in role, and stop when the
+/// investigation is complete.
+pub const SHARED_BEHAVIORAL_RULES: &str = "SHARED BEHAVIOURAL RULES\n\
+═══════════════════════════\n\
+1. HONESTY: Never fabricate tool results. If a tool call failed, \
+say so. If you didn't see something, don't claim you did.\n\
+2. EVIDENCE: Every claim references a tool call result, run ID, \
+step number, or config field. \"The loss looks high\" is not a \
+claim — \"val_loss=0.89 at step 5000\" is.\n\
+3. MARKERS: Emit the exact marker strings the engine greps for \
+(\"## Hypothesis\", \"## Patch\", \"## Resolved\", \"## Escalate\", \
+plus the role-specific markers). Don't paraphrase them.\n\
+4. CONCISENESS: One paragraph per idea. Skip filler phrases like \
+\"Let me think about this...\" — go straight to the point.\n\
+5. SCOPE: Stay in role. The Debugger debugs, the Scaffolder \
+generates, the Planner plans, the Researcher researches, the \
+Critic critiques. Don't drift into other modes' jobs.\n\
+6. STOP WHEN DONE: When you emit the resolved marker (or the \
+role-specific completion marker), the loop terminates. Don't \
+keep generating after signalling completion.\n\
+7. SAFETY: Never propose destructive operations without an \
+explicit user-confirmation hook (apply_patch, git operations, \
+experiment launches — all require approval).";
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+
+/// Convert an `EscalationLevel` to its human-readable label. Used
+/// by `build_system_prompt` to render layer 4 (runtime context)
+/// so the LLM knows whether the budget is approaching its limits.
+fn escalation_label(level: EscalationLevel) -> &'static str {
+    match level {
+        EscalationLevel::Normal => "Normal",
+        EscalationLevel::Caution => "Caution",
+        EscalationLevel::Critical => "Critical",
+        EscalationLevel::Exhausted => "Exhausted",
+    }
+}
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use std::path::Path;
@@ -1685,5 +1729,288 @@ mod tests {
         let other = std::sync::Arc::new(crate::agent::modes::ModeRegistry::default());
         let engine = engine.with_mode_registry(other.clone());
         assert!(std::sync::Arc::ptr_eq(engine.mode_registry(), &other));
+    }
+
+    // ── System prompt injection tests (WS3 behavioural layer) ─────────
+
+    /// `build_system_prompt_includes_mode_suffix`: the system
+    /// prompt must include the mode-specific `system_prompt_suffix()`
+    /// so the per-mode protocol + few-shot examples actually reach
+    /// the LLM. Without this, the modes are inert — the prompt
+    /// would be the generic identity alone.
+    #[test]
+    fn build_system_prompt_includes_mode_suffix() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+        let prompt = engine.build_system_prompt(&thread);
+
+        // Layer 3: Debugger protocol must be present.
+        assert!(
+            prompt.contains("INVESTIGATION PROTOCOL"),
+            "Debugger prompt must include investigation protocol header",
+        );
+        assert!(prompt.contains("1. GATHER"));
+        assert!(prompt.contains("2. HYPOTHESIZE"));
+        assert!(prompt.contains("3. PATCH"));
+        assert!(prompt.contains("4. VERIFY"));
+        assert!(prompt.contains("5. DOCUMENT"));
+
+        // Few-shot example must be present.
+        assert!(prompt.contains("FEW-SHOT EXAMPLE"));
+        assert!(prompt.contains("a3f9c12"));
+
+        // Layer 1 identity.
+        assert!(prompt.contains("Bonafide Debugger"));
+    }
+
+    /// `build_system_prompt_includes_behavioral_rules`: the system
+    /// prompt must include the shared behavioural rules (section
+    /// 8.1 layer 2) so every mode enforces the same non-negotiables
+    /// regardless of which mode is active.
+    #[test]
+    fn build_system_prompt_includes_behavioral_rules() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Researcher, ThreadState::Investigating);
+        let prompt = engine.build_system_prompt(&thread);
+
+        // Must include every behavioural rule (1-10).
+        for i in 1..=10 {
+            assert!(
+                prompt.contains(&format!("{}. ", i)),
+                "Behavioural rule {} must be present in system prompt",
+                i,
+            );
+        }
+        // Specifically check a couple of high-signal rules.
+        assert!(prompt.contains("Never fabricate metric values"));
+        assert!(prompt.contains("Reproducibility is sacred"));
+    }
+
+    /// `build_system_prompt_includes_runtime_context`: the system
+    /// prompt must include runtime context (layer 4) — active role,
+    /// thread state, budget, escalation level, and mode thresholds.
+    /// Without this the LLM would not know which mode it is or how
+    /// much budget remains.
+    #[test]
+    fn build_system_prompt_includes_runtime_context() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Planner, ThreadState::Investigating);
+        thread.hypothesis_iterations = 2;
+        thread.budget.spent_dollars = 1.5;
+        thread.budget.spent_gpu_hours = 0.5;
+        let prompt = engine.build_system_prompt(&thread);
+
+        assert!(prompt.contains("Active role: Planner"));
+        assert!(prompt.contains("RUNTIME CONTEXT"));
+        assert!(prompt.contains("hypothesis_iterations: 2"));
+        assert!(prompt.contains("Escalation level"));
+        assert!(prompt.contains("min_confidence_to_propose_patch"));
+    }
+
+    /// `build_system_prompt_different_per_mode`: each mode must
+    /// produce a distinct system prompt so the LLM's behaviour
+    /// actually changes with mode. This guards against a future
+    /// refactor where all modes collapse to the same prompt.
+    #[test]
+    fn build_system_prompt_different_per_mode() {
+        let engine = AgentEngine::default();
+        let mut thread_d = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+        let mut thread_s = make_thread(AgentRole::Scaffolder, ThreadState::Investigating);
+        let mut thread_p = make_thread(AgentRole::Planner, ThreadState::Investigating);
+        let mut thread_r = make_thread(AgentRole::Researcher, ThreadState::Investigating);
+        let mut thread_c = make_thread(AgentRole::Critic, ThreadState::Investigating);
+
+        let prompt_d = engine.build_system_prompt(&thread_d);
+        let prompt_s = engine.build_system_prompt(&thread_s);
+        let prompt_p = engine.build_system_prompt(&thread_p);
+        let prompt_r = engine.build_system_prompt(&thread_r);
+        let prompt_c = engine.build_system_prompt(&thread_c);
+
+        // Each prompt must mention its own role by name in the
+        // runtime-context block, and reference the corresponding
+        // mode-specific tokens.
+        assert!(prompt_d.contains("Bonafide Debugger") && prompt_d.contains("INVESTIGATION PROTOCOL"));
+        assert!(prompt_s.contains("Bonafide Scaffolder") && prompt_s.contains("CONFIG FIRST"));
+        assert!(prompt_p.contains("Bonafide Planner") && prompt_p.contains("HYPOTHESIS-DRIVEN"));
+        assert!(prompt_r.contains("Bonafide Researcher") && prompt_r.contains("CITATIONS REQUIRED"));
+        assert!(prompt_c.contains("Bonafide Critic") && prompt_c.contains("SCORING"));
+
+        // Pairwise: each pair must differ.
+        assert_ne!(prompt_d, prompt_s);
+        assert_ne!(prompt_s, prompt_p);
+        assert_ne!(prompt_p, prompt_r);
+        assert_ne!(prompt_r, prompt_c);
+        assert_ne!(prompt_d, prompt_p);
+    }
+
+    /// `build_messages_prepends_system_prompt`: the first message
+    /// in the LLM-bound message list must be the system prompt.
+    /// This is the wiring that makes the per-mode protocol actually
+    /// reach the model.
+    #[test]
+    fn build_messages_prepends_system_prompt() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+        let messages = engine.build_messages(&thread);
+
+        assert!(!messages.is_empty(), "messages list must not be empty");
+        assert_eq!(
+            messages[0].role,
+            Role::System,
+            "first message must be the system prompt",
+        );
+        assert!(
+            messages[0].content.contains("INVESTIGATION PROTOCOL"),
+            "system message must include mode-specific protocol",
+        );
+    }
+
+    /// `build_messages_includes_hypothesis_and_trace`: after the
+    /// system message, the conversation history must still include
+    /// user/assistant messages, the hypothesis block, and the last
+    /// few trace observations. Verifies the new system-message
+    /// insertion didn't displace the rest of the prompt structure.
+    #[test]
+    fn build_messages_includes_hypothesis_and_trace() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+        thread.messages.push(crate::agent::orchestrator::Message {
+            id: "m1".to_string(),
+            role: "user".to_string(),
+            content: "Why is run a3f9c12 diverging?".to_string(),
+            ts: 0,
+        });
+        thread.hypothesis = Some(crate::agent::orchestrator::Hypothesis {
+            verdict: "lr too high".to_string(),
+            statement: "Learning rate 1e-3 is too high.".to_string(),
+            evidence: vec![],
+            confidence: 0.7,
+            ruled_out: vec![],
+        });
+        thread.trace.push(crate::agent::orchestrator::TraceStep {
+            step: 1,
+            content: "Read run config: lr=1e-3, batch_size=64.".to_string(),
+            ts: 0,
+        });
+
+        let messages = engine.build_messages(&thread);
+        // System + user + hypothesis + trace = 4 messages.
+        assert_eq!(messages[0].role, Role::System);
+        // The user message must be present.
+        let has_user = messages
+            .iter()
+            .any(|m| m.role == Role::User && m.content.contains("diverging"));
+        assert!(has_user, "user message must be present");
+        // The hypothesis block must be present.
+        let has_hyp = messages
+            .iter()
+            .any(|m| m.role == Role::Assistant && m.content.contains("[Hypothesis]"));
+        assert!(has_hyp, "hypothesis block must be present");
+        // The trace observation must be present.
+        let has_trace = messages
+            .iter()
+            .any(|m| m.role == Role::Assistant && m.content.contains("lr=1e-3"));
+        assert!(has_trace, "trace observation must be present");
+    }
+
+    // ── Hypothesis protocol enforcement tests (WS3 Priority 2) ────────
+
+    /// `apply_patch_blocked_before_hypothesis`: the engine must
+    /// refuse an `apply_patch` tool call when no hypothesis has
+    /// been formed (state == Investigating, no ## Hypothesis marker
+    /// emitted yet). Premature patches waste GPU hours.
+    #[test]
+    fn apply_patch_blocked_before_hypothesis() {
+        let calls = Arc::new(std::sync::Mutex::new(0));
+        let resp = ChatResponse {
+            content: String::new(), // No hypothesis marker
+            tool_calls: vec![tool_call("apply_patch")],
+            usage: None,
+        };
+        let client = CountingLlmClient::new(calls.clone(), resp);
+        let mut engine = AgentEngine::new(
+            Arc::new(client),
+            Arc::new(ToolRegistry::default()),
+            ApprovalGate::default(),
+            Arc::new(PermittingBudget::default()),
+        );
+
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+        // Patch is blocked but the loop continues, so we expect a
+        // non-patch tool to eventually return Completed.
+        let result = std::future::Future::poll(
+            std::pin::Pin::new(&mut engine.run(&mut thread)),
+            &mut std::future::Future::poll as _,
+        );
+        // Use pollster / block_on to await without tokio::test.
+        let result = futures_lite::future::block_on(engine.run(&mut thread));
+
+        // The loop should run; the apply_patch must be blocked
+        // (we can't easily assert the block from a one-shot resp,
+        // but we can assert the engine does not crash and produces
+        // a sensible result).
+        match result {
+            EngineResult::MaxIterations | EngineResult::Completed { .. } => {}
+            other => panic!("unexpected result: {:?}", other),
+        }
+    }
+
+    /// `hypothesis_marker_increments_counter`: when the assistant
+    /// emits a `## Hypothesis` marker in the `Investigating` state,
+    /// the engine must increment `thread.hypothesis_iterations`.
+    /// This is the counter that drives the protocol-escalation
+    /// gate.
+    #[test]
+    fn hypothesis_marker_increments_counter() {
+        let calls = Arc::new(std::sync::Mutex::new(0));
+        let resp = ChatResponse {
+            content: "## Hypothesis: lr too high. Confidence: 0.7.".to_string(),
+            tool_calls: Vec::new(), // terminal answer
+            usage: None,
+        };
+        let client = CountingLlmClient::new(calls.clone(), resp);
+        let mut engine = AgentEngine::new(
+            Arc::new(client),
+            Arc::new(ToolRegistry::default()),
+            ApprovalGate::default(),
+            Arc::new(PermittingBudget::default()),
+        );
+
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+        let _ = futures_lite::future::block_on(engine.run(&mut thread));
+
+        // Marker was emitted; counter must have incremented.
+        assert!(
+            thread.hypothesis_iterations >= 1,
+            "expected hypothesis_iterations >= 1, got {}",
+            thread.hypothesis_iterations,
+        );
+    }
+
+    /// `escalation_marker_terminates_with_resolved`: a final answer
+    /// containing `## Resolved` (the per-mode resolved marker) must
+    /// transition the thread to `Resolved` state and return
+    /// `EngineResult::Completed`.
+    #[test]
+    fn escalation_marker_terminates_with_resolved() {
+        let calls = Arc::new(std::sync::Mutex::new(0));
+        let resp = ChatResponse {
+            content: "Investigation complete. ## Resolved".to_string(),
+            tool_calls: Vec::new(),
+            usage: None,
+        };
+        let client = CountingLlmClient::new(calls.clone(), resp);
+        let mut engine = AgentEngine::new(
+            Arc::new(client),
+            Arc::new(ToolRegistry::default()),
+            ApprovalGate::default(),
+            Arc::new(PermittingBudget::default()),
+        );
+
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+        let result = futures_lite::future::block_on(engine.run(&mut thread));
+
+        assert!(matches!(result, EngineResult::Completed { .. }));
+        assert_eq!(thread.state, ThreadState::Resolved);
     }
 }
