@@ -475,6 +475,24 @@ async fn open_workspace(
     let (_conn, hash) = graph::storage::open_workspace_db(&root)
         .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
 
+    // WS1-T2: Ensure the v2 thread schema is in place. Idempotent — runs
+    // every workspace open but adds zero columns on a fully-migrated
+    // database. The function lives in `agent::migrations` and is a
+    // additive-only `ALTER TABLE` block. We run it after the base
+    // migrations in `open_workspace_db` but before any storage
+    // operation so the v2 columns are available to subsequent
+    // `upsert_thread` / `list_threads` calls. Errors bubble up so a
+    // corrupted database surfaces as a clear failure instead of being
+    // masked by a later `INSERT` error.
+    let root_for_migration = PathBuf::from(&path);
+    let _ = tokio::task::block_in_place(move || -> Result<(), String> {
+        let (conn, _hash) = graph::storage::open_workspace_db(&root_for_migration)
+            .map_err(|e| format!("Failed to open workspace DB for v2 migration: {e}"))?;
+        agent::migrations::ensure_v2_columns(&conn)
+            .map_err(|e| format!("Failed to apply v2 thread migration: {e}"))?;
+        Ok(())
+    })?;
+
     let db_path = graph::storage::bonafide_dir()
         .join(&hash)
         .join("store.db")
@@ -970,7 +988,9 @@ async fn list_threads(
     let root = PathBuf::from(&workspace_root);
     let (conn, _hash) = graph::storage::open_workspace_db(&root)
         .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::threads::list_threads(&conn, &hash)
+    // WS1-T2: backward-compatible — pass `None` so the existing
+    // inbox semantics (every thread for this workspace) are preserved.
+    agent::threads::list_threads(&conn, &hash, None)
         .map_err(|e| format!("Failed to list threads: {e}"))
 }
 
