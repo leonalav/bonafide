@@ -192,6 +192,14 @@ impl Mode for PlannerMode {
         0.0
     }
 
+    /// The Planner's documented final-marker. Per section 5.4, the Planner
+    /// emits `## Recommendation` as the final actionable advice.
+    /// This drives the engine's `→ Resolved` transition so the loop
+    /// terminates cleanly after proposing an experiment plan.
+    fn behavior_marker_resolved(&self) -> &'static str {
+        "## Recommendation"
+    }
+
     fn system_prompt_suffix(&self) -> &'static str {
         PLANNER_SYSTEM_PROMPT_SUFFIX
     }

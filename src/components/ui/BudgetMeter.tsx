@@ -44,6 +44,9 @@ export function BudgetMeter() {
   })
 
   // Fetch budget on mount and whenever the workspace changes.
+  // WS5-T10: Poll every 30s to keep the meter fresh during long-running
+  // agent threads. The interval is cleared when the component unmounts
+  // or when the workspace changes.
   useEffect(() => {
     if (!workspaceRoot) {
       setBudget(null)
@@ -51,22 +54,28 @@ export function BudgetMeter() {
     }
 
     let cancelled = false
-    setLoading(true)
 
-    bonafide.agent
-      .getBudgetStatus(workspaceRoot)
-      .then((status) => {
-        if (!cancelled) setBudget(status)
-      })
-      .catch((err) => {
-        console.warn("[BudgetMeter] getBudgetStatus failed:", err)
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false)
-      })
+    const fetchBudget = () => {
+      bonafide.agent
+        .getBudgetStatus(workspaceRoot)
+        .then((status) => {
+          if (!cancelled) setBudget(status)
+        })
+        .catch((err) => {
+          console.warn("[BudgetMeter] getBudgetStatus failed:", err)
+        })
+    }
+
+    setLoading(true)
+    fetchBudget()
+    setLoading(false)
+
+    // Poll every 30 seconds while mounted
+    const interval = setInterval(fetchBudget, 30_000)
 
     return () => {
       cancelled = true
+      clearInterval(interval)
     }
   }, [workspaceRoot])
 

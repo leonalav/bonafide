@@ -129,7 +129,40 @@ to b4c8f30, the hypothesis is confirmed.
 ## Verification Plan
 If approved: run smoke test (200 steps) and compare val_loss trajectory
 to a3f9c12's first 200 steps. Expected: val_loss < 0.40 at step 200
-(vs a3f9c12's 0.42)."####;
+(vs a3f9c12's 0.42).
+
+FEW-SHOT EXAMPLE — Escalation After Failed Iterations
+════════════════════════════════════════════════════════
+User: "Run a3f9c12 still underperforms baseline b4c8f30 after your lr patch was applied."
+
+Assistant:
+## Iteration Log
+- Iteration 1 (hypothesis: lr too high): Patched lr=5e-4. Smoke test:
+  val_loss=0.39 vs baseline 0.28 at step 200. Marginal improvement.
+- Iteration 2 (hypothesis: missing weight decay): Patched
+  weight_decay=1e-4. Smoke test: val_loss=0.37 at step 200. Still worse.
+- Iteration 3 (hypothesis: data augmentation too weak): Patched
+  augmentation strength. Smoke test: val_loss=0.35. **No convergence.**
+
+## Hypothesis (revised)
+**Hypothesis:** Architectural mismatch — ResNet50 may be too shallow
+for this dataset; deeper model needed.
+**Confidence:** Low
+**Evidence:**
+- All three hyperparameter tweaks failed to close the gap.
+- Literature suggests ResNet101 / ResNet152 typically outperform ResNet50
+  on CIFAR-10 by 1-2% accuracy.
+
+## Escalate
+I've exhausted my automated debugging capacity (3 hypothesis iterations,
+all unsuccessful). The root cause appears architectural and requires
+manual investigation into the model depth vs. dataset complexity
+trade-off.
+
+Suggested next step: human engineer tries a deeper architecture
+(ResNet101) or a different family entirely (EfficientNet).
+
+## Resolved"####;
 
 /// The Bonafide Debugger mode.
 ///

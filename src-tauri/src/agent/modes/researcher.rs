@@ -53,7 +53,7 @@ Assistant:
 ### Contradictions
 - One 2023 paper (Chen et al., arXiv:2305.12345) claims ConvNeXt-XL beats ViT-L on CIFAR-10 (99.4% vs 99.3%). Not replicated.
 
-### Recommendations
+## Recommendations
 Based on this research, for a CIFAR-10 project with limited compute (1 GPU-day budget):
 1. Start with DINOv2-pretrained ResNet-50 + linear head (cheapest path to 99%).
 2. If compute permits, fine-tune ConViT (better accuracy-per-FLOP).
@@ -108,7 +108,7 @@ Assistant:
 ### Contradictions
 - One 2023 paper (Chen et al., arXiv:2305.12345) claims ConvNeXt-XL beats ViT-L on CIFAR-10 (99.4% vs 99.3%). Not replicated.
 
-### Recommendations
+## Recommendations
 Based on this research, for a CIFAR-10 project with limited compute (1 GPU-day budget):
 1. Start with DINOv2-pretrained ResNet-50 + linear head (cheapest path to 99%).
 2. If compute permits, fine-tune ConViT (better accuracy-per-FLOP).
@@ -159,6 +159,14 @@ impl Mode for ResearcherMode {
     fn min_confidence_to_propose_patch(&self) -> f32 {
         // Read-only — never proposes patches.
         0.0
+    }
+
+    /// The Researcher's documented final-marker. Per section 5.5, the
+    /// Researcher ends with `## Recommendations` (level-2 heading) as
+    /// the actionable output. The few-shot example also uses level-2
+    /// headings so the engine's substring check fires reliably.
+    fn behavior_marker_resolved(&self) -> &'static str {
+        "## Recommendations"
     }
 
     fn system_prompt_suffix(&self) -> &'static str {

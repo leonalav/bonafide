@@ -194,6 +194,14 @@ impl Mode for ScaffolderMode {
         0.7
     }
 
+    /// The Scaffolder's documented end-of-generation marker.
+    /// Per section 5.3, the Scaffolder emits `## Generated` to signal
+    /// completion. This drives the engine's `→ Resolved` transition so
+    /// the loop terminates cleanly after scaffolding.
+    fn behavior_marker_resolved(&self) -> &'static str {
+        "## Generated"
+    }
+
     fn system_prompt_suffix(&self) -> &'static str {
         SCAFFOLDER_SYSTEM_PROMPT_SUFFIX
     }
