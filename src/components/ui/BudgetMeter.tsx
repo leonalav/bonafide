@@ -12,8 +12,8 @@
 
 import { useEffect, useState } from "react"
 import { bonafide } from "../../ipc/tauri"
-import type { BudgetStatus, EscalationLevel } from "../../data/budget"
-import { BUDGET_COLORS, BUDGET_LABELS, BUDGET_TEXT } from "../../data/budget"
+import type { BudgetStatus, EscalationLevel } from "../../ipc/tauri"
+import { BUDGET_COLORS, BUDGET_LABELS, BUDGET_TEXT } from "../../ipc/tauri"
 import { useWorkspaceRoot } from "../../ide/hooks"
 
 /** Clamp spend_ratio to [0, 1] for display; values > 1 show the bar full with a warning. */

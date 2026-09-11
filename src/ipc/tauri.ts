@@ -1064,17 +1064,184 @@ async function updateExperimentRun(
   })
 }
 
-// ── Phase 2: Budget IPC ─────────────────────────────────────────────────────
+// ── Agent types (inlined from data/) ──────────────────────────────────────────
+//
+// These were previously in data/budget.ts, data/planner.ts, data/scaffolder.ts,
+// data/memory.ts. The files were deleted in WS0-T1 because their Rust counterparts
+// were removed (backend mock-wipe). The types stay here so the IPC bridge and
+// BonafideAPI type keep compiling.
 
-export type {
-  BudgetStatus,
-  ToolPermission,
-  EscalationLevel,
-} from "../data/budget"
+/** Escalation level for the budget governor. */
+export type EscalationLevel = "normal" | "caution" | "critical" | "exhausted"
+
+/** Budget status returned by `get_budget_status`. */
+export interface BudgetStatus {
+  workspaceHash: string
+  budgetDollars: number
+  budgetGpuHours: number
+  spentDollars: number
+  spentGpuHours: number
+  escalation: EscalationLevel
+  spendRatio: number
+  requiresApproval: boolean
+  currency?: string
+}
+
+/** Tool permission check result. */
+export interface ToolPermission {
+  allowed: boolean
+  escalation: EscalationLevel
+  requiresApproval: boolean
+  message?: string
+}
+
+/** Input for experiment proposal. */
+export interface ProposeExperimentInput {
+  title: string
+  hypothesis: string
+  goalMetric: string
+  goalDirection: "minimize" | "maximize"
+  goalTarget: number
+  goalCondition: "lt" | "gt" | "eq"
+  budgetDollars: number
+  budgetGpuHours: number
+}
+
+/** Output from experiment proposal. */
+export interface ProposeExperimentOutput {
+  experimentId: string
+  title: string
+  escalation: string
+  withinBudget: boolean
+  estimatedCost?: number
+  warnings?: string[]
+}
+
+/** Template type for scaffold scripts. */
+export type TemplateKind = "train_basic" | "sweep_lr" | "eval"
+
+/** Input for scaffold_script. */
+export interface ScaffoldInput {
+  template: TemplateKind
+  outputPath: string
+  overrides?: Record<string, string>
+}
+
+/** Output from scaffold_script. */
+export interface ScaffoldOutput {
+  filePath: string
+  template: string
+  smokeTestTriggered: boolean
+}
+
+/** Result from run_smoke_test. */
+export interface SmokeTestResult {
+  exitCode: number
+  stdout: string
+  stderr: string
+  timedOut: boolean
+  summary: string
+  testsRun?: number
+  durationMs?: number
+}
+
+/** Confidence level for project memory entries. */
+export type MemoryConfidence = "low" | "medium" | "high"
+
+/** A stored insight from past experiments. */
+export interface ProjectInsight {
+  id: string
+  workspaceHash: string
+  finding: string
+  evidence: string
+  confidence: MemoryConfidence
+  createdAt: number
+}
+
+/** A ruled-out hypothesis stored as a dead end. */
+export interface ProjectDeadEnd {
+  id: string
+  workspaceHash: string
+  hypothesis: string
+  evidence: string
+  triedRuns?: string[]
+  createdAt: number
+}
+
+/** A single paper from arXiv. */
+export interface ArxivPaper {
+  id: string
+  title: string
+  authors: string[]
+  abstract: string
+  published: string
+  categories: string[]
+  pdfUrl: string
+}
+
+/** Result from arXiv search. */
+export interface ArxivSearchResult {
+  query: string
+  results: ArxivPaper[]
+  totalResults: number
+}
+
+/** Result of a critic code review. */
+export interface CriticReview {
+  score: number
+  issues: string[]
+  recommendations: string[]
+  verdict: "pass" | "fail" | "skip"
+  summary: string
+  durationMs?: number
+}
+
+/** A detected anomaly in a run metric. */
+export interface AnomalyEntry {
+  metric: string
+  kind: "spike" | "drop" | "plateau" | "drift"
+  description: string
+  severity: "low" | "medium" | "high"
+  step: number
+  value: number
+}
+
+/** Result from anomaly detection. */
+export interface AnomalyReport {
+  runId: string
+  anomalies: AnomalyEntry[]
+  summary: string
+}
+
+// ── Budget display constants (used by BudgetMeter.tsx) ──────────────────────
+
+/** Color token for the budget meter bar, keyed by escalation level. */
+export const BUDGET_COLORS: Record<EscalationLevel, string> = {
+  normal: "bg-primary",
+  caution: "bg-tertiary",
+  critical: "bg-tertiary",
+  exhausted: "bg-error",
+}
+
+/** Label shown next to the budget meter. */
+export const BUDGET_LABELS: Record<EscalationLevel, string> = {
+  normal: "Budget normal",
+  caution: "Budget caution",
+  critical: "Budget critical",
+  exhausted: "Budget exhausted",
+}
+
+/** Text color for status messages. */
+export const BUDGET_TEXT: Record<EscalationLevel, string> = {
+  normal: "text-on-surface-variant",
+  caution: "text-tertiary",
+  critical: "text-tertiary",
+  exhausted: "text-error",
+}
 
 async function getBudgetStatus(
   workspaceRoot: string,
-): Promise<import("../data/budget").BudgetStatus> {
+): Promise<BudgetStatus> {
   if (!tauriIsTauri()) {
     return {
       workspaceHash: "preview",
@@ -1088,7 +1255,7 @@ async function getBudgetStatus(
       currency: "USD",
     }
   }
-  return invoke<import("../data/budget").BudgetStatus>("get_budget_status", {
+  return invoke<BudgetStatus>("get_budget_status", {
     workspaceRoot,
   })
 }
@@ -1097,11 +1264,11 @@ async function updateBudget(
   workspaceRoot: string,
   budgetDollars: number,
   budgetGpuHours: number,
-): Promise<import("../data/budget").BudgetStatus> {
+): Promise<BudgetStatus> {
   if (!tauriIsTauri()) {
     throw new Error("Budget updates require the Tauri backend")
   }
-  return invoke<import("../data/budget").BudgetStatus>("update_budget", {
+  return invoke<BudgetStatus>("update_budget", {
     workspaceRoot,
     budgetDollars,
     budgetGpuHours,
@@ -1119,11 +1286,11 @@ async function recordToolCall(
 async function checkToolPermission(
   workspaceRoot: string,
   toolName: string,
-): Promise<import("../data/budget").ToolPermission> {
+): Promise<ToolPermission> {
   if (!tauriIsTauri()) {
     return { allowed: true, escalation: "normal", requiresApproval: false }
   }
-  return invoke<import("../data/budget").ToolPermission>(
+  return invoke<ToolPermission>(
     "check_tool_permission",
     {
       workspaceRoot,
@@ -1134,15 +1301,10 @@ async function checkToolPermission(
 
 // ── Phase 2: Planner IPC ────────────────────────────────────────────────────
 
-export type {
-  ProposeExperimentInput,
-  ProposeExperimentOutput,
-} from "../data/planner"
-
 async function proposeExperiment(
   workspaceRoot: string,
-  input: import("../data/planner").ProposeExperimentInput,
-): Promise<import("../data/planner").ProposeExperimentOutput> {
+  input: ProposeExperimentInput,
+): Promise<ProposeExperimentOutput> {
   if (!tauriIsTauri()) {
     return {
       experimentId: `exp_preview_${Date.now()}`,
@@ -1153,7 +1315,7 @@ async function proposeExperiment(
       warnings: ["Budget requires Tauri backend"],
     }
   }
-  return invoke<import("../data/planner").ProposeExperimentOutput>(
+  return invoke<ProposeExperimentOutput>(
     "propose_experiment",
     {
       workspaceRoot,
@@ -1175,17 +1337,10 @@ async function listExperimentsForPlanner(
 
 // ── Phase 2: Scaffolder IPC ─────────────────────────────────────────────────
 
-export type {
-  ScaffoldInput,
-  ScaffoldOutput,
-  SmokeTestResult,
-  TemplateKind,
-} from "../data/scaffolder"
-
 async function scaffoldScript(
   workspaceRoot: string,
-  input: import("../data/scaffolder").ScaffoldInput,
-): Promise<import("../data/scaffolder").ScaffoldOutput> {
+  input: ScaffoldInput,
+): Promise<ScaffoldOutput> {
   if (!tauriIsTauri()) {
     return {
       filePath: `${workspaceRoot}/${input.outputPath}`,
@@ -1193,7 +1348,7 @@ async function scaffoldScript(
       smokeTestTriggered: false,
     }
   }
-  return invoke<import("../data/scaffolder").ScaffoldOutput>(
+  return invoke<ScaffoldOutput>(
     "scaffold_script",
     {
       workspaceRoot,
@@ -1206,7 +1361,7 @@ async function runSmokeTest(
   workspaceRoot: string,
   scriptPath: string,
   maxSteps?: number,
-): Promise<import("../data/scaffolder").SmokeTestResult> {
+): Promise<SmokeTestResult> {
   if (!tauriIsTauri()) {
     return {
       exitCode: -1,
@@ -1218,7 +1373,7 @@ async function runSmokeTest(
       durationMs: 0,
     }
   }
-  return invoke<import("../data/scaffolder").SmokeTestResult>(
+  return invoke<SmokeTestResult>(
     "run_smoke_test",
     {
       workspaceRoot,
@@ -1230,34 +1385,25 @@ async function runSmokeTest(
 
 // ── Phase 3: Project Memory, Researcher, Critic, Monitoring ─────────────────
 
-export type {
-  ProjectInsight,
-  ProjectDeadEnd,
-  ArxivPaper,
-  ArxivSearchResult,
-  CriticReview,
-  AnomalyReport,
-} from "../data/memory"
-
 async function queryProjectMemory(
   workspaceRoot: string,
   kind?: "insight" | "dead_end",
 ): Promise<{
-  insights: import("../data/memory").ProjectInsight[]
-  deadEnds: import("../data/memory").ProjectDeadEnd[]
+  insights: ProjectInsight[]
+  deadEnds: ProjectDeadEnd[]
 }> {
   if (!tauriIsTauri()) {
     return { insights: [], deadEnds: [] }
   }
   return invoke<{
-    insights: import("../data/memory").ProjectInsight[]
-    deadEnds: import("../data/memory").ProjectDeadEnd[]
+    insights: ProjectInsight[]
+    deadEnds: ProjectDeadEnd[]
   }>("query_project_memory", { workspaceRoot, kind })
 }
 
 async function writeProjectInsight(
   workspaceRoot: string,
-  insight: Omit<import("../data/memory").ProjectInsight, "id" | "createdAt">,
+  insight: Omit<ProjectInsight, "id" | "createdAt">,
 ): Promise<string> {
   if (!tauriIsTauri()) return "preview-id"
   return invoke<string>("write_project_insight", { workspaceRoot, insight })
@@ -1265,7 +1411,7 @@ async function writeProjectInsight(
 
 async function writeProjectDeadEnd(
   workspaceRoot: string,
-  deadEnd: Omit<import("../data/memory").ProjectDeadEnd, "id" | "createdAt">,
+  deadEnd: Omit<ProjectDeadEnd, "id" | "createdAt">,
 ): Promise<string> {
   if (!tauriIsTauri()) return "preview-id"
   return invoke<string>("write_project_dead_end", { workspaceRoot, deadEnd })
@@ -1274,11 +1420,11 @@ async function writeProjectDeadEnd(
 async function searchArxiv(
   query: string,
   maxResults?: number,
-): Promise<import("../data/memory").ArxivSearchResult> {
+): Promise<ArxivSearchResult> {
   if (!tauriIsTauri()) {
     return { query, results: [], totalResults: 0 }
   }
-  return invoke<import("../data/memory").ArxivSearchResult>("search_arxiv", {
+  return invoke<ArxivSearchResult>("search_arxiv", {
     query,
     maxResults,
   })
@@ -1286,11 +1432,11 @@ async function searchArxiv(
 
 async function getArxivPaper(
   arxivId: string,
-): Promise<import("../data/memory").ArxivPaper> {
+): Promise<ArxivPaper> {
   if (!tauriIsTauri()) {
     throw new Error("ArXiv not available in browser preview")
   }
-  return invoke<import("../data/memory").ArxivPaper>("get_arxiv_paper", {
+  return invoke<ArxivPaper>("get_arxiv_paper", {
     arxivId,
   })
 }
@@ -1299,7 +1445,7 @@ async function reviewCode(
   workspaceRoot: string,
   filePath: string,
   patch?: string,
-): Promise<import("../data/memory").CriticReview> {
+): Promise<CriticReview> {
   if (!tauriIsTauri()) {
     return {
       score: 0,
@@ -1310,7 +1456,7 @@ async function reviewCode(
       durationMs: 0,
     }
   }
-  return invoke<import("../data/memory").CriticReview>("review_code", {
+  return invoke<CriticReview>("review_code", {
     workspaceRoot,
     filePath,
     patch,
@@ -1320,11 +1466,11 @@ async function reviewCode(
 async function detectAnomalies(
   workspaceRoot: string,
   runId: string,
-): Promise<import("../data/memory").AnomalyReport> {
+): Promise<AnomalyReport> {
   if (!tauriIsTauri()) {
     return { runId, anomalies: [], summary: "(browser preview)" }
   }
-  return invoke<import("../data/memory").AnomalyReport>("detect_anomalies", {
+  return invoke<AnomalyReport>("detect_anomalies", {
     workspaceRoot,
     runId,
   })
@@ -1794,67 +1940,67 @@ export type BonafideAPI = {
     ) => Promise<void>
     getBudgetStatus: (
       workspaceRoot: string,
-    ) => Promise<import("../data/budget").BudgetStatus>
+    ) => Promise<BudgetStatus>
     updateBudget: (
       workspaceRoot: string,
       budgetDollars: number,
       budgetGpuHours: number,
-    ) => Promise<import("../data/budget").BudgetStatus>
+    ) => Promise<BudgetStatus>
     recordToolCall: (workspaceRoot: string, toolName: string) => Promise<string>
     checkToolPermission: (
       workspaceRoot: string,
       toolName: string,
-    ) => Promise<import("../data/budget").ToolPermission>
+    ) => Promise<ToolPermission>
     proposeExperiment: (
       workspaceRoot: string,
-      input: import("../data/planner").ProposeExperimentInput,
-    ) => Promise<import("../data/planner").ProposeExperimentOutput>
+      input: ProposeExperimentInput,
+    ) => Promise<ProposeExperimentOutput>
     listExperimentsForPlanner: (
       workspaceRoot: string,
     ) => Promise<import("../data/experiments").Experiment[]>
     scaffoldScript: (
       workspaceRoot: string,
-      input: import("../data/scaffolder").ScaffoldInput,
-    ) => Promise<import("../data/scaffolder").ScaffoldOutput>
+      input: ScaffoldInput,
+    ) => Promise<ScaffoldOutput>
     runSmokeTest: (
       workspaceRoot: string,
       scriptPath: string,
       maxSteps?: number,
-    ) => Promise<import("../data/scaffolder").SmokeTestResult>
+    ) => Promise<SmokeTestResult>
     queryProjectMemory: (
       workspaceRoot: string,
       kind?: "insight" | "dead_end",
     ) => Promise<{
-      insights: import("../data/memory").ProjectInsight[]
-      deadEnds: import("../data/memory").ProjectDeadEnd[]
+      insights: ProjectInsight[]
+      deadEnds: ProjectDeadEnd[]
     }>
     writeProjectInsight: (
       workspaceRoot: string,
       insight: Omit<
-        import("../data/memory").ProjectInsight,
+        ProjectInsight,
         "id" | "createdAt"
       >,
     ) => Promise<string>
     writeProjectDeadEnd: (
       workspaceRoot: string,
-      deadEnd: Omit<import("../data/memory").ProjectDeadEnd, "id" | "createdAt">,
+      deadEnd: Omit<ProjectDeadEnd, "id" | "createdAt">,
     ) => Promise<string>
     searchArxiv: (
       query: string,
       maxResults?: number,
-    ) => Promise<import("../data/memory").ArxivSearchResult>
+    ) => Promise<ArxivSearchResult>
     getArxivPaper: (
       arxivId: string,
-    ) => Promise<import("../data/memory").ArxivPaper>
+    ) => Promise<ArxivPaper>
     reviewCode: (
       workspaceRoot: string,
       filePath: string,
       patch?: string,
-    ) => Promise<import("../data/memory").CriticReview>
+    ) => Promise<CriticReview>
     detectAnomalies: (
       workspaceRoot: string,
       runId: string,
-    ) => Promise<import("../data/memory").AnomalyReport>
+    ) => Promise<AnomalyReport>
   }
   appInfo: {
     get: () => Promise<import("./tauri").AppInfoBackend>
