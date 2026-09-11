@@ -1216,6 +1216,35 @@ async function updateExperimentRun(
   })
 }
 
+/**
+ * Launch an experiment run (alias for `createExperimentRun` — the Rust
+ * side keeps `create_experiment_run` for backwards-compat with WS2-T4
+ * but the spec calls this `launch_experiment_run` per §6.3).
+ *
+ * The Renderer can use either name; both forward to the same Tauri
+ * command.
+ */
+async function launchExperimentRun(
+  workspaceRoot: string,
+  row: import("../data/experiments").ExperimentRun,
+): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke<void>("create_experiment_run", { workspaceRoot, row })
+}
+
+/**
+ * Stop a running experiment run by id. Persists the row's status as
+ * `stopped` and records a final timestamp. Idempotent — calling on
+ * an already-stopped run is a no-op.
+ */
+async function stopExperimentRun(
+  workspaceRoot: string,
+  id: string,
+): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke<void>("stop_experiment_run", { workspaceRoot, id })
+}
+
 // ── Agent types (inlined from data/) ──────────────────────────────────────────
 //
 // These were previously in data/budget.ts, data/planner.ts, data/scaffolder.ts,
@@ -1567,6 +1596,35 @@ async function writeProjectDeadEnd(
 ): Promise<string> {
   if (!tauriIsTauri()) return "preview-id"
   return invoke<string>("write_project_dead_end", { workspaceRoot, deadEnd })
+}
+
+/**
+ * Unified project-memory write. Routes the call to `write_project_insight`
+ * or `write_project_dead_end` based on `kind`. The renderer normally
+ * uses the focused `writeProjectInsight` / `writeProjectDeadEnd`
+ * helpers, but this entry point is convenient when the calling code
+ * doesn't know the kind at compile time (e.g. a generic memory dumper).
+ */
+async function writeProjectMemory(
+  workspaceRoot: string,
+  kind: "insight" | "dead_end",
+  content: string,
+  confidence: MemoryConfidence,
+  evidence: string,
+): Promise<string> {
+  if (kind === "dead_end") {
+    return writeProjectDeadEnd(workspaceRoot, {
+      workspaceHash: workspaceRoot,
+      hypothesis: content,
+      evidence,
+    })
+  }
+  return writeProjectInsight(workspaceRoot, {
+    workspaceHash: workspaceRoot,
+    finding: content,
+    evidence,
+    confidence,
+  })
 }
 
 async function searchArxiv(
@@ -1939,6 +1997,9 @@ export const bonafide = {
     queryProjectMemory,
     writeProjectInsight,
     writeProjectDeadEnd,
+    writeProjectMemory,
+    launchExperimentRun,
+    stopExperimentRun,
     searchArxiv,
     getArxivPaper,
     reviewCode,
@@ -2157,6 +2218,21 @@ export type BonafideAPI = {
       workspaceRoot: string,
       deadEnd: Omit<ProjectDeadEnd, "id" | "createdAt">,
     ) => Promise<string>
+    writeProjectMemory: (
+      workspaceRoot: string,
+      kind: "insight" | "dead_end",
+      content: string,
+      confidence: MemoryConfidence,
+      evidence: string,
+    ) => Promise<string>
+    launchExperimentRun: (
+      workspaceRoot: string,
+      row: import("../data/experiments").ExperimentRun,
+    ) => Promise<void>
+    stopExperimentRun: (
+      workspaceRoot: string,
+      id: string,
+    ) => Promise<void>
     searchArxiv: (
       query: string,
       maxResults?: number,
