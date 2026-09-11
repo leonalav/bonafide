@@ -74,9 +74,11 @@ function ThreadCard({ t, onOpen }: { t: Thread onOpen: () => void }) {
 function Inbox({
   threads,
   onOpen,
+  closedCount,
 }: {
   threads: Thread[]
   onOpen: (t: Thread) => void
+  closedCount: number
 }) {
   const [showClosed, setShowClosed] = useState(false)
 
@@ -88,7 +90,7 @@ function Inbox({
         if (band.key === "closed") {
           return (
             <section key={band.key} className="flex flex-col gap-2">
-              <SectionBand label="Closed" count={CLOSED_COUNT} />
+              <SectionBand label="Closed" count={closedCount} />
               {showClosed ? (
                 rows.map((t) => (
                   <ThreadCard key={t.id} t={t} onOpen={() => onOpen(t)} />
@@ -98,7 +100,7 @@ function Inbox({
                   onClick={() => setShowClosed(true)}
                   className="flex items-center gap-1.5 px-1 font-sans text-[12px] text-outline hover:text-on-surface"
                 >
-                  <Icon name="chevron-down" size={13} /> Show {CLOSED_COUNT}{" "}
+                  <Icon name="chevron-down" size={13} /> Show {closedCount}{" "}
                   closed threads
                 </button>
               )}
@@ -192,10 +194,12 @@ function ThreadDetail({
   thread,
   onBack,
   threads,
+  closedCount,
 }: {
   thread: Thread
   onBack: () => void
   threads: Thread[]
+  closedCount: number
 }) {
   // Derive investigation data from the live thread state.
 
@@ -235,7 +239,11 @@ function ThreadDetail({
       {/* pushed-left inbox context strip */}
       <div className="w-2/5 shrink-0 overflow-hidden border-r border-outline-variant opacity-60">
         <div className="p-3">
-          <Inbox threads={threads} onOpen={() => {}} />
+          <Inbox
+            threads={threads}
+            onOpen={() => {}}
+            closedCount={closedCount}
+          />
         </div>
       </div>
 
@@ -335,6 +343,23 @@ export function WorkflowPanel({ onClose }: { onClose: () => void }) {
 
   const { threads } = useThreads(workspaceRoot)
 
+  // Derive closed-thread count from real IPC. Falls back to 0 when
+  // the backend is unavailable (browser preview) so the panel keeps
+  // rendering.
+  const [closedCount, setClosedCount] = useState(0)
+  useEffect(() => {
+    bonafide.agent
+      .listThreads(workspaceRoot ?? "")
+      .then((rows) => {
+        setClosedCount(
+          rows.filter(
+            (t) => t.state === "resolved" || t.state === "stopped",
+          ).length,
+        )
+      })
+      .catch(() => setClosedCount(0))
+  }, [workspaceRoot])
+
   return (
     <aside className="flex w-[640px] max-w-[70vw] shrink-0 animate-card-in flex-col border-l border-outline-variant bg-surface">
       {/* Header */}
@@ -359,6 +384,7 @@ export function WorkflowPanel({ onClose }: { onClose: () => void }) {
         <ThreadDetail
           thread={open}
           threads={threads}
+          closedCount={closedCount}
           onBack={() => setOpen(null)}
         />
       ) : (
@@ -392,7 +418,11 @@ export function WorkflowPanel({ onClose }: { onClose: () => void }) {
 
           <div className="min-h-0 flex-1 overflow-y-auto p-4">
             {tab === "inbox" ? (
-              <Inbox threads={threads} onOpen={setOpen} />
+              <Inbox
+                threads={threads}
+                onOpen={setOpen}
+                closedCount={closedCount}
+              />
             ) : (
               <Templates />
             )}

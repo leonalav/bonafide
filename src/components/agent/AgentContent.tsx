@@ -408,7 +408,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
         role: "assistant",
 
         content:
-          "This role ships in v1.1. Your message is saved to the thread.",
+          "This role is in design. Your message is saved to the thread.",
 
         ts: Date.now(),
       })
@@ -904,6 +904,17 @@ function RunSurface({
 
   const [seed, setSeed] = useState(0)
 
+  // Timer for the Phase 0 loading-stub. Replaced with real agent
+  // work in WS5-T3 (Phase 1).
+  const sendTimerRef = useRef<number | null>(null)
+  useEffect(() => {
+    return () => {
+      if (sendTimerRef.current !== null) {
+        window.clearTimeout(sendTimerRef.current)
+      }
+    }
+  }, [])
+
   const suggestions = [
     "Compare vs b4c8f30",
 
@@ -923,17 +934,21 @@ function RunSurface({
   }
 
   function handleSubmit() {
-    // Phase 0 stub: show the loading indicator but don't call the LLM.
-
-    // The thread stays in "idle" state until the orchestrator is wired.
-
+    // Phase 0 stub: show the loading indicator briefly then drop back
+    // to idle. The orchestrator loop is wired in WS5-T3 (Phase 1) —
+    // for now the user gets visual feedback that the submit fired
+    // but no actual agent work happens.
     setSending(true)
 
-    // REVIEW(phase0) P-0: wire to orchestrator here. The sending flag
-
-    // drives the Stop button and read-only textarea in Composer.
-
-    setTimeout(() => setSending(false), 1200)
+    // Clear any prior timer before arming a new one so repeated
+    // submits don't stack up timers.
+    if (sendTimerRef.current !== null) {
+      window.clearTimeout(sendTimerRef.current)
+    }
+    sendTimerRef.current = window.setTimeout(() => {
+      setSending(false)
+      sendTimerRef.current = null
+    }, 1200)
   }
 
   function handleCancel() {

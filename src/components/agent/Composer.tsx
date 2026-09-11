@@ -54,8 +54,8 @@ const MODES: {
 const HINTS: Record<ModeId, string> = {
   debug: "▸ investigating… Type a follow-up.",
   scaffold: "▸ scaffolding… Describe what to build.",
-  plan: "▸ planning… (this role ships in v1.1)",
-  research: "▸ researching… (this role ships in v1.1)",
+  plan: "▸ planning… (in design)",
+  research: "▸ researching… (in design)",
   multitask: "▸ multitask… (in design)",
 }
 
@@ -155,7 +155,7 @@ function ModeRow({
       onClick={onClick}
       title={
         muted
-          ? "This role ships in v1.1. The thread is created but won't receive replies yet."
+          ? "This role is in design. The thread is created but won't receive replies yet."
           : undefined
       }
       className={`relative flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-surface-container-high ${
@@ -484,7 +484,7 @@ export function Composer({
               ))}
 
               <div className="label-caps px-1.5 pb-0.5 pt-1 text-outline">
-                Coming in v1.1
+                In design
               </div>
               {MODES.filter((m) => m.status === "deferred").map((m) => (
                 <ModeRow
