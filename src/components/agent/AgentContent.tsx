@@ -29,6 +29,10 @@ import { ProposalView } from "./ProposalView"
 
 import { Composer, QuickSuggestions } from "./Composer"
 
+import { useWorkspaceRoot } from "../../ide/hooks"
+
+import { bonafide, type AgentEngineResult } from "../../ipc/tauri"
+
 import type { Run } from "../../data/runs"
 
 import type { Investigation } from "../../data/agents"
@@ -47,8 +51,6 @@ import { useModelsStore, type ModelFamily } from "../../modelsStore"
 import { buildApiChatMessage, chatCompletion } from "../../llm/client"
 
 import { buildSystemPrompt } from "../../llm/systemPrompt"
-
-import { useWorkspaceRoot } from "../../ide/hooks"
 
 import type { ApiChatMessage } from "../../llm/types"
 
@@ -819,19 +821,28 @@ function ReturnDialog({
 
 // ── RunSurface ────────────────────────────────────────────────────────────────
 
-/** Thread shape per Phase 0 spec. */
-
-type DebugThread = {
-  id: string
-
-  state: "idle"
-
-  role: "debugger"
-
-  runId: string
-
-  messages: unknown[]
+/** Tool-call trace entry derived from a single engine iteration. The
+ *  shape mirrors the Rust `TraceStep` used in `ProposalView` so the
+ *  ProposalView component renders the trace without further mapping. */
+type TraceEntry = {
+  tool: string
+  args: string
+  result?: string
+  time: string
 }
+
+/** Live thread state surfaced from the engine loop. */
+type LiveThreadState =
+  | "idle"
+  | "investigating"
+  | "hypothesis_formed"
+  | "patch_proposed"
+  | "smoke_verifying"
+  | "awaiting_approval"
+  | "full_run_verifying"
+  | "resolved"
+  | "rejected"
+  | "stopped"
 
 function RunSurface({
   run,
@@ -842,82 +853,50 @@ function RunSurface({
 
   onOpenWorkflow?: () => void
 }) {
-  // Phase 0: threads are seeded from the selected run. The orchestrator
+  const workspaceRoot = useWorkspaceRoot()
 
-  // loop is stubbed — submitting the composer shows a loading indicator
-
-  // but does not make any LLM call.
-
-  const [threads] = useState<DebugThread[]>(
-    run
-      ? [
-          {
-            id: `thread-${Date.now().toString(36)}`,
-
-            state: "idle",
-
-            role: "debugger",
-
-            runId: run.commit,
-
-            messages: [],
-          },
-        ]
-      : [],
+  // Generate (or reuse) a thread id for this run. The Rust side stores
+  // the row in SQLite keyed by `threadId` so subsequent submits reuse
+  // the same conversation.
+  const [threadId] = useState(
+    () => `run-${run.commit}-${Date.now().toString(36)}`,
   )
 
   const [sending, setSending] = useState(false)
 
-  // Derive the investigation data from the thread list so ProposalView
+  const [engineState, setEngineState] =
+    useState<LiveThreadState>("idle")
 
-  // keeps the same visual layout — just sourced from state instead of
+  const [lastError, setLastError] = useState<string | null>(null)
 
-  // a hardcoded constant.
+  const [toolTrace, setToolTrace] = useState<TraceEntry[]>([])
 
-  const investigation: Investigation = {
-    runHash: threads[0]?.runId ?? run.commit,
+  /** Hypothesis evolution per spec §8.3 — each engine response may
+   *  refine the verdict / statement / confidence, so we keep an
+   *  ordered log of revisions the ProposalView can show. */
+  const [hypothesisLog, setHypothesisLog] = useState<
+    Array<{
+      verdict: string
+      statement: string
+      confidence: "Low" | "Medium" | "High"
+      at: number
+    }>
+  >([])
 
-    goal: `Why did run ${threads[0]?.runId ?? run.commit} diverge?`,
+  /** Approval request surfaced when the engine result type is
+   *  `awaiting_approval`. The ProposalView consumes this to render
+   *  the Approve / Reject affordances. */
+  const [pendingApproval, setPendingApproval] = useState<{
+    toolCallId: string
+    reason: string
+  } | null>(null)
 
-    trace: [],
-
-    hypothesis: {
-      verdict: "Pending",
-
-      statement: "Start a conversation to begin the investigation.",
-
-      evidence: [],
-
-      confidence: "Low",
-    },
-
-    patch: {
-      file: "",
-
-      summary: "",
-
-      lines: [],
-    },
-
-    verification: {
-      status: "none",
-
-      lines: [],
-    },
-  }
+  /** Final assistant message from the latest run (rendered as the
+   *  hypothesis statement when the engine produces a `completed`
+   *  result). */
+  const [lastResult, setLastResult] = useState<string>("")
 
   const [seed, setSeed] = useState(0)
-
-  // Timer for the Phase 0 loading-stub. Replaced with real agent
-  // work in WS5-T3 (Phase 1).
-  const sendTimerRef = useRef<number | null>(null)
-  useEffect(() => {
-    return () => {
-      if (sendTimerRef.current !== null) {
-        window.clearTimeout(sendTimerRef.current)
-      }
-    }
-  }, [])
 
   const suggestions = [
     "Compare vs b4c8f30",
@@ -937,26 +916,227 @@ function RunSurface({
     setSeed((n) => n + 1)
   }
 
-  function handleSubmit() {
-    // Phase 0 stub: show the loading indicator briefly then drop back
-    // to idle. The orchestrator loop is wired in WS5-T3 (Phase 1) —
-    // for now the user gets visual feedback that the submit fired
-    // but no actual agent work happens.
+  // Live investigation data derived from the engine output. Empty
+  // arrays / unknown confidence fall through to the ProposalView
+  // empty-state styling.
+  const latestHypothesis = hypothesisLog[hypothesisLog.length - 1]
+
+  const investigation: Investigation = {
+    runHash: run.commit,
+
+    goal: `Why did run ${run.commit} diverge?`,
+
+    trace: toolTrace,
+
+    hypothesis: {
+      verdict: latestHypothesis?.verdict ?? "Pending",
+
+      statement:
+        latestHypothesis?.statement ??
+        (engineState === "idle"
+          ? "Start a conversation to begin the investigation."
+          : `Engine state: ${engineState}`),
+
+      evidence: [],
+
+      confidence: latestHypothesis?.confidence ?? "Low",
+    },
+
+    patch: {
+      file: "",
+
+      summary: "",
+
+      lines: [],
+    },
+
+    verification: {
+      status:
+        engineState === "smoke_verifying" ||
+        engineState === "full_run_verifying"
+          ? "running"
+          : engineState === "resolved"
+            ? "success"
+            : engineState === "rejected" || engineState === "stopped"
+              ? "failed"
+              : "none",
+
+      lines: lastResult ? [lastResult] : [],
+    },
+  }
+
+  async function handleSubmit(text: string) {
+    if (!workspaceRoot) {
+      setLastError(
+        "Open a workspace before starting an investigation.",
+      )
+      return
+    }
+
     setSending(true)
 
-    // Clear any prior timer before arming a new one so repeated
-    // submits don't stack up timers.
-    if (sendTimerRef.current !== null) {
-      window.clearTimeout(sendTimerRef.current)
-    }
-    sendTimerRef.current = window.setTimeout(() => {
+    setLastError(null)
+
+    setPendingApproval(null)
+
+    setEngineState("investigating")
+
+    // Append a synthetic trace entry so the user sees the user turn
+    // even if the engine doesn't emit one.
+    setToolTrace((prev) => [
+      ...prev,
+
+      { tool: "user_message", args: text, time: "now" },
+    ])
+
+    try {
+      const output = await bonafide.agent.sendMessage(workspaceRoot, {
+        threadId,
+
+        userMessage: text,
+
+        role: "debugger",
+
+        runId: run.commit,
+      })
+
+      setEngineState(output.newState)
+
+      // Record the hypothesis evolution per spec §8.3 — even if the
+      // engine didn't provide a structured hypothesis, we treat the
+      // final content as one so the user sees the trajectory.
+      setHypothesisLog((prev) => [
+        ...prev,
+
+        {
+          verdict:
+            output.newState === "resolved"
+              ? "Confirmed"
+              : output.newState === "awaiting_approval"
+                ? "Likely"
+                : "Pending",
+
+          statement: describeResult(output.result),
+
+          confidence:
+            output.newState === "resolved"
+              ? "High"
+              : output.newState === "awaiting_approval"
+                ? "Medium"
+                : "Low",
+
+          at: Date.now(),
+        },
+      ])
+
+      // Render the engine's tool trace (one row per iteration). We
+      // don't have per-iteration tool calls in the result type yet
+      // so we show a single synthesised row; future revisions can
+      // extend `AgentEngineResult` to carry the full trace.
+      setToolTrace((prev) => [
+        ...prev,
+
+        {
+          tool: toolFromResult(output.result),
+
+          args: text,
+
+          result: describeResult(output.result),
+
+          time: "now",
+        },
+      ])
+
+      setLastResult(describeResult(output.result))
+
+      // Surface the approval request to ProposalView.
+      if (output.result.type === "awaiting_approval") {
+        setPendingApproval({
+          toolCallId: output.result.toolCallId,
+
+          reason: output.result.reason,
+        })
+      } else {
+        setPendingApproval(null)
+      }
+
+      if (output.result.type === "llm_error") {
+        setLastError(output.result.message)
+      }
+    } catch (err) {
+      setLastError(
+        err instanceof Error ? err.message : String(err),
+      )
+    } finally {
       setSending(false)
-      sendTimerRef.current = null
-    }, 1200)
+    }
   }
 
   function handleCancel() {
+    if (!workspaceRoot || !threadId) return
+
+    void bonafide.agent
+      .stopThread(workspaceRoot, { threadId })
+
+      .then(() => setEngineState("stopped"))
+
+      .catch((err: unknown) => {
+        setLastError(
+          err instanceof Error ? err.message : String(err),
+        )
+      })
+
     setSending(false)
+  }
+
+  function handleApprove() {
+    if (!workspaceRoot || !pendingApproval) return
+
+    void bonafide.agent
+      .approveAction(workspaceRoot, {
+        threadId,
+
+        toolCallId: pendingApproval.toolCallId,
+
+        decision: "approve",
+      })
+
+      .then(() => {
+        setPendingApproval(null)
+
+        setEngineState("investigating")
+      })
+
+      .catch((err: unknown) => {
+        setLastError(
+          err instanceof Error ? err.message : String(err),
+        )
+      })
+  }
+
+  function handleReject() {
+    if (!workspaceRoot || !pendingApproval) return
+
+    void bonafide.agent
+      .rejectAction(workspaceRoot, {
+        threadId,
+
+        toolCallId: pendingApproval.toolCallId,
+
+        decision: "reject",
+      })
+
+      .then(() => {
+        setPendingApproval(null)
+
+        setEngineState("rejected")
+      })
+
+      .catch((err: unknown) => {
+        setLastError(
+          err instanceof Error ? err.message : String(err),
+        )
+      })
   }
 
   return (
@@ -964,9 +1144,14 @@ function RunSurface({
       {/* Status bar */}
       <div className="shrink-0 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <StatusDot token="tertiary" pulse />
+          <StatusDot token="tertiary" pulse={sending} />
           <span className="font-sans text-[13px] text-on-surface">
-            Investigating <span className="text-primary">{run.commit}</span>
+            {sending
+              ? "Investigating"
+              : engineState === "idle"
+                ? "Ready"
+                : engineState}{" "}
+            <span className="text-primary">{run.commit}</span>
           </span>
         </div>
         <div className="flex items-center gap-3">
@@ -978,6 +1163,7 @@ function RunSurface({
             <Icon name="arrow-right-left" size={13} /> Workflow
           </button>
           <button
+            onClick={handleCancel}
             className="flex items-center gap-1 font-sans text-[12px] text-outline hover:text-error"
             title="Stop investigation"
           >
@@ -986,7 +1172,77 @@ function RunSurface({
         </div>
       </div>
 
+      {lastError ? (
+        <div
+          role="alert"
+          className="rounded border border-error/40 bg-error/5 px-3 py-2 font-sans text-[12px] text-error"
+        >
+          {lastError}
+        </div>
+      ) : null}
+
       <ProposalView data={investigation} />
+
+      {/* Hypothesis evolution trail (spec §8.3) — newest first */}
+      {hypothesisLog.length > 1 ? (
+        <section className="flex flex-col gap-2 border-t border-outline-variant pt-4">
+          <span className="label-caps text-on-surface-variant">
+            Hypothesis evolution
+          </span>
+          <ol className="flex flex-col gap-1">
+            {hypothesisLog
+              .slice()
+              .reverse()
+              .map((h, i) => (
+                <li
+                  key={`${h.at}-${i}`}
+                  className="flex items-baseline gap-2 rounded border border-outline-variant/50 bg-surface-container-low px-2 py-1"
+                >
+                  <span className="label-caps text-outline">
+                    rev {hypothesisLog.length - i}
+                  </span>
+                  <span className="font-body text-[12px] text-on-surface">
+                    {h.statement}
+                  </span>
+                  <span className="ml-auto font-sans text-[10px] text-outline">
+                    {h.confidence}
+                  </span>
+                </li>
+              ))}
+          </ol>
+        </section>
+      ) : null}
+
+      {/* Approval card — surfaced when the engine result type is
+          `awaiting_approval`. ProposalView doesn't know how to render
+          this — it's our job to overlay the buttons here so the user
+          can drive the engine forward. */}
+      {pendingApproval ? (
+        <section className="flex flex-col gap-2 rounded-lg border border-tertiary/40 bg-tertiary/[0.06] p-3">
+          <span className="label-caps text-tertiary">
+            Awaiting approval
+          </span>
+          <p className="font-body text-[12px] leading-[18px] text-on-surface-variant">
+            {pendingApproval.reason}
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={handleReject}
+              className="h-7 rounded border border-outline-variant bg-transparent px-3 font-sans text-[11px] font-semibold uppercase tracking-[0.04em] text-on-surface-variant hover:border-outline hover:bg-surface-container"
+            >
+              Reject
+            </button>
+            <button
+              type="button"
+              onClick={handleApprove}
+              className="h-7 rounded border border-primary bg-primary px-3 font-sans text-[11px] font-semibold uppercase tracking-[0.04em] text-on-primary hover:brightness-110"
+            >
+              Approve
+            </button>
+          </div>
+        </section>
+      ) : null}
 
       <div className="flex shrink-0 flex-col gap-3 border-t border-outline-variant pt-4">
         <QuickSuggestions items={suggestions} onPick={pick} />
@@ -1002,6 +1258,54 @@ function RunSurface({
       </div>
     </div>
   )
+}
+
+/**
+ * Convert an `AgentEngineResult` into a one-line human description
+ * suitable for the trace / hypothesis log. The shape varies per
+ * variant so we centralise the switch here.
+ */
+function describeResult(result: AgentEngineResult): string {
+  switch (result.type) {
+    case "completed":
+      return result.content
+
+    case "awaiting_approval":
+      return `Awaiting approval: ${result.reason}`
+
+    case "budget_exceeded":
+      return "Budget exceeded — investigate before continuing."
+
+    case "max_iterations":
+      return "Reached the iteration cap before finishing."
+
+    case "llm_error":
+      return `Engine error: ${result.message}`
+  }
+}
+
+/**
+ * Choose a tool name for the trace row based on the engine result
+ * variant. Future revisions can plumb the actual tool-call name from
+ * the backend; for now this gives the trace a recognisable label.
+ */
+function toolFromResult(result: AgentEngineResult): string {
+  switch (result.type) {
+    case "completed":
+      return "agent_response"
+
+    case "awaiting_approval":
+      return "approval_request"
+
+    case "budget_exceeded":
+      return "budget_check"
+
+    case "max_iterations":
+      return "iter_cap"
+
+    case "llm_error":
+      return "engine_error"
+  }
 }
 
 // ── AgentContent (public export) ─────────────────────────────────────────────
