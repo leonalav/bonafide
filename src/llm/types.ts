@@ -202,3 +202,81 @@ export type ToolCall = {
     arguments: string
   }
 }
+
+// ── Agent role + prompt context (WS1-T4) ─────────────────────────────────────
+
+/**
+ * The five canonical agent roles from `docs/agent-architecture.md` section 5.1.
+ *
+ * Distinct from `chats/types.ModeId` because the agent system prompt needs
+ * the spec-named roles, while the chat surface uses the shorthand picker
+ * labels (debug, scaffold, plan, …). Mapping happens in
+ * `systemPrompt.ts:deriveRoleFromMode`.
+ */
+export type AgentRole =
+  | "debugger"
+  | "scaffolder"
+  | "planner"
+  | "researcher"
+  | "critic"
+
+/**
+ * The dead-end / insight entries injected into the system prompt
+ * (section 9.2 schema).
+ */
+export interface ProjectMemoryEntry {
+  /** Human-readable label of the dead-end or insight. */
+  label: string
+  /** Supporting evidence / citation. */
+  evidence: string
+  /** Confidence / date marker (e.g. "High", "2026-08-12"). */
+  marker?: string
+}
+
+/**
+ * Summary of the project's memory state — what's been tried and what's
+ * known. Bounded: max 50 insights, max 50 dead-ends (FIFO eviction).
+ */
+export interface ProjectMemorySummary {
+  deadEnds: ProjectMemoryEntry[]
+  insights: ProjectMemoryEntry[]
+}
+
+/**
+ * Context injected into Layer 4 of every agent system prompt
+ * (section 8.2). Carries the live state of the workspace so the model
+ * never has to ask "which run am I looking at?".
+ */
+export interface PromptContext {
+  workspacePath: string
+  trackerKind: "wandb" | "mlflow" | null
+  projectName: string | null
+  experimentCount: number
+  activeExperiments: number
+  budgetRemaining: { gpuHours: number; dollars: number }
+  projectMemory: ProjectMemorySummary
+  selectedRunId: string | null
+  selectedRunMetrics: Record<string, number> | null
+}
+
+/**
+ * Empty / placeholder `PromptContext` for callers that don't have
+ * real workspace context yet (Phase-1 chat surface).
+ *
+ * The plan's `buildSystemPrompt(mode)` delegates to
+ * `buildAgentSystemPrompt(role, buildEmptyContext())` so single-shot
+ * chat paths still work without wiring up the workspace state.
+ */
+export function buildEmptyContext(): PromptContext {
+  return {
+    workspacePath: "(workspace not yet opened)",
+    trackerKind: null,
+    projectName: null,
+    experimentCount: 0,
+    activeExperiments: 0,
+    budgetRemaining: { gpuHours: 0, dollars: 0 },
+    projectMemory: { deadEnds: [], insights: [] },
+    selectedRunId: null,
+    selectedRunMetrics: null,
+  }
+}
