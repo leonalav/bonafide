@@ -47,19 +47,21 @@
 use std::sync::Arc;
 
 use crate::agent::approval::{Approval, ApprovalGate};
-use crate::agent::budget_stub::{BudgetGovernor, NoopBudgetGovernor};
+use crate::agent::budget::{BudgetGovernor, DefaultBudgetGovernor, EscalationLevel, NoopBudgetGovernor};
 use crate::agent::llm::{
     ChatMessage, ChatRequest, ChatResponse, LlmClient, LlmError, Role, ToolCall,
 };
+use crate::agent::modes::ModeRegistry;
 use crate::agent::orchestrator::{
     append_event_log, AgentRole, Budget, Thread, ThreadState, TraceStep,
 };
 use crate::agent::threads::{
     append_thread_event, replay_thread, thread_state_to_string, update_thread_state,
 };
-use crate::agent::tools_stub::{ToolRegistryStub, ToolResult};
+use crate::agent::tools::{ToolRegistry, ToolResult};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use std::path::Path;
 
 // ── Engine result ─────────────────────────────────────────────────────────────
@@ -80,16 +82,6 @@ pub enum EngineResult {
     LlmError { message: String },
 }
 
-// ── State-transition markers ───────────────────────────────────────────────────
-
-/// The loop looks for these exact strings in assistant messages to
-/// drive state transitions. Exposed as public `const` so WS3 (which
-/// rewrites the prompts) can change the strings without touching the
-/// engine.
-pub const MARKER_HYPOTHESIS: &str = "## Hypothesis";
-pub const MARKER_RESOLVED: &str = "## Resolved";
-pub const MARKER_PATCH: &str = "## Patch";
-
 // ── AgentEngine ──────────────────────────────────────────────────────────────
 
 /// The ReAct loop engine. Holds references to the LLM client, tool
@@ -99,20 +91,25 @@ pub const MARKER_PATCH: &str = "## Patch";
 #[derive(Clone)]
 pub struct AgentEngine {
     llm_client: Arc<dyn LlmClient>,
-    tools: Arc<ToolRegistryStub>,
+    tools: Arc<ToolRegistry>,
     approval_gate: ApprovalGate,
     budget: Arc<dyn BudgetGovernor>,
     max_iterations: u32,
+    /// Per-mode protocol + behaviour-marker lookup. WS3-T1 wires
+    /// this in so the engine reads markers from the active mode
+    /// rather than the legacy hard-coded constants.
+    mode_registry: Arc<ModeRegistry>,
 }
 
 impl Default for AgentEngine {
     fn default() -> Self {
         Self {
             llm_client: Arc::new(NoopLlmClient),
-            tools: Arc::new(ToolRegistryStub::new()),
+            tools: Arc::new(ToolRegistry::default()),
             approval_gate: ApprovalGate::default(),
             budget: Arc::new(NoopBudgetGovernor::new()),
             max_iterations: 20,
+            mode_registry: Arc::new(ModeRegistry::default()),
         }
     }
 }
@@ -122,16 +119,20 @@ impl AgentEngine {
     ///
     /// `llm_client` is typically `OpenAiCompatibleClient::from_settings(...)`
     /// resolved from the workspace's model endpoints. `tools` is the
-    /// stub during WS1; replaced by the real registry in WS2-T1.
+    /// full 37-tool registry per section 4.
     ///
     /// `approval_gate` defaults to the section-12.2 matrix. Tests can
     /// pass a custom gate to assert specific approval outcomes.
     ///
-    /// `budget` defaults to `NoopBudgetGovernor` (always permits). WS2-T4
-    /// replaces this with the real governor.
+    /// `budget` defaults to `NoopBudgetGovernor` (always permits). Pass
+    /// a `DefaultBudgetGovernor` to enable real dollar/GPU-hour accounting.
+    ///
+    /// `mode_registry` defaults to `ModeRegistry::default()`. Pass a
+    /// custom registry to override per-mode protocol/markers
+    /// (tests do this).
     pub fn new(
         llm_client: Arc<dyn LlmClient>,
-        tools: Arc<ToolRegistryStub>,
+        tools: Arc<ToolRegistry>,
         approval_gate: ApprovalGate,
         budget: Arc<dyn BudgetGovernor>,
     ) -> Self {
@@ -141,7 +142,93 @@ impl AgentEngine {
             approval_gate,
             budget,
             max_iterations: 20,
+            mode_registry: Arc::new(ModeRegistry::default()),
         }
+    }
+
+    /// Construct with the default budget governor wired to the supplied
+    /// tool registry. This is the recommended constructor in production:
+    /// the budget governor needs the registry to look up per-tool costs.
+    pub fn with_default_governor(
+        llm_client: Arc<dyn LlmClient>,
+        tools: Arc<ToolRegistry>,
+        approval_gate: ApprovalGate,
+    ) -> Self {
+        let budget = Arc::new(DefaultBudgetGovernor::new(tools.clone()));
+        Self::new(llm_client, tools, approval_gate, budget)
+    }
+
+    /// Construct with an explicit `ModeRegistry`. Production code
+    /// uses `ModeRegistry::default()`; tests pass a custom registry
+    /// to inject counting / mock mode doubles.
+    pub fn with_mode_registry(mut self, registry: Arc<ModeRegistry>) -> Self {
+        self.mode_registry = registry;
+        self
+    }
+
+    /// Access the mode registry (e.g. for tests that want to verify
+    /// per-mode protocol contents).
+    pub fn mode_registry(&self) -> &Arc<ModeRegistry> {
+        &self.mode_registry
+    }
+
+    /// Access the tool registry (e.g. for tests that want to verify
+    /// the catalog contents).
+    pub fn tools(&self) -> &Arc<ToolRegistry> {
+        &self.tools
+    }
+
+    /// Access the budget governor.
+    pub fn budget(&self) -> &Arc<dyn BudgetGovernor> {
+        &self.budget
+    }
+
+    /// Get the current escalation level for a thread.
+    pub fn current_escalation(&self, budget: &Budget) -> EscalationLevel {
+        self.budget.escalation_level(budget)
+    }
+
+    /// Switch `thread.role` to `new_role` and emit a `ModeSwitch`
+    /// event so the JSONL log captures the transition.
+    ///
+    /// The transition is **synchronous** because it only mutates
+    /// the in-memory thread state — no LLM call, no tool
+    /// execution. The caller is responsible for persisting the
+    /// updated thread row (`upsert_thread`) afterwards.
+    ///
+    /// `Err(_)` is returned only when the caller passes the same
+    /// role (no-op switch). Every other case succeeds because role
+    /// transitions never fail in isolation; downstream state
+    /// transitions (`Investigating → …`) handle the rest of the
+    /// lifecycle.
+    pub fn switch_mode(
+        &self,
+        thread: &mut Thread,
+        new_role: AgentRole,
+    ) -> Result<(), String> {
+        if thread.role == new_role {
+            return Err(format!(
+                "Thread {} is already in role {:?}; no switch needed.",
+                thread.id, new_role
+            ));
+        }
+
+        let from = thread.role;
+        let ts = chrono_millis();
+        let event = crate::agent::threads::ThreadEvent::mode_switch(from, new_role, ts);
+        append_thread_event(&thread.event_log_path, &event)
+            .map_err(|e| format!("failed to append ModeSwitch event: {e}"))?;
+
+        thread.role = new_role;
+
+        let step = TraceStep {
+            step: (thread.trace.len() as u32) + 1,
+            content: format!("ModeSwitch: {:?} → {:?}", from, new_role),
+            ts,
+        };
+        thread.trace.push(step);
+
+        Ok(())
     }
 
     /// Run the ReAct loop for `thread` until termination.
@@ -249,7 +336,11 @@ impl AgentEngine {
                     self.emit_message_event(thread, "assistant", &resp.content);
 
                     // State transition: final answer with `## Resolved` → Resolved.
-                    if resp.content.contains(MARKER_RESOLVED) {
+                    let resolved_marker = self
+                        .mode_registry
+                        .for_role(thread.role)
+                        .behavior_marker_resolved();
+                    if resp.content.contains(resolved_marker) {
                         self.emit_state_transition(
                             thread,
                             thread.state,
@@ -272,6 +363,32 @@ impl AgentEngine {
                         "budget exceeded",
                     );
                     return EngineResult::BudgetExceeded;
+                }
+
+                // 6b-pre: `request_approval` is a UI tool the LLM invokes
+                // to ask a clarifying question. We bypass the structural
+                // approval gate (it would be NeedApproval for some
+                // modes) and unconditionally pause the loop into
+                // `AwaitingApproval`, with the question embedded in
+                // `reason` so the renderer can surface it.
+                if tool_call.function.name == "request_approval" {
+                    let question = serde_json::from_str::<JsonValue>(&tool_call.function.arguments)
+                        .ok()
+                        .and_then(|v| {
+                            v.get("question").and_then(|q| q.as_str().map(String::from))
+                        })
+                        .unwrap_or_else(|| "Agent requested approval".to_string());
+                    self.emit_state_transition(
+                        thread,
+                        thread.state,
+                        ThreadState::AwaitingApproval,
+                        "request_approval invoked",
+                    );
+                    self.emit_tool_call_event(thread, tool_call);
+                    return EngineResult::AwaitingApproval {
+                        tool_call_id: tool_call.id.clone(),
+                        reason: question,
+                    };
                 }
 
                 // 6b. Approval check (section 12.1 — structural, not prompted).
@@ -317,15 +434,140 @@ impl AgentEngine {
                     }
                 }
 
+                // 6b-protocol. Investigation protocol enforcement
+                // (section 5.2 — Gather → Hypothesize → Patch).
+                // `apply_patch` may only run from `HypothesisFormed`
+                // or `PatchProposed` (the agent can re-apply to
+                // revise its own patch). All other states must
+                // gather context first — premature patches waste
+                // GPU hours. Escalate after max_hypothesis_iterations.
+                if tool_call.function.name == "apply_patch" {
+                    let mode = self.mode_registry.for_role(thread.role);
+                    let max_iter = mode.max_hypothesis_iterations();
+
+                    // Patch-before-hypothesis: blocked with a
+                    // protocol-violation trace step.
+                    if !matches!(
+                        thread.state,
+                        ThreadState::HypothesisFormed
+                            | ThreadState::PatchProposed
+                            | ThreadState::SmokeVerifying
+                            | ThreadState::FullRunVerifying
+                    ) {
+                        let step = TraceStep {
+                            step: iterations,
+                            content: format!(
+                                "Tool: apply_patch → (blocked: protocol violation — \
+                                 patch requires a hypothesis first; current state {:?})",
+                                thread.state
+                            ),
+                            ts: chrono_millis(),
+                        };
+                        thread.trace.push(step);
+                        log::warn!(
+                            "[engine] apply_patch blocked in state {:?}; hypothesis required first",
+                            thread.state
+                        );
+                        // Record the rejection in the event log so
+                        // the renderer can show why the patch was
+                        // skipped.
+                        self.emit_tool_call_event(thread, tool_call);
+                        continue;
+                    }
+
+                    // Exhausted hypothesis budget: skip the patch
+                    // and emit an escalation trace step.
+                    if thread.hypothesis_iterations > max_iter {
+                        let step = TraceStep {
+                            step: iterations,
+                            content: format!(
+                                "Tool: apply_patch → (blocked: hypothesis budget \
+                                 exhausted — {} iterations > max {}); escalating",
+                                thread.hypothesis_iterations, max_iter
+                            ),
+                            ts: chrono_millis(),
+                        };
+                        thread.trace.push(step);
+                        self.emit_tool_call_event(thread, tool_call);
+                        return EngineResult::MaxIterations;
+                    }
+
+                    // Low-confidence patch: refuse to apply.
+                    let min_confidence = mode.min_confidence_to_propose_patch();
+                    let current_confidence = thread
+                        .hypothesis
+                        .as_ref()
+                        .map(|h| h.confidence)
+                        .unwrap_or(0.0);
+                    if current_confidence < min_confidence {
+                        let step = TraceStep {
+                            step: iterations,
+                            content: format!(
+                                "Tool: apply_patch → (blocked: hypothesis confidence \
+                                 {:.0}% < required {:.0}%); gather more evidence",
+                                current_confidence * 100.0,
+                                min_confidence * 100.0
+                            ),
+                            ts: chrono_millis(),
+                        };
+                        thread.trace.push(step);
+                        self.emit_tool_call_event(thread, tool_call);
+                        continue;
+                    }
+                }
+
                 // 6c. Hypothesis marker heuristic.
-                if resp.content.contains(MARKER_HYPOTHESIS)
+                let hypothesis_marker = self
+                    .mode_registry
+                    .for_role(thread.role)
+                    .behavior_marker_hypothesis();
+                if resp.content.contains(hypothesis_marker)
                     && thread.state == ThreadState::Investigating
                 {
+                    // Increment the hypothesis iteration counter
+                    // each time a fresh hypothesis is emitted. The
+                    // counter is what the protocol-enforcement gate
+                    // above reads to decide whether to escalate.
+                    thread.hypothesis_iterations += 1;
                     self.emit_state_transition(
                         thread,
                         ThreadState::Investigating,
                         ThreadState::HypothesisFormed,
-                        "## Hypothesis marker detected",
+                        &format!(
+                            "## Hypothesis marker detected (iteration {})",
+                            thread.hypothesis_iterations
+                        ),
+                    );
+                }
+
+                // 6c-patch. Patch marker heuristic (section 7.3 —
+                // // // // // "Investigating → PatchProposed"). The
+                // marker fires whenever the assistant emits `## Patch`
+                // in the same response that contains tool calls; this
+                // covers both the `apply_patch` tool path (which is
+                // also reinforced at 6g) and the case where the
+                // assistant renders a diff in prose without invoking
+                // the tool. The transition fires from any non-terminal
+                // state so a Scaffolder that emits a patch marker
+                // after generation is also captured.
+                let patch_marker = self
+                    .mode_registry
+                    .for_role(thread.role)
+                    .behavior_marker_patch();
+                if resp.content.contains(patch_marker)
+                    && !matches!(
+                        thread.state,
+                        ThreadState::Resolved
+                            | ThreadState::Rejected
+                            | ThreadState::Stopped
+                            | ThreadState::PatchProposed
+                    )
+                {
+                    self.emit_state_transition(
+                        thread,
+                        thread.state,
+                        ThreadState::PatchProposed,
+                        "## Patch marker detected",
                     );
                 }
 
@@ -358,6 +600,105 @@ impl AgentEngine {
                                 ThreadState::PatchProposed,
                                 "apply_patch succeeded",
                             );
+
+                            // 6g-critic. Synchronously invoke the
+                            // Critic on every successful patch
+                            // (section 6.3 — Critic is the one
+                            // synchronous in-process call, not a
+                            // spawned sub-agent). The Critic scores
+                            // the patch; if the score is below the
+                            // presentable threshold, the engine
+                            // routes the proposal back for revision.
+                            let verdict = self.review_patch_with_critic(
+                                thread,
+                                tool_call,
+                            );
+                            if verdict.is_risky() {
+                                thread.patch_revisions += 1;
+                                let max_rev = self
+                                    .mode_registry
+                                    .for_role(thread.role)
+                                    .max_hypothesis_iterations();
+                                if thread.patch_revisions >= max_rev {
+                                    log::warn!(
+                                        "[engine] critic rejected {} times for thread {}; \
+                                         escalating",
+                                        thread.patch_revisions,
+                                        thread.id
+                                    );
+                                    self.emit_state_transition(
+                                        thread,
+                                        thread.state,
+                                        ThreadState::AwaitingApproval,
+                                        "critic revision budget exhausted",
+                                    );
+                                    return EngineResult::AwaitingApproval {
+                                        tool_call_id: tool_call.id.clone(),
+                                        reason: format!(
+                                            "Critic rejected the patch {} times \
+                                             (score {}). Manual review needed.",
+                                            thread.patch_revisions, verdict.score
+                                        ),
+                                    };
+                                }
+                                let step = TraceStep {
+                                    step: iterations,
+                                    content: format!(
+                                        "Critic: score={} verdict=\"{}\" \
+                                         issues={}",
+                                        verdict.score,
+                                        verdict.verdict,
+                                        verdict.issues.join("; ")
+                                    ),
+                                    ts: chrono_millis(),
+                                };
+                                thread.trace.push(step);
+                                // Send the proposal back for
+                                // revision by transitioning to
+                                // Investigating and continuing the
+                                // loop.
+                                self.emit_state_transition(
+                                    thread,
+                                    thread.state,
+                                    ThreadState::Investigating,
+                                    "critic requested revision",
+                                );
+                            } else if verdict.is_reject() {
+                                let step = TraceStep {
+                                    step: iterations,
+                                    content: format!(
+                                        "Critic: REJECT score={} verdict=\"{}\" \
+                                         issues={}",
+                                        verdict.score,
+                                        verdict.verdict,
+                                        verdict.issues.join("; ")
+                                    ),
+                                    ts: chrono_millis(),
+                                };
+                                thread.trace.push(step);
+                                self.emit_state_transition(
+                                    thread,
+                                    thread.state,
+                                    ThreadState::Rejected,
+                                    "critic rejected patch",
+                                );
+                                return EngineResult::Completed {
+                                    content: format!(
+                                        "Critic rejected the patch: {}",
+                                        verdict.verdict
+                                    ),
+                                };
+                            } else if verdict.is_presentable() {
+                                let step = TraceStep {
+                                    step: iterations,
+                                    content: format!(
+                                        "Critic: APPROVE score={} verdict=\"{}\"",
+                                        verdict.score, verdict.verdict
+                                    ),
+                                    ts: chrono_millis(),
+                                };
+                                thread.trace.push(step);
+                            }
                         }
                         ToolResult::Error { error } => {
                             log::warn!(
@@ -377,13 +718,161 @@ impl AgentEngine {
         }
     }
 
+    /// Synchronously invoke the Critic on a freshly-applied patch
+    /// (section 6.3 — Critic runs in-process, not as a sub-agent).
+    ///
+    /// The Critic inspects the patch content + hypothesis context
+    /// and returns a scored verdict. The verdict drives the
+    /// engine's revision / approval / rejection decision.
+    fn review_patch_with_critic(
+        &self,
+        thread: &Thread,
+        tool_call: &crate::agent::llm::ToolCall,
+    ) -> crate::agent::modes::critic::CriticVerdict {
+        let proposal = crate::agent::modes::critic::PatchProposal {
+            diff: tool_call.function.arguments.clone(),
+            summary: thread
+                .hypothesis
+                .as_ref()
+                .map(|h| h.statement.clone())
+                .unwrap_or_default(),
+        };
+        let hypothesis = crate::agent::modes::critic::HypothesisContext {
+            hypothesis_statement: thread
+                .hypothesis
+                .as_ref()
+                .map(|h| h.statement.clone())
+                .unwrap_or_default(),
+            confidence: thread
+                .hypothesis
+                .as_ref()
+                .map(|h| h.confidence)
+                .unwrap_or(0.0),
+        };
+        crate::agent::modes::critic::review_proposal(&proposal, &hypothesis)
+    }
+
+    /// Build the full per-mode system prompt.
+    ///
+    /// Composes the four layers from spec section 8.1:
+    ///   1. Identity    — the mode's display name + role.
+    ///   2. Rules       — shared behavioural rules (metric fabrication,
+    ///                    reproducibility, no silent failures).
+    ///   3. Mode        — the mode's `system_prompt_suffix()` with
+    ///                    investigation protocol + few-shot examples.
+    ///   4. Context     — runtime state (hypothesis, budget, escalation,
+    ///                    thread state, iteration counters).
+    ///
+    /// The result is meant to be prepended as the very first
+    /// `ChatMessage` so the LLM sees it on every iteration. The
+    /// shared `BEHAVIORAL_RULES` constant guarantees every mode
+    /// enforces the same non-negotiable rules (section 8.1 layer 2).
+    pub fn build_system_prompt(&self, thread: &Thread) -> String {
+        let mode = self.mode_registry.for_role(thread.role);
+        let escalation = self.current_escalation(&thread.budget);
+        let mut parts: Vec<String> = Vec::new();
+
+        // ── Layer 1: identity ─────────────────────────────────────────
+        parts.push(format!(
+            "You are the Bonafide {}, embedded inside the Bonafide MLOps IDE. \
+             You are a specialist — not a general coding assistant. \
+             You operate under the {}-mode protocol.",
+            mode.name(),
+            mode.name(),
+        ));
+
+        // ── Layer 2: shared behavioural rules (section 8.1) ───────────
+        parts.push(SHARED_BEHAVIORAL_RULES.to_string());
+
+        // ── Layer 3: mode-specific protocol + few-shot examples ───────
+        let suffix = mode.system_prompt_suffix();
+        if !suffix.is_empty() {
+            parts.push(suffix.to_string());
+        }
+
+        // ── Layer 4: context injection (section 8.1 layer 4) ───────────
+        let mut ctx = String::new();
+        ctx.push_str("\n\nRUNTIME CONTEXT\n");
+        ctx.push_str("══════════════\n");
+
+        // Mode / role + protocol steps.
+        ctx.push_str(&format!(
+            "Active role: {} (protocol: {})\n",
+            mode.name(),
+            mode.investigation_protocol_steps().join(" → "),
+        ));
+
+        // Thread state machine position.
+        ctx.push_str(&format!(
+            "Thread state: {} (hypothesis_iterations: {}, patch_revisions: {})\n",
+            thread_state_to_string(thread.state),
+            thread.hypothesis_iterations,
+            thread.patch_revisions,
+        ));
+
+        // Hypothesis summary if present.
+        if let Some(hyp) = &thread.hypothesis {
+            ctx.push_str(&format!(
+                "Current hypothesis: \"{}\" (confidence {:.0}%)\n",
+                truncate(&hyp.statement, 200),
+                hyp.confidence * 100.0,
+            ));
+            if !hyp.evidence.is_empty() {
+                ctx.push_str(&format!("Evidence refs: {}\n", hyp.evidence.len()));
+            }
+            if !hyp.ruled_out.is_empty() {
+                ctx.push_str("Ruled-out alternatives:\n");
+                for alt in hyp.ruled_out.iter().take(3) {
+                    ctx.push_str(&format!("  - {}\n", truncate(alt, 120)));
+                }
+            }
+        }
+
+        // Budget + escalation level.
+        ctx.push_str(&format!(
+            "Budget: spent ${:.2} / ${:.2}, {:.2}h GPU / {:.2}h GPU\n",
+            thread.budget.spent_dollars,
+            thread.budget.max_dollars,
+            thread.budget.spent_gpu_hours,
+            thread.budget.max_gpu_hours,
+        ));
+        ctx.push_str(&format!(
+            "Escalation level: {} (compute requires approval above Caution)\n",
+            escalation_label(escalation),
+        ));
+
+        // Mode behaviour knobs.
+        ctx.push_str(&format!(
+            "Mode thresholds: max_hypothesis_iterations={}, min_confidence_to_propose_patch={:.2}\n",
+            mode.max_hypothesis_iterations(),
+            mode.min_confidence_to_propose_patch(),
+        ));
+        ctx.push_str(&format!(
+            "Markers to emit: hypothesis=\"{}\", patch=\"{}\", resolved=\"{}\"\n",
+            mode.behavior_marker_hypothesis(),
+            mode.behavior_marker_patch(),
+            mode.behavior_marker_resolved(),
+        ));
+
+        parts.push(ctx);
+
+        parts.join("\n\n")
+    }
+
     /// Build the message list sent to the LLM.
     ///
     /// Strategy (section 9.1 — tier-1 cap):
+    /// - System message (per-mode prompt, layers 1-4 from spec 8.1)
     /// - Last 20 messages (user + assistant)
     /// - Current hypothesis (if any)
     /// - Last 3 tool observations
     /// - Total bounded at ~5K characters via per-message truncation.
+    ///
+    /// The system prompt is prepended as the very first message so
+    /// every iteration of the loop sees the full per-mode protocol +
+    /// runtime context. This is the wiring that makes the per-mode
+    /// `system_prompt_suffix()` actually reach the LLM (the suffix
+    /// alone is invisible until this call site prepends it).
     fn build_messages(&self, thread: &Thread) -> Vec<ChatMessage> {
         const MAX_MESSAGES: usize = 20;
         const MAX_TRACE_OBSERVATIONS: usize = 3;
@@ -391,6 +880,10 @@ impl AgentEngine {
         const MAX_CHAR_TOTAL: usize = 5_000;
 
         let mut out: Vec<ChatMessage> = Vec::new();
+
+        // ── System prompt (section 8.1) — first message ────────────────
+        let system_prompt = self.build_system_prompt(thread);
+        out.push(ChatMessage::system(system_prompt));
 
         // Last 20 messages.
         for msg in thread.messages.iter().rev().take(MAX_MESSAGES).rev() {
@@ -519,6 +1012,47 @@ impl AgentEngine {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/// Shared behavioural rules prepended to every per-mode system
+/// prompt (section 8.1 layer 2 — "BEHAVIORAL RULES"). These are
+/// the non-negotiable rules every mode must enforce; the
+/// mode-specific protocol is layered on top of this shared base.
+pub const SHARED_BEHAVIORAL_RULES: &str = "\
+RULES (apply to every mode)
+════════════════════════════
+1. Never fabricate metric values, run IDs, or paper citations. \
+If you don't have the data, say so and use a tool to get it.
+2. Always reference specific run IDs, step numbers, and metric \
+values. Bad: 'the loss looks high'. \
+Good: 'val_loss=0.89 at step 5000'.
+3. Never suggest re-running with the same config — that's a \
+waste of GPU hours.
+4. Never modify code without showing the diff first.
+5. Never delete checkpoints, overwrite configs, or discard git \
+history. Reproducibility is sacred.
+6. If you need to run compute (training, evaluation), state the \
+estimated cost and get approval first.
+7. When uncertain, say so. 'I'm not sure about X' is better \
+than a confident wrong answer that wastes 4 GPU hours.
+8. End every investigation with: what you found, what you tried, \
+what worked, what didn't, and what to try next.
+9. Always emit the documented markers (## Hypothesis, ## Patch, \
+## Resolved, ## Escalate) so the engine's state machine can \
+track your progress.
+10. If the protocol forbids an action (e.g. patch before \
+hypothesis), the engine will block it. Form the prerequisite \
+state first.";
+
+/// Map an `EscalationLevel` to a human-readable label for the
+/// system prompt's context block.
+fn escalation_label(level: EscalationLevel) -> &'static str {
+    match level {
+        EscalationLevel::Normal => "Normal",
+        EscalationLevel::Caution => "Caution",
+        EscalationLevel::Critical => "Critical",
+        EscalationLevel::Exhausted => "Exhausted",
+    }
+}
 
 /// Truncate `s` to at most `max_len` characters. If truncation occurred,
 /// appends `…` so the caller can see the text was cut.
@@ -673,7 +1207,7 @@ mod tests {
         let client = CountingLlmClient::new(calls.clone(), always_tool_call);
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(PermittingBudget::default()),
         );
@@ -700,7 +1234,7 @@ mod tests {
         let client = CountingLlmClient::new(calls.clone(), final_answer);
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(PermittingBudget::default()),
         );
@@ -724,7 +1258,7 @@ mod tests {
         let client = CountingLlmClient::new(calls.clone(), resp);
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(PermittingBudget::default()),
         );
@@ -786,7 +1320,7 @@ mod tests {
         let client = TwoShotClient::new(calls.clone());
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(), // Researcher: run_shell is Blocked
             Arc::new(PermittingBudget::default()),
         );
@@ -815,7 +1349,7 @@ mod tests {
         let client = CountingLlmClient::new(calls.clone(), resp);
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(RejectingBudget::default()),
         );
@@ -839,7 +1373,7 @@ mod tests {
         let client = CountingLlmClient::new(calls.clone(), resp);
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(PermittingBudget::default()),
         );
@@ -873,7 +1407,7 @@ mod tests {
         let client = CountingLlmClient::new(calls.clone(), resp);
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(PermittingBudget::default()),
         );
@@ -942,7 +1476,7 @@ mod tests {
         let client = CountingLlmClient::new(calls.clone(), resp);
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(PermittingBudget::default()),
         );
@@ -995,7 +1529,7 @@ mod tests {
 
         let mut engine = AgentEngine::new(
             Arc::new(client),
-            Arc::new(ToolRegistryStub::new()),
+            Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             budget,
         );
@@ -1005,5 +1539,151 @@ mod tests {
         engine.run(&mut thread).await;
 
         assert!(*recorded.lock().unwrap(), "budget.record must be called after tool execution");
+    }
+
+    // ── WS3-T1 tests ──────────────────────────────────────────────────────────────
+
+    /// `switch_mode_updates_thread_role`: the synchronous switch
+    /// helper mutates `thread.role` in place. Pin the contract so a
+    /// future refactor can't return a new thread by mistake.
+    #[test]
+    fn switch_mode_updates_thread_role() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Idle);
+        assert_eq!(thread.role, AgentRole::Debugger);
+
+        engine
+            .switch_mode(&mut thread, AgentRole::Planner)
+            .expect("switch to Planner should succeed");
+        assert_eq!(thread.role, AgentRole::Planner);
+    }
+
+    /// `switch_mode_emits_event`: a `ModeSwitch` event lands in the
+    /// JSONL log so rehydration restores the role. Read the log
+    /// directly rather than pattern-matching on the typed helper so
+    /// we exercise the wire format too.
+    #[test]
+    fn switch_mode_emits_event() {
+        let engine = AgentEngine::default();
+        let tmp = tempfile::tempdir().unwrap();
+        let event_log_path = tmp.path().join("events.jsonl");
+        let mut thread = Thread::new(
+            "test".to_string(),
+            AgentRole::Debugger,
+            None,
+            event_log_path.clone(),
+        );
+
+        engine
+            .switch_mode(&mut thread, AgentRole::Scaffolder)
+            .expect("switch should succeed");
+
+        let content = std::fs::read_to_string(&event_log_path).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(content.trim()).expect("valid JSON");
+        assert_eq!(parsed["type"], "mode_switch");
+        assert_eq!(parsed["from"], "debugger");
+        assert_eq!(parsed["to"], "scaffolder");
+    }
+
+    /// `switch_mode_persists_to_event_log`: a chain of switches
+    /// accumulates `ModeSwitch` events in the log; the trace step
+    /// also records each transition for the inbox audit.
+    #[test]
+    fn switch_mode_persists_to_event_log() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Idle);
+
+        engine
+            .switch_mode(&mut thread, AgentRole::Scaffolder)
+            .unwrap();
+        engine
+            .switch_mode(&mut thread, AgentRole::Critic)
+            .unwrap();
+        engine
+            .switch_mode(&mut thread, AgentRole::Planner)
+            .unwrap();
+
+        // Three trace steps recorded (one per switch).
+        let switch_traces: Vec<&str> = thread
+            .trace
+            .iter()
+            .filter(|s| s.content.contains("ModeSwitch"))
+            .map(|s| s.content.as_str())
+            .collect();
+        assert_eq!(switch_traces.len(), 3);
+        assert!(switch_traces[0].contains("Debugger → Scaffolder"));
+        assert!(switch_traces[1].contains("Scaffolder → Critic"));
+        assert!(switch_traces[2].contains("Critic → Planner"));
+    }
+
+    /// `switch_mode_noop_is_error`: switching to the same role the
+    /// thread already has is rejected so the caller can't
+    /// accidentally emit spurious events.
+    #[test]
+    fn switch_mode_noop_is_error() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Idle);
+
+        let err = engine
+            .switch_mode(&mut thread, AgentRole::Debugger)
+            .expect_err("switch to same role must error");
+        assert!(err.contains("no switch needed"));
+    }
+
+    /// `engine_loads_per_mode_tool_set`: the tool registry filters
+    /// its definitions through the section-12.2 matrix per role.
+    /// We exercise the role → tool mapping indirectly: a Debugger
+    /// gets `read_file` (auto-approved) but not `write_file`
+    /// (blocked); a Scaffolder gets both.
+    #[test]
+    fn engine_loads_per_mode_tool_set() {
+        use crate::agent::approval::Approval;
+        let engine = AgentEngine::default();
+
+        // Debugger: read_file is auto-approved, write_file is blocked.
+        assert_eq!(
+            engine.approval_gate.check(AgentRole::Debugger, "read_file"),
+            Approval::AutoApprove
+        );
+        assert_eq!(
+            engine.approval_gate.check(AgentRole::Debugger, "write_file"),
+            Approval::Blocked
+        );
+
+        // Scaffolder: write_file is auto-approved.
+        assert_eq!(
+            engine.approval_gate.check(AgentRole::Scaffolder, "write_file"),
+            Approval::AutoApprove
+        );
+
+        // Researcher: run_shell is blocked (read-only role).
+        assert_eq!(
+            engine.approval_gate.check(AgentRole::Researcher, "run_shell"),
+            Approval::Blocked
+        );
+    }
+
+    /// `default_engine_wires_default_mode_registry`: the engine's
+    /// `Default` impl must install `ModeRegistry::default()` so the
+    /// existing engine callers don't need to think about modes
+    /// until they explicitly want to override.
+    #[test]
+    fn default_engine_wires_default_mode_registry() {
+        let engine = AgentEngine::default();
+        let mode = engine.mode_registry().for_role(AgentRole::Debugger);
+        assert_eq!(mode.role(), AgentRole::Debugger);
+        assert_eq!(mode.name(), "Debugger");
+    }
+
+    /// `with_mode_registry_swaps_registry`: the override constructor
+    /// lets tests inject a custom registry. Verifies the accessors
+    /// reflect the swap.
+    #[test]
+    fn with_mode_registry_swaps_registry() {
+        let engine = AgentEngine::default();
+        let other = std::sync::Arc::new(crate::agent::modes::ModeRegistry::default());
+        let engine = engine.with_mode_registry(other.clone());
+        assert!(std::sync::Arc::ptr_eq(engine.mode_registry(), &other));
     }
 }

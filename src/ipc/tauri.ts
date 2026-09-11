@@ -974,6 +974,158 @@ async function upsertThread(row: ThreadRow): Promise<void> {
   await invoke<void>("upsert_thread", { row })
 }
 
+// ── WS2-T5: Agent loop IPC ──────────────────────────────────────────────────
+//
+// The renderer's `AgentContent.tsx` calls these to drive the engine:
+// - `agentSendMessage` — append a user message, run the loop until
+//   termination (final answer, approval request, budget, max iterations).
+// - `agentStopThread` — transition a thread to `Stopped` (terminal).
+// - `agentApproveAction` / `agentRejectAction` — resume or end an
+//   `AwaitingApproval` thread.
+
+export type AgentRole = "debugger" | "scaffolder" | "planner" | "researcher" | "critic"
+
+/** Outcome of an `AgentEngine::run` call. */
+export type AgentEngineResult =
+  | { type: "completed"; content: string }
+  | { type: "awaiting_approval"; toolCallId: string; reason: string }
+  | { type: "budget_exceeded" }
+  | { type: "max_iterations" }
+  | { type: "llm_error"; message: string }
+
+/** Per-workspace dollar + GPU-hour ceiling + current spend. */
+export interface AgentBudget {
+  maxDollars: number
+  maxGpuHours: number
+  spentDollars: number
+  spentGpuHours: number
+}
+
+/** Input for `agentSendMessage`. */
+export interface AgentSendMessageInput {
+  threadId: string
+  userMessage: string
+  role?: AgentRole
+  runId?: string
+  modelId?: string
+}
+
+/** Output for `agentSendMessage`. */
+export interface AgentSendMessageOutput {
+  threadId: string
+  result: AgentEngineResult
+  newState: ThreadState
+  escalation: EscalationLevel
+  budget: AgentBudget
+}
+
+/** Input for `agentStopThread`. */
+export interface AgentStopThreadInput {
+  threadId: string
+}
+
+/** Output for `agentStopThread`. */
+export interface AgentStopThreadOutput {
+  threadId: string
+  stopped: boolean
+}
+
+/** Input for `agentApproveAction` / `agentRejectAction`. */
+export interface AgentApprovalInput {
+  threadId: string
+  toolCallId: string
+  /** "approve" | "revise" | "reject" */
+  decision: "approve" | "revise" | "reject"
+}
+
+/** Output for the approval / rejection commands. */
+export interface AgentApprovalOutput {
+  threadId: string
+  accepted: boolean
+  newState: ThreadState
+}
+
+/**
+ * Submit a user message and run the engine loop. Returns the engine's
+ * `result`, the thread's new state, the budget's escalation level, and
+ * the post-run `Budget` snapshot.
+ */
+async function agentSendMessage(
+  workspaceRoot: string,
+  input: AgentSendMessageInput,
+): Promise<AgentSendMessageOutput> {
+  if (!tauriIsTauri()) {
+    return {
+      threadId: input.threadId,
+      result: {
+        type: "completed",
+        content:
+          "Agent loop is offline — open Preferences → Models to configure an LLM endpoint.",
+      },
+      newState: "idle",
+      escalation: "normal",
+      budget: {
+        maxDollars: 0,
+        maxGpuHours: 0,
+        spentDollars: 0,
+        spentGpuHours: 0,
+      },
+    }
+  }
+  return invoke<AgentSendMessageOutput>("agent_send_message", {
+    workspaceRoot,
+    input,
+  })
+}
+
+/** Stop the engine loop for a thread. Idempotent for terminal threads. */
+async function agentStopThread(
+  workspaceRoot: string,
+  input: AgentStopThreadInput,
+): Promise<AgentStopThreadOutput> {
+  if (!tauriIsTauri()) {
+    return { threadId: input.threadId, stopped: false }
+  }
+  return invoke<AgentStopThreadOutput>("agent_stop_thread", {
+    workspaceRoot,
+    input,
+  })
+}
+
+/**
+ * Approve (or revise / reject) a pending tool call. The decision drives
+ * how the engine resumes the paused thread:
+ * - `approve` → resume execution
+ * - `revise` → ask the LLM for a new proposal
+ * - `reject` → transition the thread to `Rejected`
+ */
+async function agentApproveAction(
+  workspaceRoot: string,
+  input: AgentApprovalInput,
+): Promise<AgentApprovalOutput> {
+  if (!tauriIsTauri()) {
+    return { threadId: input.threadId, accepted: false, newState: "rejected" }
+  }
+  return invoke<AgentApprovalOutput>("agent_approve_action", {
+    workspaceRoot,
+    input,
+  })
+}
+
+/** Reject a pending tool call (shortcut for `agentApproveAction` with `decision: "reject"`). */
+async function agentRejectAction(
+  workspaceRoot: string,
+  input: AgentApprovalInput,
+): Promise<AgentApprovalOutput> {
+  if (!tauriIsTauri()) {
+    return { threadId: input.threadId, accepted: false, newState: "rejected" }
+  }
+  return invoke<AgentApprovalOutput>("agent_reject_action", {
+    workspaceRoot,
+    input,
+  })
+}
+
 // ── Phase 2: Experiment IPC ──────────────────────────────────────────────────
 
 export type {
@@ -1764,6 +1916,10 @@ export const bonafide = {
   agent: {
     listThreads,
     upsertThread,
+    sendMessage: agentSendMessage,
+    stopThread: agentStopThread,
+    approveAction: agentApproveAction,
+    rejectAction: agentRejectAction,
     createExperiment,
     listExperiments,
     getExperiment,
@@ -1908,6 +2064,22 @@ export type BonafideAPI = {
   agent: {
     listThreads: (workspaceRoot: string) => Promise<ThreadRow[]>
     upsertThread: (row: ThreadRow) => Promise<void>
+    sendMessage: (
+      workspaceRoot: string,
+      input: AgentSendMessageInput,
+    ) => Promise<AgentSendMessageOutput>
+    stopThread: (
+      workspaceRoot: string,
+      input: AgentStopThreadInput,
+    ) => Promise<AgentStopThreadOutput>
+    approveAction: (
+      workspaceRoot: string,
+      input: AgentApprovalInput,
+    ) => Promise<AgentApprovalOutput>
+    rejectAction: (
+      workspaceRoot: string,
+      input: AgentApprovalInput,
+    ) => Promise<AgentApprovalOutput>
     createExperiment: (
       workspaceRoot: string,
       row: import("../data/experiments").Experiment,

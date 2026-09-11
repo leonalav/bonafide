@@ -57,6 +57,7 @@ pub fn agent_role_from_str(s: &str) -> Option<AgentRole> {
 /// Phase 0: the struct exists and is serialised; the governor logic that
 /// enforces the limits is wired in Phase 3.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Budget {
     pub max_gpu_hours: f32,
     pub max_dollars: f32,
@@ -138,6 +139,28 @@ pub struct Thread {
     pub proposed_patch: Option<Patch>,
     pub budget: Budget,
     pub event_log_path: PathBuf,
+    /// Number of hypothesis iterations consumed in this thread.
+    /// The Debugger increments this each time a `## Hypothesis`
+    /// marker is detected while in `Investigating` state. When
+    /// it exceeds the active mode's `max_hypothesis_iterations`,
+    /// the engine escalates instead of forming another hypothesis.
+    ///
+    /// Defaults to 0 so a freshly-constructed thread has full
+    /// hypothesis budget available.
+    ///
+    /// Persisted with the thread row so a renderer restart can
+    /// resume the iteration count without losing context.
+    #[serde(default)]
+    pub hypothesis_iterations: u32,
+    /// Number of patch revision rounds consumed in this thread.
+    /// The Critic integration increments this each time the
+    /// Critic returns a score below `CRITIC_RISKY_THRESHOLD` and
+    /// the engine sends the proposal back for revision. After
+    /// `max_hypothesis_iterations` rounds, the engine escalates.
+    ///
+    /// Defaults to 0.
+    #[serde(default)]
+    pub patch_revisions: u32,
 }
 
 impl Thread {
@@ -160,7 +183,20 @@ impl Thread {
             proposed_patch: None,
             budget: Budget::default(),
             event_log_path,
+            hypothesis_iterations: 0,
+            patch_revisions: 0,
         }
+    }
+
+    /// Reset the iteration counters so a thread can be reused for
+    /// a new investigation without dropping the conversation
+    /// history. The engine calls this when transitioning to
+    /// `Resolved` or `Rejected` so the user can start a fresh
+    /// investigation on the same thread without leaking
+    /// iteration count.
+    pub fn reset_iteration_counters(&mut self) {
+        self.hypothesis_iterations = 0;
+        self.patch_revisions = 0;
     }
 }
 

@@ -40,9 +40,11 @@ use crate::agent::orchestrator::{
 
 /// Convert a `ThreadState` enum to its snake_case wire string.
 ///
+/// Convert a `ThreadState` enum to its snake_case wire string.
+///
 /// Mirrors `#[serde(rename_all = "snake_case")]` on the enum so the
 /// SQLite row and the in-memory enum agree on the string form.
-fn thread_state_to_string(state: ThreadState) -> &'static str {
+pub fn thread_state_to_string(state: ThreadState) -> &'static str {
     match state {
         ThreadState::Idle => "idle",
         ThreadState::Investigating => "investigating",
@@ -245,11 +247,27 @@ pub enum ThreadEvent {
         verdict: String,
         ts: i64,
     },
+    /// A mode-switch (section 6.2) — the agent transitions between
+    /// Debugger / Scaffolder / Planner / Researcher / Critic without
+    /// spawning a sub-agent. The replay path uses this to update
+    /// `thread.role` on rehydration so a renderer restart restores
+    /// the user's last-selected mode.
+    ModeSwitch {
+        v: u32,
+        from: String,
+        to: String,
+        ts: i64,
+    },
 }
 
 impl ThreadEvent {
     /// Bumped when the wire shape changes in a backward-incompatible way.
-    const WIRE_VERSION: u32 = 1;
+    ///
+    /// v1 → v2: added the `ModeSwitch` variant (WS3-T1). Older logs
+    /// (v1 only) replay cleanly because the unknown-variant handling
+    /// in `replay_thread` swallows unrecognised types without
+    /// failing the entire log.
+    const WIRE_VERSION: u32 = 2;
 
     /// Convert a `Message` into a `ThreadEvent::Message` with the current
     /// wire version.
@@ -303,6 +321,22 @@ impl ThreadEvent {
             ts,
         }
     }
+
+    /// Convert a mode switch into a `ThreadEvent::ModeSwitch`.
+    ///
+    /// `from` / `to` are the snake-case role strings (e.g.
+    /// `"debugger"`, `"planner"`). Used by the engine when the
+    /// agent transitions between modes inside one logical thread
+    /// (section 6.2 — single-agent mode switching, not sub-agent
+    /// spawning).
+    pub fn mode_switch(from: AgentRole, to: AgentRole, ts: i64) -> Self {
+        Self::ModeSwitch {
+            v: Self::WIRE_VERSION,
+            from: agent_role_to_string(from).to_string(),
+            to: agent_role_to_string(to).to_string(),
+            ts,
+        }
+    }
 }
 
 // ── ReplayError ──────────────────────────────────────────────────────────────
@@ -316,6 +350,10 @@ pub enum ReplayError {
     #[error("Failed to decode line {line}: {message}")]
     Decoding { line: usize, message: String },
 
+    /// Reserved for future use; unknown event variants are now
+    /// silently logged as trace steps and skipped so v1 logs replay
+    /// cleanly on a v2 build. Kept for compatibility with callers
+    /// that pattern-match on the full error enum.
     #[error("Unknown event type at line {0}")]
     UnknownEventType(usize),
 }
@@ -537,10 +575,8 @@ pub fn replay_thread(
             }
         })?;
 
-        // Distinguish "unknown type" from "malformed shape" so callers
-        // can decide whether to retry on a schema bump vs surface a
-        // hard error.
-        let event_type = value
+        // Validate the 'type' field exists before parsing as a ThreadEvent.
+        let _event_type: &str = value
             .get("type")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ReplayError::Decoding {
@@ -548,24 +584,35 @@ pub fn replay_thread(
                 message: "missing 'type' field".to_string(),
             })?;
 
-        let event: ThreadEvent = serde_json::from_value(value).map_err(|e| {
-            // Treat any unknown-variant error as recoverable so a
-            // forward-compatible replay doesn't break older builds.
-            // We discriminate by message text — `serde_json::Error`
-            // doesn't expose a public `custom` variant without the
-            // trait import, and matching by category (`io` /
-            // `syntax` / `data`) doesn't reliably distinguish the
-            // "unknown enum variant" case.
-            let msg = e.to_string();
-            if msg.contains("unknown variant") {
-                ReplayError::UnknownEventType(line_no)
-            } else {
-                ReplayError::Decoding {
+        let event: ThreadEvent = match serde_json::from_value(value) {
+            Ok(ev) => ev,
+            Err(e) => {
+                // Treat unknown-variant errors as recoverable so a
+                // forward-compatible replay doesn't break older builds.
+                // We discriminate by message text — `serde_json::Error`
+                // doesn't expose a public `custom` variant without the
+                // trait import, and matching by category (`io` /
+                // `syntax` / `data`) doesn't reliably distinguish the
+                // "unknown enum variant" case.
+                let msg = e.to_string();
+                if msg.contains("unknown variant") {
+                    // v1 logs (no `ModeSwitch`) replay cleanly on a v2
+                    // build because we record a trace step and move on
+                    // instead of failing the entire replay.
+                    let step = TraceStep {
+                        step: (thread.trace.len() as u32) + 1,
+                        content: format!("unknown event at line {line_no}: {e}"),
+                        ts: chrono_millis(),
+                    };
+                    thread.trace.push(step);
+                    continue;
+                }
+                return Err(ReplayError::Decoding {
                     line: line_no,
                     message: format!("invalid event: {e}"),
-                }
+                });
             }
-        })?;
+        };
 
         match event {
             ThreadEvent::Message { id, role, content, ts, .. } => {
@@ -628,6 +675,22 @@ pub fn replay_thread(
                     ts,
                 };
                 thread.trace.push(step);
+            }
+            ThreadEvent::ModeSwitch { from, to, ts, .. } => {
+                // Update the in-memory role so a renderer restart
+                // resumes the loop in the user's last-selected mode.
+                // The trace step records the transition for audit
+                // and the from/to strings show up in the inbox detail.
+                if let Some(new_role) = agent_role_from_str(&to) {
+                    thread.role = new_role;
+                }
+                let step = TraceStep {
+                    step: (thread.trace.len() as u32) + 1,
+                    content: format!("ModeSwitch: {from} → {to}"),
+                    ts,
+                };
+                thread.trace.push(step);
+                let _ = from; // referenced for audit; new_role already used.
             }
         }
     }
@@ -827,7 +890,7 @@ mod tests {
         append_thread_event(
             &log_path,
             &ThreadEvent::Message {
-                v: 1,
+                v: 2,
                 id: "m1".to_string(),
                 role: "user".to_string(),
                 content: "Why did run a3f9c12 diverge?".to_string(),
@@ -843,7 +906,7 @@ mod tests {
         append_thread_event(
             &log_path,
             &ThreadEvent::Hypothesis {
-                v: 1,
+                v: 2,
                 value: r#"{"verdict":"test","statement":"lr too high","evidence":[],"confidence":0.5,"ruled_out":[]}"#.to_string(),
                 ts: 1_200,
             },
@@ -861,7 +924,7 @@ mod tests {
         append_thread_event(
             &log_path,
             &ThreadEvent::ToolCall {
-                v: 1,
+                v: 2,
                 id: "tc1".to_string(),
                 name: "read_file".to_string(),
                 args_json: "{}".to_string(),
@@ -931,7 +994,104 @@ mod tests {
         let content = std::fs::read_to_string(&log_path).unwrap();
         let trimmed = content.trim();
         let parsed: serde_json::Value = serde_json::from_str(trimmed).unwrap();
-        assert_eq!(parsed["v"], 1);
+        assert_eq!(parsed["v"], 2);
         assert_eq!(parsed["type"], "state_transition");
+    }
+
+    /// `append_thread_event_jsonl_format_mode_switch`: a `ModeSwitch`
+    /// event serialises with `v: 2` (the current wire version) and
+    /// the correct role strings.
+    #[test]
+    fn append_thread_event_jsonl_format_mode_switch() {
+        let tmp = tempdir().unwrap();
+        let log_path: PathBuf = tmp.path().join("events.jsonl");
+
+        let event = ThreadEvent::mode_switch(AgentRole::Debugger, AgentRole::Planner, 1_700_000);
+        append_thread_event(&log_path, &event).unwrap();
+
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        let trimmed = content.trim();
+        let parsed: serde_json::Value = serde_json::from_str(trimmed).unwrap();
+        assert_eq!(parsed["v"], 2);
+        assert_eq!(parsed["type"], "mode_switch");
+        assert_eq!(parsed["from"], "debugger");
+        assert_eq!(parsed["to"], "planner");
+        assert_eq!(parsed["ts"], 1_700_000);
+    }
+
+    /// `mode_switch_roundtrip_preserves_role`: write a ModeSwitch
+    /// event into a fresh log, replay, assert the thread's role
+    /// reflects the destination (Planner, not the original
+    /// Debugger passed to `Thread::new`).
+    #[test]
+    fn mode_switch_roundtrip_preserves_role() {
+        let tmp = tempdir().unwrap();
+        let log_path: PathBuf = tmp.path().join("events.jsonl");
+
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::mode_switch(AgentRole::Debugger, AgentRole::Planner, 1_000_000),
+        )
+        .unwrap();
+
+        let thread = replay_thread(
+            &log_path,
+            "t1".to_string(),
+            AgentRole::Debugger, // initial role from constructor
+            None,
+        )
+        .unwrap();
+
+        // After replay, thread.role must reflect the ModeSwitch destination.
+        assert_eq!(thread.role, AgentRole::Planner);
+        // The trace must record the transition for audit.
+        assert!(
+            thread
+                .trace
+                .iter()
+                .any(|s| s.content.contains("ModeSwitch: debugger → planner")),
+            "trace should contain the mode-switch audit step"
+        );
+    }
+
+    /// `replay_thread_ignores_unknown_event_type`: write a fabricated
+    /// event with a `"type"` value that no longer exists in the
+    /// current enum, replay, assert the log loads without error
+    /// (rather than aborting the replay) and the unknown line is
+    /// recorded as a trace step for audit.
+    ///
+    /// This guarantees v1 logs (which don't have `ModeSwitch`) replay
+    /// cleanly on a v2 build — the same forward-compatibility that
+    /// powers the `unknown variant` recovery in `replay_thread`.
+    #[test]
+    fn replay_thread_ignores_unknown_event_type() {
+        let tmp = tempdir().unwrap();
+        let log_path: PathBuf = tmp.path().join("events.jsonl");
+
+        // Bypass the typed helper — write a future-only event type.
+        let raw = r#"{"type":"some_future_event","v":99,"foo":"baz"}"#;
+        std::fs::write(&log_path, format!("{raw}\n")).unwrap();
+
+        let thread = replay_thread(&log_path, "t1".to_string(), AgentRole::Debugger, None).unwrap();
+        // No messages (the unknown event isn't a Message variant).
+        assert!(thread.messages.is_empty());
+        // One trace step was recorded so the user can see the
+        // forward-compatible skip in the inbox detail.
+        assert_eq!(thread.trace.len(), 1);
+        assert!(thread.trace[0].content.contains("unknown event"));
+    }
+
+    /// `mode_switch_constructor_emits_correct_role_strings`: the
+    /// `mode_switch` helper is the canonical builder for the new
+    /// event and must serialise the role names exactly as
+    /// `agent_role_from_str` parses them.
+    #[test]
+    fn mode_switch_constructor_emits_correct_role_strings() {
+        let evt = ThreadEvent::mode_switch(AgentRole::Scaffolder, AgentRole::Critic, 42);
+        let json = serde_json::to_string(&evt).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["type"], "mode_switch");
+        assert_eq!(v["from"], "scaffolder");
+        assert_eq!(v["to"], "critic");
     }
 }

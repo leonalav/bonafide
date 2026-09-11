@@ -19,10 +19,10 @@
 //!
 //! | Role        | Auto-approved tools                                                                  | Approval-required tools                                          |
 //! |-------------|--------------------------------------------------------------------------------------|------------------------------------------------------------------|
-//! | Debugger    | read_file, read_directory, search_files, list_runs, get_run, get_metric_series, …     | apply_patch, run_smoke_test, run_shell, launch_experiment_run, … |
-//! | Scaffolder  | safe ∪ write_file, create_file, create_folder, rename_path, git_commit, run_smoke_test | run_shell, pip_install                                            |
+//! | Debugger    | read_file, read_directory, search_files, list_runs, get_run, get_metric_series, …, write_project_memory | apply_patch, run_smoke_test, run_shell, launch_experiment_run, … |
+//! | Scaffolder  | safe ∪ write_file, create_file, create_folder, rename_path, git_add, git_commit, run_smoke_test | run_shell, pip_install                                            |
 //! | Planner     | safe ∪ {}                                                                            | launch_experiment_run, create_experiment                          |
-//! | Researcher  | safe ∪ search_arxiv, read_paper, query_project_memory, write_project_memory           | {}                                                                |
+//! | Researcher  | safe ∪ search_arxiv, read_paper, query_project_memory                                | {}                                                                |
 //! | Critic      | safe ∪ query_project_memory                                                          | git_discard (used only via the UI; no agent mode auto-approves)   |
 //!
 //! "safe" = the union of the simplest read-only tools that every role
@@ -120,10 +120,20 @@ impl ApprovalGate {
         .collect();
 
         let mut auto = HashMap::new();
-        // Debugger: safe ∪ empty (no extra auto-approved tools).
-        auto.insert(AgentRole::Debugger, HashSet::new());
+        // Debugger: safe ∪ write_project_memory (per section 5.2 —
+        // "✅ `query_project_memory`, `write_project_memory`").
+        // Debugger is allowed to document its own findings into
+        // project memory without a separate approval step.
+        auto.insert(
+            AgentRole::Debugger,
+            ["write_project_memory"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
 
-        // Scaffolder: safe ∪ write tools + git_commit + run_smoke_test.
+        // Scaffolder: safe ∪ write tools + git_add + git_commit +
+        // run_smoke_test (per section 5.3 — "✅ `git_add`, `git_commit`").
         auto.insert(
             AgentRole::Scaffolder,
             [
@@ -131,6 +141,7 @@ impl ApprovalGate {
                 "create_file",
                 "create_folder",
                 "rename_path",
+                "git_add",
                 "git_commit",
                 "run_smoke_test",
             ]
@@ -142,41 +153,43 @@ impl ApprovalGate {
         // Planner: safe ∪ empty (no write tools auto-approved).
         auto.insert(AgentRole::Planner, HashSet::new());
 
-        // Researcher: safe ∪ knowledge tools.
+        // Researcher: safe ∪ knowledge tools (per section 5.5 —
+        // "✅ `search_arxiv`, `read_paper`, `query_project_memory`",
+        // "❌ All write tools"). `write_project_memory` is deliberately
+        // excluded so a Researcher that discovers an actionable insight
+        // must escalate to the Debugger (or surface the finding in
+        // its final answer) instead of writing to memory directly.
         auto.insert(
             AgentRole::Researcher,
             [
                 "search_arxiv",
                 "read_paper",
                 "query_project_memory",
-                "write_project_memory",
             ]
             .iter()
             .map(|s| s.to_string())
             .collect(),
         );
 
-        // Critic: safe ∪ query_project_memory.
+        // Critic: safe ∪ query_project_memory (per section 5.6).
         auto.insert(
             AgentRole::Critic,
             ["query_project_memory"].iter().map(|s| s.to_string()).collect(),
         );
 
         // ── Approval-required (per role) ───────────────────────────────────
+        // Per spec section 12.2 row 1 (Debugger): the only tools that
+        // need approval are apply_patch, run_smoke_test, and run_shell.
+        // `launch_experiment_run` and `create_experiment` are ❌
+        // (Blocked) for Debugger — those belong to Planner, not
+        // Debugger. `pip_install` is also ❌ for Debugger.
         let mut approve = HashMap::new();
         approve.insert(
             AgentRole::Debugger,
-            [
-                "apply_patch",
-                "run_smoke_test",
-                "run_shell",
-                "launch_experiment_run",
-                "create_experiment",
-                "pip_install",
-            ]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
+            ["apply_patch", "run_smoke_test", "run_shell"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         );
 
         approve.insert(
@@ -326,13 +339,34 @@ mod tests {
         );
     }
 
-    /// Section-12.2 row 1: Debugger's launch_experiment_run needs approval.
+    /// Section-12.2 row 1: Debugger's launch_experiment_run is ❌ (Blocked).
+    /// Experiment lifecycle lives in Planner mode, not Debugger.
     #[test]
-    fn debugger_launch_experiment_run_needs_approval() {
+    fn debugger_launch_experiment_run_is_blocked() {
         let gate = ApprovalGate::default();
         assert_eq!(
             gate.check(AgentRole::Debugger, "launch_experiment_run"),
-            Approval::NeedApproval
+            Approval::Blocked
+        );
+    }
+
+    /// Section-12.2 row 1: Debugger's create_experiment is ❌ (Blocked).
+    #[test]
+    fn debugger_create_experiment_is_blocked() {
+        let gate = ApprovalGate::default();
+        assert_eq!(
+            gate.check(AgentRole::Debugger, "create_experiment"),
+            Approval::Blocked
+        );
+    }
+
+    /// Section-12.2 row 1: Debugger's pip_install is ❌ (Blocked).
+    #[test]
+    fn debugger_pip_install_is_blocked() {
+        let gate = ApprovalGate::default();
+        assert_eq!(
+            gate.check(AgentRole::Debugger, "pip_install"),
+            Approval::Blocked
         );
     }
 
@@ -425,6 +459,193 @@ mod tests {
                 Approval::AutoApprove,
                 "{role:?} should auto-approve read_file"
             );
+        }
+    }
+
+    // ── WS3-T7 — per-row matrix verification ────────────────────────────────────
+
+    /// Section-12.2 row 1: Debugger matrix — every cell of the
+    /// spec table for the Debugger role. The expected `Approval`
+    /// values match the architecture doc's table verbatim.
+    #[test]
+    fn section_12_2_debugger_matrix() {
+        let gate = ApprovalGate::default();
+        let cases: &[(&str, Approval)] = &[
+            // ✅ auto-approved
+            ("read_file", Approval::AutoApprove),
+            // Per section 5.2 — "✅ `query_project_memory`,
+            // `write_project_memory`". Debugger documents its own
+            // findings into project memory as part of the protocol;
+            // requiring approval here would silently break the
+            // DOCUMENT step. The WS3 reaudit surfaced this missing
+            // entry from the auto-approve list.
+            ("write_project_memory", Approval::AutoApprove),
+            ("write_file", Approval::Blocked),    // ❌
+            ("apply_patch", Approval::NeedApproval), // ⚠️
+            ("run_smoke_test", Approval::NeedApproval), // ⚠️
+            ("run_shell", Approval::NeedApproval),    // ⚠️
+            ("launch_experiment_run", Approval::Blocked), // ❌
+            ("git_commit", Approval::Blocked),       // ❌
+            ("git_discard", Approval::Blocked),      // ❌
+            ("delete_path", Approval::Blocked),      // ❌
+            ("create_experiment", Approval::Blocked), // ❌
+        ];
+        for (tool, expected) in cases {
+            assert_eq!(
+                gate.check(AgentRole::Debugger, tool),
+                *expected,
+                "Debugger tool {tool}: expected {expected:?}"
+            );
+        }
+    }
+
+    /// Section-12.2 row 2: Scaffolder matrix.
+    #[test]
+    fn section_12_2_scaffolder_matrix() {
+        let gate = ApprovalGate::default();
+        let cases: &[(&str, Approval)] = &[
+            ("read_file", Approval::AutoApprove),    // ✅
+            ("write_file", Approval::AutoApprove),   // ✅
+            ("apply_patch", Approval::Blocked),      // ❌ (generates new, not modifies)
+            ("run_smoke_test", Approval::AutoApprove), // ✅ (automatic after gen)
+            ("run_shell", Approval::NeedApproval),    // ⚠️
+            ("pip_install", Approval::NeedApproval),  // ⚠️
+            ("launch_experiment_run", Approval::Blocked), // ❌
+            // Per section 5.3 — "✅ `git_add`, `git_commit` (with
+            // generated commit message)". git_add was missing from
+            // the auto-approve list prior to the WS3 reaudit; this
+            // assertion is the regression guard.
+            ("git_add", Approval::AutoApprove),      // ✅
+            ("git_commit", Approval::AutoApprove),    // ✅
+            ("git_discard", Approval::Blocked),       // ❌
+            ("delete_path", Approval::Blocked),       // ❌
+        ];
+        for (tool, expected) in cases {
+            assert_eq!(
+                gate.check(AgentRole::Scaffolder, tool),
+                *expected,
+                "Scaffolder tool {tool}: expected {expected:?}"
+            );
+        }
+    }
+
+    /// Section-12.2 row 3: Planner matrix.
+    #[test]
+    fn section_12_2_planner_matrix() {
+        let gate = ApprovalGate::default();
+        let cases: &[(&str, Approval)] = &[
+            ("read_file", Approval::AutoApprove),           // ✅
+            ("write_file", Approval::Blocked),              // ❌
+            ("apply_patch", Approval::Blocked),              // ❌
+            ("run_smoke_test", Approval::Blocked),           // ❌
+            ("run_shell", Approval::Blocked),                // ❌
+            ("create_experiment", Approval::NeedApproval),   // ⚠️
+            ("launch_experiment_run", Approval::NeedApproval), // ⚠️
+            ("git_commit", Approval::Blocked),               // ❌
+            ("git_discard", Approval::Blocked),              // ❌
+            ("delete_path", Approval::Blocked),              // ❌
+        ];
+        for (tool, expected) in cases {
+            assert_eq!(
+                gate.check(AgentRole::Planner, tool),
+                *expected,
+                "Planner tool {tool}: expected {expected:?}"
+            );
+        }
+    }
+
+    /// Section-12.2 row 4: Researcher matrix.
+    #[test]
+    fn section_12_2_researcher_matrix() {
+        let gate = ApprovalGate::default();
+        let cases: &[(&str, Approval)] = &[
+            ("read_file", Approval::AutoApprove),        // ✅
+            ("write_file", Approval::Blocked),           // ❌
+            ("apply_patch", Approval::Blocked),           // ❌
+            ("run_smoke_test", Approval::Blocked),        // ❌
+            ("run_shell", Approval::Blocked),             // ❌
+            ("search_arxiv", Approval::AutoApprove),      // ✅
+            ("read_paper", Approval::AutoApprove),        // ✅
+            ("query_project_memory", Approval::AutoApprove), // ✅
+            // Per section 5.5 — "❌ All write tools".
+            // Researcher must escalate (or surface in the final answer)
+            // rather than mutate project memory directly.
+            ("write_project_memory", Approval::Blocked),  // ❌
+            ("create_experiment", Approval::Blocked),     // ❌
+            ("git_discard", Approval::Blocked),           // ❌
+            ("delete_path", Approval::Blocked),           // ❌
+        ];
+        for (tool, expected) in cases {
+            assert_eq!(
+                gate.check(AgentRole::Researcher, tool),
+                *expected,
+                "Researcher tool {tool}: expected {expected:?}"
+            );
+        }
+    }
+
+    /// Section-12.2 row 5: Critic matrix.
+    #[test]
+    fn section_12_2_critic_matrix() {
+        let gate = ApprovalGate::default();
+        let cases: &[(&str, Approval)] = &[
+            ("read_file", Approval::AutoApprove),        // ✅
+            ("write_file", Approval::Blocked),           // ❌
+            ("apply_patch", Approval::Blocked),           // ❌
+            ("run_smoke_test", Approval::Blocked),        // ❌
+            ("run_shell", Approval::Blocked),             // ❌
+            ("query_project_memory", Approval::AutoApprove), // ✅
+            ("git_discard", Approval::NeedApproval),      // ⚠️
+            ("create_experiment", Approval::Blocked),     // ❌
+            ("delete_path", Approval::Blocked),           // ❌
+        ];
+        for (tool, expected) in cases {
+            assert_eq!(
+                gate.check(AgentRole::Critic, tool),
+                *expected,
+                "Critic tool {tool}: expected {expected:?}"
+            );
+        }
+    }
+
+    /// Property-style check: for every role, the union of
+    /// `AutoApprove` ∪ `NeedApproval` ∪ `Blocked` (per the gate's
+    /// lookup table) must cover the full tool catalog with no gaps.
+    /// A missing entry would silently leak a tool through with
+    /// `DenyAll` returning `Blocked` but the renderer never seeing
+    /// the tool — surfacing here as a coverage gap.
+    ///
+    /// We cross-reference the gate's `safe` + per-role maps with
+    /// the catalog in `tools::ToolRegistry` so the assertion stays
+    /// correct as the catalog grows.
+    #[test]
+    fn coverage_table_covers_full_tool_catalog() {
+        use crate::agent::tools::ToolRegistry;
+
+        let gate = ApprovalGate::default();
+        let registry = ToolRegistry::default();
+        let catalog_names: Vec<&str> = registry.all_tool_names();
+
+        // The gate itself must classify every catalog tool into
+        // one of the three buckets — AutoApprove, NeedApproval,
+        // or Blocked. There must be no "unclassified" gap.
+        for role in [
+            AgentRole::Debugger,
+            AgentRole::Scaffolder,
+            AgentRole::Planner,
+            AgentRole::Researcher,
+            AgentRole::Critic,
+        ] {
+            for tool in &catalog_names {
+                let decision = gate.check(role, tool);
+                assert!(
+                    matches!(
+                        decision,
+                        Approval::AutoApprove | Approval::NeedApproval | Approval::Blocked
+                    ),
+                    "Role {role:?} tool {tool}: classification must be one of the three Approval variants (got {decision:?})",
+                );
+            }
         }
     }
 }

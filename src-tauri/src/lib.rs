@@ -1443,6 +1443,11 @@ pub fn run() {
             list_experiments_for_planner,
             scaffold_script,
             run_smoke_test,
+            // Phase 2 (WS2-T5): Agent loop IPC commands
+            agent::ipc::agent_send_message,
+            agent::ipc::agent_stop_thread,
+            agent::ipc::agent_approve_action,
+            agent::ipc::agent_reject_action,
             // Phase 0.0: Settings store, Python detect, GPU detect, App info
             commands::settings::get_settings,
             commands::settings::get_setting,
@@ -1512,6 +1517,15 @@ pub fn run() {
             // WS2-T4.
             let budget_state: BudgetState = ();
             app.manage(budget_state);
+
+            // ── WS2-T5: Agent state (per-workspace engine cache) ──────────
+            // Holds the cached `ToolRegistry`, `ApprovalGate`, and budget
+            // governor for each open workspace so the renderer can hit
+            // `agent_send_message` / `agent_stop_thread` / approval commands
+            // without rebuilding the registry each call.
+            let agent_state: Arc<agent::ipc::AgentState> =
+                Arc::new(agent::ipc::AgentState::new());
+            app.manage(agent_state);
 
             // Start the WebSocket LSP bridge on port 9877.
             // This relay server accepts connections from the browser
