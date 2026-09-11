@@ -32,6 +32,10 @@ export interface SmokeTestResult {
   timedOut: boolean
   /** Human-readable summary for the UI. */
   summary: string
+  /** Number of individual tests executed. */
+  testsRun?: number
+  /** Wall-clock duration in milliseconds. */
+  durationMs?: number
 }
 
 export function formatSmokeTestResult(r: SmokeTestResult): string {

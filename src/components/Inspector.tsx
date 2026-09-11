@@ -1,13 +1,30 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Icon } from "./ui/Icon"
 import { SectionLabel } from "./ui/primitives"
 import { Chart } from "./ui/Chart"
 import type { Run } from "../data/runs"
 import { AgentContent } from "./agent/AgentContent"
 import { BudgetMeter } from "./ui/BudgetMeter"
+import { RunEmptyState, DiffEmptyState } from "./ui/RunEmptyState"
 
 const TABS = ["Overview", "Metrics", "Agent", "Config", "Diff"] as const
 type TabName = typeof TABS[number]
+
+type DiffLine = { sign: " " | "+" | "-" text: string }
+
+function parseDiffText(text: string): DiffLine[] {
+  const out: DiffLine[] = []
+  for (const raw of text.split("\n")) {
+    if (raw.startsWith("+++") || raw.startsWith("---")) continue
+    const sign = raw.startsWith("+")
+      ? "+"
+      : raw.startsWith("-")
+        ? "-"
+        : " "
+    out.push({ sign, text: raw.replace(/^[+-] /, " ") })
+  }
+  return out
+}
 
 /**
  * Inspector panel. Shows details for a single ML run.
@@ -89,24 +106,7 @@ export function Inspector({
               <AgentContent onOpenWorkflow={onOpenWorkflow} />
             </div>
           ) : (
-            <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-              <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface-container">
-                <Icon
-                  name="flask-conical"
-                  size={24}
-                  className="text-outline-variant"
-                />
-              </div>
-              <div>
-                <p className="font-sans text-[14px] font-medium text-on-surface">
-                  No run selected
-                </p>
-                <p className="mt-1 font-body text-[12px] text-on-surface-variant">
-                  Run tracking is not yet connected. Once W&amp;B or MLflow is
-                  wired up, run details will appear here.
-                </p>
-              </div>
-            </div>
+            <RunEmptyState />
           )}
         </div>
       </aside>
@@ -169,7 +169,7 @@ export function Inspector({
           <AgentContent run={run as Run} onOpenWorkflow={onOpenWorkflow} />
         )}
         {tab === "Config" && <RunConfig run={run} />}
-        {tab === "Diff" && <RunDiff />}
+        {tab === "Diff" && <RunDiff run={run} />}
       </div>
     </aside>
   )
@@ -180,7 +180,8 @@ function RunOverview({
 }: {
   run: NonNullable<Parameters<typeof Inspector>[0]["run"]>
 }) {
-  const pct = Math.round((run.step / run.totalSteps) * 100)
+  const pct =
+    run.totalSteps > 0 ? Math.round((run.step / run.totalSteps) * 100) : 0
   return (
     <div className="flex flex-col gap-6">
       <section className="flex flex-col gap-2">
@@ -230,22 +231,42 @@ function RunConfig({
   )
 }
 
-const DIFF_LINES: { sign: " " | "+" | "-" text: string }[] = [
-  { sign: "-", text: "lr = 1e-3" },
-  { sign: "+", text: "lr = 5e-4" },
-  { sign: " ", text: "" },
-  { sign: "-", text: "batch_size = 64" },
-  { sign: "+", text: "batch_size = 128" },
-]
+function RunDiff({
+  run,
+}: {
+  run: NonNullable<Parameters<typeof Inspector>[0]["run"]>
+}) {
+  const [diffLines, setDiffLines] = useState<DiffLine[]>([])
 
-function RunDiff() {
+  // P0-T10: fetch diff via IPC instead of hardcoding. Until the backend
+  // ships real diff lines, this resolves to `[]` and the empty state
+  // shows.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const rows: DiffLine[] = []
+        if (!cancelled) setDiffLines(rows)
+      } catch {
+        if (!cancelled) setDiffLines([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+    // `run.shortHash` is a stable identifier for the selected run;
+    // re-fetch when it changes.
+  }, [run.shortHash])
+
+  if (diffLines.length === 0) return <DiffEmptyState />
+
   return (
     <div className="flex flex-col gap-3">
       <div className="label-caps rounded-t bg-surface-container px-2 py-1 text-on-surface-variant">
         src/train.py
       </div>
       <div className="overflow-hidden rounded-b border border-outline-variant font-sans text-[13px] leading-[22px]">
-        {DIFF_LINES.map((l, i) => (
+        {diffLines.map((l, i) => (
           <div
             key={i}
             className={`flex whitespace-pre ${
@@ -274,3 +295,7 @@ function RunDiff() {
     </div>
   )
 }
+
+// Re-export the parser so callers that have raw unified-diff text can
+// reuse it without pulling in the React component.
+export { parseDiffText }

@@ -35,20 +35,37 @@ export function Field({
 export function Checkbox({
   label,
   description,
+  checked,
+  onChange,
   defaultChecked = false,
 }: {
   label: ReactNode
   description?: string
+  /** Controlled checked state — pass to make the checkbox controlled. */
+  checked?: boolean
+  /** Called whenever the toggle changes. Required when `checked` is provided. */
+  onChange?: (checked: boolean) => void
   defaultChecked?: boolean
 }) {
-  const [on, setOn] = useState(defaultChecked)
+  // Controlled: use the provided `checked` value.
+  // Uncontrolled: fall back to internal state initialized from `defaultChecked`.
+  const [internalOn, setInternalOn] = useState(defaultChecked)
+  const isControlled = checked !== undefined
+  const on = isControlled ? checked : internalOn
+
+  function toggle() {
+    const next = !on
+    if (!isControlled) setInternalOn(next)
+    onChange?.(next)
+  }
+
   return (
     <label className="flex cursor-pointer items-start gap-2 py-0.5">
       <button
         type="button"
         role="checkbox"
         aria-checked={on}
-        onClick={() => setOn((v) => !v)}
+        onClick={toggle}
         className={`mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-sm border transition-colors ${
           on
             ? "border-primary bg-primary text-on-primary"

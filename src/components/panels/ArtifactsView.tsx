@@ -1,12 +1,15 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Icon } from "../ui/Icon"
 import { PanelHeader, PanelSearch } from "./shared"
 import { Select } from "../ui/Select"
-import {
-  WORKSPACE_ARTIFACTS,
-  ARTIFACT_KIND_META,
-  type WorkspaceArtifact,
-} from "../../data/runs"
+import { ARTIFACT_KIND_META, type WorkspaceArtifact } from "../../data/runs"
+
+type WorkspaceArtifacts = {
+  totalCount: number
+  totalSize: string
+  fromRuns: WorkspaceArtifact[]
+  local: WorkspaceArtifact[]
+}
 
 function ArtifactRow({ a }: { a: WorkspaceArtifact }) {
   const meta = ARTIFACT_KIND_META[a.kind]
@@ -41,7 +44,13 @@ function ArtifactRow({ a }: { a: WorkspaceArtifact }) {
   )
 }
 
-function Group({ label, items }: { label: string items: WorkspaceArtifact[] }) {
+function Group({
+  label,
+  items,
+}: {
+  label: string
+  items: WorkspaceArtifact[]
+}) {
   return (
     <div>
       <div className="flex items-center gap-1 px-2 py-1 font-sans text-[12px] text-outline">
@@ -64,21 +73,54 @@ const TYPE_OPTIONS = [
 ]
 
 export function ArtifactsView() {
-  const A = WORKSPACE_ARTIFACTS
-  const runOptions = [
-    { value: "all", label: "all" },
-    ...Array.from(
-      new Set(A.fromRuns.map((a) => a.run).filter(Boolean) as string[]),
-    ).map((r) => ({ value: r, label: r })),
-  ]
+  // P0-T8: artifacts are loaded from IPC; until the backend lands, the
+  // call returns `null` and the panel renders an honest empty state.
+  const [artifacts, setArtifacts] = useState<WorkspaceArtifacts | null>(null)
+
+  // `projectName` is the current tracker project (W&B project /
+  // MLflow experiment). Since the renderer doesn't yet read the
+  // user's tracked project from settings, fall back to the default;
+  // the backend uses this as a hint for `listArtifacts`.
+  const projectName = "bonafide-train"
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const rows: WorkspaceArtifacts = {
+          totalCount: 0,
+          totalSize: "0 B",
+          fromRuns: [],
+          local: [],
+        }
+        if (!cancelled) setArtifacts(rows)
+      } catch {
+        if (!cancelled) setArtifacts(null)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [projectName])
+
   const [type, setType] = useState("all")
   const [run, setRun] = useState("all")
   const [sort, setSort] = useState("size")
 
+  const fromRuns = artifacts?.fromRuns ?? []
+  const local = artifacts?.local ?? []
+
+  const runOptions = [
+    { value: "all", label: "all" },
+    ...Array.from(
+      new Set(fromRuns.map((a) => a.run).filter(Boolean) as string[]),
+    ).map((r) => ({ value: r, label: r })),
+  ]
+
   const match = (a: WorkspaceArtifact) =>
     (type === "all" || a.kind === type) && (run === "all" || a.run === run)
-  const fromRuns = A.fromRuns.filter(match)
-  const local = A.local.filter(match)
+  const filteredFromRuns = fromRuns.filter(match)
+  const filteredLocal = local.filter(match)
 
   const activeFilters = [
     type !== "all" && {
@@ -91,7 +133,10 @@ export function ArtifactsView() {
       label: `Run: ${run}`,
       clear: () => setRun("all"),
     },
-  ].filter(Boolean) as { key: string label: string clear: () => void }[]
+  ].filter(Boolean) as { key: string; label: string; clear: () => void }[]
+
+  const totalCount = artifacts?.totalCount ?? 0
+  const totalSize = artifacts?.totalSize ?? "0 B"
 
   return (
     <>
@@ -99,7 +144,7 @@ export function ArtifactsView() {
         title="Artifacts"
         right={
           <span className="font-sans text-[11px] normal-case text-outline">
-            {A.totalCount} items · {A.totalSize}
+            {totalCount} items · {totalSize}
           </span>
         }
       />
@@ -161,12 +206,32 @@ export function ArtifactsView() {
         )}
       </div>
       <div className="flex-1 overflow-y-auto py-1">
-        {fromRuns.length > 0 && <Group label="From runs" items={fromRuns} />}
-        {local.length > 0 && <Group label="Local" items={local} />}
-        {fromRuns.length === 0 && local.length === 0 && (
-          <div className="p-6 text-center font-body text-[13px] text-on-surface-variant">
-            No artifacts match these filters.
+        {totalCount === 0 ? (
+          <div className="flex flex-col items-center justify-center gap-2 p-10 text-center">
+            <Icon
+              name="package"
+              size={28}
+              className="text-outline-variant"
+            />
+            <p className="font-body text-[13px] text-on-surface-variant">
+              No artifacts yet. Run a training script and log files with W&amp;B
+              or MLflow to see them here.
+            </p>
           </div>
+        ) : (
+          <>
+            {filteredFromRuns.length > 0 && (
+              <Group label="From runs" items={filteredFromRuns} />
+            )}
+            {filteredLocal.length > 0 && (
+              <Group label="Local" items={filteredLocal} />
+            )}
+            {filteredFromRuns.length === 0 && filteredLocal.length === 0 && (
+              <div className="p-6 text-center font-body text-[13px] text-on-surface-variant">
+                No artifacts match these filters.
+              </div>
+            )}
+          </>
         )}
       </div>
     </>

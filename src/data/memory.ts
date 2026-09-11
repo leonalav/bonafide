@@ -85,3 +85,76 @@ export function makeDeadEnd(params: {
     ...params,
   }
 }
+
+// ── Critic / Code Review types ──────────────────────────────────────────────
+
+/** Result of a critic code review. */
+export interface CriticReview {
+  score: number
+  issues: string[]
+  recommendations: string[]
+  verdict: "pass" | "fail" | "skip"
+  summary: string
+  durationMs?: number
+}
+
+// ── Anomaly detection types ────────────────────────────────────────────────
+
+/** A detected anomaly in a run metric. */
+export interface AnomalyEntry {
+  metric: string
+  kind: "spike" | "drop" | "plateau" | "drift"
+  description: string
+  severity: "low" | "medium" | "high"
+  step: number
+  value: number
+}
+
+/** Result of anomaly detection on a run. */
+export interface AnomalyReport {
+  runId: string
+  anomalies: AnomalyEntry[]
+  summary: string
+}
+
+// ── Project memory query result types ─────────────────────────────────────
+
+/** A project insight from memory. */
+export interface ProjectInsight {
+  id: string
+  workspaceHash: string
+  finding: string
+  evidence: string
+  confidence: MemoryConfidence
+  createdAt: number
+}
+
+/** A project dead-end from memory. */
+export interface ProjectDeadEnd {
+  id: string
+  workspaceHash: string
+  hypothesis: string
+  evidence: string
+  triedRuns?: string[]
+  createdAt: number
+}
+
+// ── ArXiv types ────────────────────────────────────────────────────────────
+
+/** A single paper from an ArXiv search. */
+export interface ArxivPaper {
+  id: string
+  title: string
+  authors: string[]
+  abstract: string
+  published: string
+  categories: string[]
+  pdfUrl: string
+}
+
+/** Result of an ArXiv search. */
+export interface ArxivSearchResult {
+  query: string
+  results: ArxivPaper[]
+  totalResults: number
+}

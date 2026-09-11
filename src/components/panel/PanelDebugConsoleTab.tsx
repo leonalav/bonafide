@@ -17,12 +17,6 @@ export function PanelDebugConsoleTab() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [])
 
-  useState(() => {
-    // Auto-scroll when entries change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    if (entries.length > 0) scrollToBottom()
-  })
-
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
       e.preventDefault()
@@ -35,20 +29,10 @@ export function PanelDebugConsoleTab() {
         { id: `${id}_in`, ts: new Date(), kind: "input", text: cmd },
       ])
       setInput("")
-
-      // TODO: Wire up DAP (Debug Adapter Protocol) client.
-      // For now, echo a stub response.
-      setTimeout(() => {
-        setEntries((prev) => [
-          ...prev,
-          {
-            id: `${id}_out`,
-            ts: new Date(),
-            kind: "system",
-            text: `[debugpy not connected] Start a debug session to use the Debug Console.`,
-          },
-        ])
-      }, 200)
+      // P0-T10: the 200ms `[debugpy not connected]` echo is gone.
+      // Real output will land here once the DAP (Debug Adapter Protocol)
+      // client is wired up.
+      void scrollToBottom()
     },
     [input, scrollToBottom],
   )
@@ -61,10 +45,8 @@ export function PanelDebugConsoleTab() {
           <div className="flex h-full items-center justify-center font-sans text-[13px] text-outline">
             <div className="text-center">
               <Icon name="bug" size={24} className="mx-auto mb-2" />
-              <p>Debug Console</p>
-              <p className="mt-1 text-[12px]">
-                Start a debug session to evaluate expressions and inspect
-                variables.
+              <p className="text-xs text-[var(--text-muted)]">
+                Start a debug session to use the Debug Console.
               </p>
             </div>
           </div>

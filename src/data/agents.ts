@@ -191,8 +191,6 @@ export const THREADS: Thread[] = [
   },
 ]
 
-export const CLOSED_COUNT = 12
-
 export type ConversationMessage = {
   author: "SYSTEM" | "AGENT" | "USER"
   body: string
@@ -220,43 +218,4 @@ export const CONVERSATION: ConversationMessage[] = [
     body: "⚠ Note: project memory rules out eta_min=1e-4 from run 47.",
   },
   { author: "USER", body: "Apply." },
-]
-
-export type Template = {
-  role: AgentRole
-  title: string
-  desc: string
-  soon?: boolean
-  emptyOnly?: boolean
-  isDefault?: boolean
-}
-
-export const TEMPLATES: Template[] = [
-  {
-    role: "debugger",
-    title: "Diagnose run divergence",
-    desc: "Bind to a run, trace metrics vs the best prior run.",
-    isDefault: true,
-  },
-  {
-    role: "debugger",
-    title: "Compare K runs",
-    desc: "Multi-run differential diagnosis.",
-  },
-  {
-    role: "scaffolder",
-    title: "Start a new project from spec",
-    desc: "Generate project structure and boilerplate code.",
-  },
-  {
-    role: "planner",
-    title: "Sequence experiments",
-    desc: "Plan experiments across N runs with goals and budgets.",
-  },
-  {
-    role: "researcher",
-    title: "Cross-reference artifacts",
-    desc: "Cross-reference artifacts / papers.",
-    soon: true,
-  },
 ]

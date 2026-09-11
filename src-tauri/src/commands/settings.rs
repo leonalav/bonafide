@@ -12,21 +12,22 @@ use std::fs;
 use std::path::PathBuf;
 use tauri::Manager;
 
-/// One entry in the renderer's model-endpoint registry. Keyed by an
+/// One entry in the custom model-endpoint registry. Keyed by an
 /// opaque ID the renderer generates (`Date.now()`-based UID is fine).
 ///
-/// The `api_key` is `Option<String>` so the user can leave it blank
-/// for local endpoints (e.g. `http://localhost:11434/v1`); for
-/// hosted endpoints it's stored opaque and never serialized back to
-/// the renderer in plain logs. The `available` flag is set by the
-/// last `test` round-trip — `true` if the URL responded, `false`
-/// otherwise.
+/// The full endpoint shape (id, label, baseUrl, apiKey, defaultModel,
+/// available) round-trips through `setSetting("modelEndpoints", ...)` /
+/// `getSetting("modelEndpoints")`. The Rust side just accepts and
+/// stores whatever the renderer sends; the schema is entirely owned by
+/// the TypeScript side. `available` is set by the last `test`
+/// round-trip — `true` if the URL responded, `false` otherwise.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelEndpoint {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    #[serde(default)]
     pub available: bool,
 }
 

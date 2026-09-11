@@ -21,6 +21,8 @@ export interface BudgetStatus {
   spendRatio: number
   /** Whether the next compute tool call requires user approval. */
   requiresApproval: boolean
+  /** Currency code for dollar values (ISO 4217). */
+  currency?: string
 }
 
 export interface ToolPermission {

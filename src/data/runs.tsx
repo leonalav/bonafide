@@ -4,17 +4,17 @@
  * Re-exports the design artifacts from `data/artifacts.ts` so existing
  * imports keep type-checking. The live tracker (W&B / MLflow) is
  * stubbed in `src-tauri/src/lib.rs` (PHASE0-TODO markers) — until the
- * shim is fully wired in Phase 1, the live `useRuns` hook will return
- * an empty page and the `RunsProvider` falls back to the rich mock
- * `Run[]` so panels still render.
+ * shim is fully wired in Phase 1, the live `useRuns` hook returns an
+ * empty page and `RunsProvider` / `useRunsData()` therefore expose an
+ * empty `Run[]`. Consumers are expected to render an empty state when
+ * the array is empty.
  *
  * Two layers:
  *   1. `useRuns(projectName, workspaceRoot)` — raw `RunSummary[]` from
- *      the Tauri backend. The hook is now actually exercised by the
- *      `RunsProvider`, so the wiring is no longer orphan.
+ *      the Tauri backend.
  *   2. `RunsProvider` + `useRunsData()` — provides a stable `Run[]`
- *      (renderer's rich type) to all panels. Falls back to mock when
- *      no workspace is open or when the live fetch yields no rows.
+ *      (renderer's rich type) to all panels. Returns `[]` until real
+ *      runs come back from the tracker.
  */
 
 import {
@@ -40,22 +40,13 @@ export {
   type ArtifactKind,
   type FileChange,
   type ChangeStatus,
-  type CodeLine,
-  type Tok,
-  RUNS,
   STATE_META,
-  EXPERIMENTS,
   EXPERIMENT_STATUS_META,
-  WORKSPACE_ARTIFACTS,
-  ARTIFACTS,
   ARTIFACT_KIND_META,
-  TRAIN_PY,
-  WORKSPACES,
-  GIT_STATE,
   series as generateSeries,
 } from "./artifacts"
 
-import { RUNS as MOCK_RUNS, type Run, type RunState } from "./artifacts"
+import type { Run, RunState } from "./artifacts"
 
 // ── useRuns hook ────────────────────────────────────────────────────────────
 
@@ -128,11 +119,11 @@ export function useRuns(
 // ── RunsProvider ────────────────────────────────────────────────────────────
 //
 // Bridges the backend `RunSummary[]` to the renderer's rich `Run[]`
-// shape. Today, the backend returns no rows (PHASE0-TODO stubs); the
-// provider therefore surfaces the design mock so every consumer keeps
-// rendering. Once the shim is wired in Phase 1, replace the body of
-// `summariesToRuns` (or just return rows when live) and the rest of
-// the UI picks it up automatically.
+// shape. While the backend returns no rows (PHASE0-TODO stubs), this
+// provider surfaces an empty `Run[]`; consumers must render an empty
+// state instead of relying on the design mock. The mock `RUNS` array
+// is exported from `data/artifacts.ts` for type re-export purposes only
+// and is no longer the source of truth.
 
 type RunsContextValue = {
   /** Rich runs shape used by `ChartTab`, `ExperimentsTab`, `RunTimeline`,
@@ -186,17 +177,12 @@ export function RunsProvider({
   const noTrackerConnected = workspaceRoot != null && trackerKind == null
 
   const value = useMemo<RunsContextValue>(() => {
-    // Live mode: backend returned at least one row → use them.
-    // The current PHASE0-TODO stub returns []; until Phase 1 the
-    // fallback path keeps every panel rendering.
     const summaries = live.runs
+    // P0-T9: when the backend returns zero rows, surface an empty
+    // `Run[]` — never fall back to the design mock. Consumers render
+    // an honest empty state.
     const runs: Run[] = summaries.length
       ? summaries.map((s) => ({
-          // Minimal adapter. The current consumers reach into
-          // `runs[i].metrics[0].series`, `runs[i].config`, etc. so
-          // until the backend ships full RunDetail, we leave a single
-          // "empty" run that callers can fall through to MOCK_RUNS
-          // for. For now we just forward the mock.
           id: s.id,
           name: s.name,
           state: normalizeRunState(s.state),
@@ -227,7 +213,7 @@ export function RunsProvider({
               .map(([k, v]) => [k, v as string | number]),
           ),
         }))
-      : MOCK_RUNS
+      : []
 
     return {
       runs,
@@ -242,10 +228,13 @@ export function RunsProvider({
   return <RunsContext.Provider value={value}>{children}</RunsContext.Provider>
 }
 
-/** Read the rich `Run[]` from the nearest `RunsProvider`. */
+/** Read the rich `Run[]` from the nearest `RunsProvider`. Returns `[]`
+ *  when no provider is mounted or the tracker has not surfaced any
+ *  runs yet. Consumers should render an empty state for the empty case
+ *  rather than relying on a fallback mock. */
 export function useRunsData(): Run[] {
   const ctx = useContext(RunsContext)
-  return ctx?.runs ?? MOCK_RUNS
+  return ctx?.runs ?? []
 }
 
 /** Normalize the backend `RunSummary.state` string to the renderer's

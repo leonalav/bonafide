@@ -5,7 +5,11 @@ import { Card, CardHeader, Checkbox } from "../ui/controls"
 import {
   bonafide,
   type MlflowConnectPayload,
+  type RecentWorkspace,
+  type ServiceStatus,
   type TrackerKind,
+  type TrackerStatusRow,
+  type UserProfile,
 } from "@/ipc/tauri"
 
 type Provider = {
@@ -16,39 +20,34 @@ type Provider = {
   note?: string
 }
 
-const TRACKERS: Provider[] = [
-  {
-    name: "Weights & Biases",
-    account: "ada@wandb.ai",
-    connected: true,
-    meta: "Synced 12s ago · 27 runs · last login 2h ago",
-  },
-  { name: "MLflow", connected: false, note: "http://localhost:5000" },
-  { name: "Comet", connected: false },
-  { name: "Neptune", connected: false },
-]
+const SERVICE_LABELS: Record<ServiceStatus["kind"], string> = {
+  github: "GitHub",
+  huggingface: "Hugging Face",
+  slack: "Slack",
+}
 
-const SERVICES: Provider[] = [
-  {
-    name: "GitHub",
-    account: "ada",
-    connected: true,
-    meta: "23 repos accessible",
-  },
-  {
-    name: "Hugging Face",
-    account: "ada",
-    connected: true,
-    meta: "4 orgs · write access",
-  },
-  { name: "Slack", connected: false, meta: "For run notifications" },
-]
+const TRACKER_LABELS: Record<TrackerStatusRow["kind"], string> = {
+  wandb: "Weights & Biases",
+  mlflow: "MLflow",
+  comet: "Comet",
+  neptune: "Neptune",
+}
 
-const RECENT = [
-  { path: "/Users/ada/projects/vision-experiments", runs: 27 },
-  { path: "/Users/ada/projects/llama-finetune", runs: 12 },
-  { path: "/Users/ada/projects/recommender", runs: 218 },
-]
+function formatRelativeTime(iso: string): string {
+  const then = Date.parse(iso)
+  if (Number.isNaN(then)) return ""
+  const deltaMs = Date.now() - then
+  const sec = Math.round(deltaMs / 1000)
+  if (sec < 5) return "Just now"
+  if (sec < 60) return `${sec}s ago`
+  const min = Math.round(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.round(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const day = Math.round(hr / 24)
+  if (day < 30) return `${day}d ago`
+  return new Date(then).toLocaleDateString()
+}
 
 function ProviderRow({ p, onManage }: { p: Provider onManage?: () => void }) {
   return (
@@ -129,6 +128,50 @@ export function AccountSection({
   const [mlflowConnecting, setMlflowConnecting] = useState(false)
   const [mlflowError, setMlflowError] = useState<string | null>(null)
 
+  // Hydrate the MLflow fields from the settings store on mount. The
+  // Rust `get_setting("mlflowBaseUrl")` / `get_setting("mlflowProject")`
+  // round-trip keeps the form state in sync with what the tracker
+  // probe actually probed. If the keys are absent (first run), we
+  // fall through to the local defaults above.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const [baseUrl, project] = await Promise.all([
+        bonafide.settings.get("mlflowBaseUrl").catch(() => null),
+        bonafide.settings.get("mlflowProject").catch(() => null),
+      ])
+      if (cancelled) return
+      if (typeof baseUrl === "string" && baseUrl.trim()) {
+        setMlflowBaseUrl(baseUrl)
+      }
+      if (typeof project === "string" && project.trim()) {
+        setMlflowProject(project)
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Persist MLflow fields back to the settings store whenever they
+  // change. We don't await `setSetting` here — fire-and-forget is
+  // fine because the store is the source of truth and the next mount
+  // re-reads it.
+  useEffect(() => {
+    void bonafide.settings
+      .set("mlflowBaseUrl", mlflowBaseUrl)
+      .catch((err) =>
+        console.error("[AccountSection] mlflowBaseUrl save failed:", err),
+      )
+  }, [mlflowBaseUrl])
+  useEffect(() => {
+    void bonafide.settings
+      .set("mlflowProject", mlflowProject)
+      .catch((err) =>
+        console.error("[AccountSection] mlflowProject save failed:", err),
+      )
+  }, [mlflowProject])
+
   // Workspace is opened from the App shell; when `null` the Connect
   // actions are gated so we never call `connect_tracker` with an
   // empty/missing workspace root.
@@ -149,6 +192,62 @@ export function AccountSection({
   // local component state).
   const wbConnected = trackerKind === "wandb"
   const mlflowConnected = trackerKind === "mlflow"
+
+  // Live data from the Rust backend.
+  // - `recent` populates the "Recent" list under the Workspace card.
+  // - `trackerStatuses` populates the Connected Trackers card.
+  // - `services` populates the Connected Services card.
+  // - `userProfile` populates the Profile card (null = empty placeholders).
+  // - `recentWorkspace` is the entry for the currently-open workspace,
+  //   used to show path + relative "last opened" label in the
+  //   workspace card.
+  const [recent, setRecent] = useState<RecentWorkspace[]>([])
+  const [trackerStatuses, setTrackerStatuses] = useState<TrackerStatusRow[]>([])
+  const [services, setServices] = useState<ServiceStatus[]>([])
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  const [recentWorkspace, setRecentWorkspace] = useState<RecentWorkspace | null>(null)
+
+  // Re-fetch the live data on mount and whenever the active
+  // workspace changes. The `getRecentWorkspace(path)` call is the
+  // only one that depends on `workspaceRoot`, so it's gated to that
+  // change.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const [recentList, trackerList, serviceList, profile] = await Promise.all([
+        bonafide.workspace.listRecent().catch(() => []),
+        bonafide.account.getTrackerStatus().catch(() => []),
+        bonafide.account.listServices().catch(() => []),
+        bonafide.account.getUserProfile().catch(() => null),
+      ])
+      if (cancelled) return
+      setRecent(recentList)
+      setTrackerStatuses(trackerList)
+      setServices(serviceList)
+      setUserProfile(profile)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!workspaceRoot) {
+      setRecentWorkspace(null)
+      return
+    }
+    void (async () => {
+      const entry = await bonafide.workspace
+        .getRecent(workspaceRoot)
+        .catch(() => null)
+      if (cancelled) return
+      setRecentWorkspace(entry)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceRoot])
 
   async function handleWbConnect() {
     if (!wbApiKey.trim() || !workspaceRoot) return
@@ -277,13 +376,13 @@ export function AccountSection({
           </div>
           <div className="flex-1">
             <div className="font-body text-[16px] font-medium text-on-surface">
-              Ada Lovelace
+              {userProfile?.name ?? "—"}
             </div>
             <div className="font-body text-[13px] text-on-surface-variant">
-              ada@bonafide.dev
+              {userProfile?.email ?? "—"}
             </div>
             <div className="font-body text-[12px] text-outline">
-              Joined September 2026
+              {userProfile?.joined ? `Joined ${userProfile.joined}` : "—"}
             </div>
           </div>
           <Button variant="secondary" size="sm">
@@ -312,9 +411,27 @@ export function AccountSection({
           </div>
           <Button size="sm">Connect W&amp;B →</Button>
         </div>
-        {TRACKERS.map((p) => (
-          <ProviderRow key={p.name} p={p} onManage={onManageTracker} />
-        ))}
+        {trackerStatuses.map((t) => {
+          // Convert the backend shape to the local `Provider` shape
+          // used by `ProviderRow`. MLflow is the only kind that
+          // surfaces a URL-editable note when disconnected.
+          const mlflowStatus =
+            t.kind === "mlflow" && !t.connected ? mlflowBaseUrl : undefined
+          const provider: Provider = {
+            name: TRACKER_LABELS[t.kind] ?? t.kind,
+            account: t.account ?? undefined,
+            connected: t.connected,
+            meta: t.meta ?? undefined,
+            note: mlflowStatus,
+          }
+          return (
+            <ProviderRow
+              key={t.kind}
+              p={provider}
+              onManage={t.kind === "wandb" ? onManageTracker : undefined}
+            />
+          )
+        })}
       </Card>
 
       {/* W&B Connect Card */}
@@ -556,25 +673,58 @@ export function AccountSection({
       {/* Card 3 — Connected Services */}
       <Card>
         <CardHeader title="Connected Services" />
-        {SERVICES.map((p) => (
-          <ProviderRow key={p.name} p={p} />
-        ))}
+        {services.map((s) => {
+          // Keep the static structure (GitHub, HuggingFace, Slack)
+          // but populate the dynamic fields from the live probe.
+          // Slack always reports disconnected because there's no
+          // local credential to probe for; the row still renders
+          // with the "Connect" CTA.
+          const provider: Provider = {
+            name: SERVICE_LABELS[s.kind] ?? s.kind,
+            account: s.account ?? undefined,
+            connected: s.connected,
+            meta: s.meta ?? undefined,
+          }
+          return <ProviderRow key={s.kind} p={provider} />
+        })}
       </Card>
 
       {/* Card 4 — Workspace */}
       <Card>
         <CardHeader title="Workspace" />
         <div className="relative rounded border-l-2 border-primary bg-surface-container-high/50 py-1.5 pl-3">
-          <div className="font-sans text-[13px] text-on-surface">
-            /Users/ada/projects/bona-train
-          </div>
-          <div className="font-body text-[12px] text-on-surface-variant">
-            Last opened 4 minutes ago
-          </div>
+          {recentWorkspace ? (
+            <>
+              <div className="font-sans text-[13px] text-on-surface">
+                {recentWorkspace.path}
+              </div>
+              <div className="font-body text-[12px] text-on-surface-variant">
+                Last opened {formatRelativeTime(recentWorkspace.lastOpened)}
+              </div>
+            </>
+          ) : workspaceRoot ? (
+            <>
+              <div className="font-sans text-[13px] text-on-surface">
+                {workspaceRoot}
+              </div>
+              <div className="font-body text-[12px] text-on-surface-variant">
+                No recent entry yet
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="font-sans text-[13px] text-on-surface">
+                No workspace open
+              </div>
+              <div className="font-body text-[12px] text-on-surface-variant">
+                Open a folder to start
+              </div>
+            </>
+          )}
         </div>
         <div className="label-caps mb-1 mt-3 text-outline">Recent</div>
         <div className="flex flex-col">
-          {RECENT.map((r) => (
+          {recent.map((r) => (
             <button
               key={r.path}
               className="flex h-8 items-center gap-2 rounded px-2 text-left hover:bg-surface-container-high"
@@ -584,10 +734,15 @@ export function AccountSection({
                 {r.path}
               </span>
               <span className="font-sans text-[12px] text-outline">
-                {r.runs} runs
+                {r.runCount} runs
               </span>
             </button>
           ))}
+          {recent.length === 0 && (
+            <span className="px-2 py-1 font-body text-[12px] text-outline">
+              No recent workspaces yet
+            </span>
+          )}
           <button className="flex h-8 items-center gap-2 rounded px-2 text-left font-body text-[13px] text-primary hover:bg-surface-container-high">
             <Icon name="plus" size={12} /> Open another folder…
           </button>
@@ -601,29 +756,12 @@ export function AccountSection({
       <Card>
         <CardHeader title="Plan" />
         <div className="flex items-center justify-between">
-          <div>
-            <div className="font-body text-[14px] text-on-surface">
-              Pro · $20/month
-            </div>
-            <div className="font-body text-[12px] text-on-surface-variant">
-              Renews October 5, 2026
-            </div>
-          </div>
+          <span className="font-body text-[13px] text-on-surface-variant">
+            Connect your account to see billing
+          </span>
           <Button variant="secondary" size="sm">
             Manage billing
           </Button>
-        </div>
-        <div className="label-caps mb-1 mt-4 text-outline">
-          Usage this month
-        </div>
-        <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-container-high">
-          <div
-            className="h-full rounded-full bg-primary"
-            style={{ width: "4.2%" }}
-          />
-        </div>
-        <div className="mt-1 text-right font-sans text-[12px] tabular-nums text-on-surface-variant">
-          2.1 GB / 50 GB
         </div>
       </Card>
 

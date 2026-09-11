@@ -1,69 +1,17 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Icon } from "./ui/Icon"
 import { StatusDot } from "./ui/primitives"
-import { Select } from "./ui/Select"
-import { Chart, fmtValue } from "./ui/Chart"
 import { Sparkline } from "./ui/Sparkline"
 import {
-  ARTIFACTS,
   STATE_META,
   useRunsData,
   useRunsStatus,
-  type Artifact,
   type Run,
 } from "./../data/runs"
 
-const ART_ICON: Record<Artifact["kind"], string> = {
-  model: "box",
-  dataset: "database",
-  plot: "image",
-  file: "file",
-}
-
-// A slightly richer artifact set for the Experiments surface.
-const EXP_ARTIFACTS: Artifact & { path: string }[] = [
-  {
-    name: "best_model.pt",
-    size: "142 MB",
-    kind: "model",
-    action: "download",
-    path: "model/weights",
-  },
-  {
-    name: "train_logs.csv",
-    size: "8 MB",
-    kind: "dataset",
-    action: "open",
-    path: "metrics/logs",
-  },
-  {
-    name: "config.yaml",
-    size: "2 KB",
-    kind: "file",
-    action: "open",
-    path: "config",
-  },
-  {
-    name: "predictions.json",
-    size: "12 MB",
-    kind: "dataset",
-    action: "open",
-    path: "outputs/preds",
-  },
-  {
-    name: "grad_hist.pt",
-    size: "89 MB",
-    kind: "model",
-    action: "download",
-    path: "diagnostics",
-  },
-]
-
-const FILES_TOUCHED = [
-  { path: "train.py", add: 12, del: 3 },
-  { path: "model.py", add: 1, del: 1 },
-  { path: "configs/lr.yaml", add: 8, del: 0 },
-]
+type FileChange = { path: string add: number del: number }
+type ArtifactRow = { name: string size: string path?: string }
+type Diagnostic = { id: string text: string }
 
 function Card({
   title,
@@ -109,12 +57,72 @@ export function ExperimentsTab({ runId }: { runId: string }) {
     )
   }
 
+  if (!run) {
+    return (
+      <div className="flex h-full items-center justify-center p-8">
+        <div className="max-w-sm text-center">
+          <Icon name="flask" size={28} className="mx-auto mb-3 text-outline" />
+          <div className="font-body text-[14px] text-on-surface">
+            No run selected
+          </div>
+          <div className="mt-1 font-body text-[12px] text-on-surface-variant">
+            Pick a run from the timeline to view its artifacts, config,
+            metrics, and provenance.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   if (loading) return <div>Loading…</div>
   if (error) return <div>Error: {error}</div>
   const meta = STATE_META[run.state]
   const [compare, setCompare] = useState("")
-  const [chartMode, setChartMode] = useState(false)
   const [cfgQuery, setCfgQuery] = useState("")
+
+  // P0-T7: artifacts come from the real tracker, not from EXP_ARTIFACTS.
+  const [artifacts, setArtifacts] = useState<ArtifactRow[]>([])
+  const [filesTouched, setFilesTouched] = useState<FileChange[]>([])
+
+  // Workspace root isn't passed in directly; surface diagnostics as
+  // an empty array for now until a workspace-level diagnostics feed
+  // exists (P0-T10 lands it). Show the empty UI rather than fake data.
+  const [diagnostics] = useState<Diagnostic[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        // The renderer's `run` shape doesn't carry a real tracker id
+        // yet — until the backend exposes per-run commits, this returns
+        // an empty list and the empty state shows. Wiring up real
+        // tracker calls lands with the Phase 0.5 IPC pass.
+        const rows: ArtifactRow[] = []
+        if (!cancelled) setArtifacts(rows)
+      } catch {
+        if (!cancelled) setArtifacts([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [run?.id])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      try {
+        const rows: FileChange[] = []
+        if (!cancelled) setFilesTouched(rows)
+      } catch {
+        if (!cancelled) setFilesTouched([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [run?.id])
+
   const others = runs.filter((r) => r.id !== run.id)
   const cmpRun = others.find((r) => r.id === compare)
 
@@ -141,40 +149,44 @@ export function ExperimentsTab({ runId }: { runId: string }) {
           <div className="flex flex-col gap-3">
             {/* Artifacts */}
             <Card title="Artifacts">
-              <div className="flex flex-col">
-                {EXP_ARTIFACTS.map((a) => (
-                  <div
-                    key={a.name}
-                    className="flex h-9 items-center gap-3 rounded px-1 hover:bg-surface-container"
-                  >
-                    <Icon
-                      name={ART_ICON[a.kind]}
-                      size={15}
-                      className="text-secondary"
-                    />
-                    <span className="flex-1 truncate font-body text-[13px] text-on-surface">
-                      {a.name}
-                    </span>
-                    <span className="w-20 shrink-0 font-sans text-[12px] tabular-nums text-outline">
-                      {a.size}
-                    </span>
-                    <span className="hidden w-28 shrink-0 truncate font-sans text-[12px] text-on-surface-variant sm:block">
-                      {a.path}
-                    </span>
-                    <button
-                      className="text-outline hover:text-primary"
-                      aria-label={a.action}
+              {artifacts.length === 0 ? (
+                <div className="flex flex-col items-center justify-center gap-2 py-6 text-center">
+                  <Icon
+                    name="package"
+                    size={22}
+                    className="text-outline-variant"
+                  />
+                  <p className="font-body text-[13px] text-on-surface-variant">
+                    No artifacts logged for this run yet.
+                  </p>
+                </div>
+              ) : (
+                <div className="flex flex-col">
+                  {artifacts.map((a) => (
+                    <div
+                      key={a.name}
+                      className="flex h-9 items-center gap-3 rounded px-1 hover:bg-surface-container"
                     >
                       <Icon
-                        name={
-                          a.action === "download" ? "download" : "external-link"
-                        }
-                        size={14}
+                        name="file"
+                        size={15}
+                        className="text-secondary"
                       />
-                    </button>
-                  </div>
-                ))}
-              </div>
+                      <span className="flex-1 truncate font-body text-[13px] text-on-surface">
+                        {a.name}
+                      </span>
+                      <span className="w-20 shrink-0 font-sans text-[12px] tabular-nums text-outline">
+                        {a.size}
+                      </span>
+                      {a.path ? (
+                        <span className="hidden w-28 shrink-0 truncate font-sans text-[12px] text-on-surface-variant sm:block">
+                          {a.path}
+                        </span>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              )}
             </Card>
 
             {/* Config */}
@@ -214,83 +226,67 @@ export function ExperimentsTab({ runId }: { runId: string }) {
             </Card>
 
             {/* Metrics */}
-            <Card
-              title="Metrics"
-              right={
-                <button
-                  onClick={() => setChartMode((v) => !v)}
-                  className="font-sans text-[11px] text-outline hover:text-on-surface"
-                >
-                  {chartMode ? "sparklines" : "curves"}
-                </button>
-              }
-            >
-              {chartMode ? (
-                <Chart
-                  data={run.metrics[1].series}
-                  totalSteps={run.totalSteps}
-                  tone="positive"
-                  height={200}
-                  ariaLabel="metric curves"
-                />
-              ) : (
-                <div className="flex flex-col gap-1">
-                  {run.metrics.map((m) => {
-                    const warn =
-                      m.key === "val_loss" && run.state !== "finished"
-                    return (
-                      <div key={m.key} className="flex items-center gap-3 py-1">
-                        <span className="w-24 shrink-0 font-sans text-[12px] text-on-surface-variant">
-                          {m.label}
-                        </span>
-                        <div className="min-w-0 flex-1">
-                          <Sparkline
-                            data={m.series}
-                            width={160}
-                            height={16}
-                            tone={m.lowerIsBetter ? "positive" : "positive"}
-                            responsive
-                            ariaLabel={`${m.label} trend`}
-                          />
-                        </div>
-                        <span className="flex w-24 shrink-0 items-center justify-end gap-1 font-sans text-[12px] tabular-nums text-on-surface">
-                          {fmtValue(m.value)}{" "}
-                          {warn && (
-                            <Icon
-                              name="alert-triangle"
-                              size={12}
-                              className="text-tertiary"
-                            />
-                          )}
-                        </span>
+            <Card title="Metrics">
+              <div className="flex flex-col gap-1">
+                {run.metrics.map((m) => {
+                  const warn = m.key === "val_loss" && run.state !== "finished"
+                  return (
+                    <div key={m.key} className="flex items-center gap-3 py-1">
+                      <span className="w-24 shrink-0 font-sans text-[12px] text-on-surface-variant">
+                        {m.label}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <Sparkline
+                          data={m.series}
+                          width={160}
+                          height={16}
+                          tone={m.lowerIsBetter ? "positive" : "positive"}
+                          responsive
+                          ariaLabel={`${m.label} trend`}
+                        />
                       </div>
-                    )
-                  })}
+                      <span className="flex w-24 shrink-0 items-center justify-end gap-1 font-sans text-[12px] tabular-nums text-on-surface">
+                        {m.value.toFixed(3)}{" "}
+                        {warn && (
+                          <Icon
+                            name="alert-triangle"
+                            size={12}
+                            className="text-tertiary"
+                          />
+                        )}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+              {diagnostics.length > 0 && (
+                <div className="mt-3 flex flex-col gap-1.5 rounded border border-tertiary/25 bg-tertiary/5 p-2">
+                  {diagnostics.map((d) => (
+                    <span
+                      key={d.id}
+                      className="flex items-center gap-2 font-body text-[12px] text-tertiary"
+                    >
+                      <Icon name="alert-triangle" size={12} /> {d.text}
+                    </span>
+                  ))}
                 </div>
               )}
-              <div className="mt-3 flex flex-col gap-1.5 rounded border border-tertiary/25 bg-tertiary/5 p-2">
-                <span className="flex items-center gap-2 font-body text-[12px] text-tertiary">
-                  <Icon name="alert-triangle" size={12} /> val/loss diverged at
-                  step 4,800
-                </span>
-                <span className="flex items-center gap-2 font-body text-[12px] text-tertiary">
-                  <Icon name="alert-triangle" size={12} /> val/acc dropped 0.04
-                  vs best
-                </span>
-              </div>
               <div className="mt-3 flex items-center gap-2">
                 <span className="font-sans text-[12px] text-on-surface-variant">
                   ↗ Compare with
                 </span>
-                <Select
+                <select
                   value={compare}
-                  onChange={setCompare}
-                  className="w-40"
-                  options={[
-                    { value: "", label: "None" },
-                    ...others.map((r) => ({ value: r.id, label: r.shortHash })),
-                  ]}
-                />
+                  onChange={(e) => setCompare(e.target.value)}
+                  className="h-7 rounded border border-outline-variant bg-transparent px-2 font-sans text-[12px] text-on-surface"
+                >
+                  <option value="">None</option>
+                  {others.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.shortHash}
+                    </option>
+                  ))}
+                </select>
               </div>
             </Card>
 
@@ -298,30 +294,36 @@ export function ExperimentsTab({ runId }: { runId: string }) {
             <Card title="Provenance">
               <div className="flex flex-col gap-1.5 font-sans text-[13px]">
                 <ProvRow k="commit" v={`${run.commit}  HEAD`} />
-                <ProvRow k="branch" v="feature/lr-sweep" />
-                <ProvRow k="author" v="Jane D. <jane@…>" />
+                <ProvRow k="branch" v={run?.branch ?? "—"} />
+                <ProvRow k="author" v={run?.author ?? "—"} />
                 <ProvRow k="started" v={run.createdLabel} />
                 <ProvRow k="duration" v={run.duration} />
               </div>
               <div className="mt-3 label-caps text-outline">
-                Files touched ({FILES_TOUCHED.length})
+                Files touched ({filesTouched.length})
               </div>
               <div className="mt-1 flex flex-col">
-                {FILES_TOUCHED.map((f) => (
-                  <div
-                    key={f.path}
-                    className="flex items-center gap-3 py-1.5 font-sans text-[13px]"
-                  >
-                    <span className="flex-1 truncate text-on-surface">
-                      {f.path}
-                    </span>
-                    <span className="tabular-nums text-primary">+{f.add}</span>
-                    <span className="tabular-nums text-error">−{f.del}</span>
-                    <button className="flex items-center gap-1 text-outline hover:text-primary">
-                      <Icon name="external-link" size={12} /> Open diff
-                    </button>
-                  </div>
-                ))}
+                {filesTouched.length === 0 ? (
+                  <p className="py-2 font-body text-[12px] text-outline">
+                    No file changes detected for this run.
+                  </p>
+                ) : (
+                  filesTouched.map((f) => (
+                    <div
+                      key={f.path}
+                      className="flex items-center gap-3 py-1.5 font-sans text-[13px]"
+                    >
+                      <span className="flex-1 truncate text-on-surface">
+                        {f.path}
+                      </span>
+                      <span className="tabular-nums text-primary">+{f.add}</span>
+                      <span className="tabular-nums text-error">−{f.del}</span>
+                      <button className="flex items-center gap-1 text-outline hover:text-primary">
+                        <Icon name="external-link" size={12} /> Open diff
+                      </button>
+                    </div>
+                  ))
+                )}
               </div>
             </Card>
           </div>
@@ -340,41 +342,62 @@ export function ExperimentsTab({ runId }: { runId: string }) {
 
         <div className="mt-5 label-caps text-outline">Quick stats</div>
         <div className="mt-1 flex flex-col gap-1 font-sans text-[13px]">
-          <StatRow k="Loss" v={fmtValue(run.metrics[0].value)} />
+          <StatRow
+            k="Loss"
+            v={run.metrics[0] ? run.metrics[0].value.toFixed(3) : "—"}
+          />
           <StatRow
             k="LR"
-            v={fmtValue(run.metrics.find((m) => m.key === "lr")?.value ?? 0)}
+            v={
+              run.metrics.find((m) => m.key === "lr")?.value.toFixed(4) ?? "—"
+            }
           />
           <StatRow k="Step" v={run.step.toLocaleString()} />
           <StatRow k="Time" v={run.duration} />
         </div>
 
         <div className="mt-5 label-caps text-outline">
-          Artifacts ({EXP_ARTIFACTS.length})
+          Artifacts ({artifacts.length})
         </div>
         <div className="mt-1 flex flex-col">
-          {EXP_ARTIFACTS.slice(0, 3).map((a) => (
-            <button
-              key={a.name}
-              className="flex h-7 items-center gap-2 rounded px-1 text-left hover:bg-surface-container"
-            >
-              <Icon name="chevron-right" size={12} className="text-outline" />
-              <span className="flex-1 truncate font-sans text-[13px] text-on-surface-variant">
-                {a.name}
-              </span>
-            </button>
-          ))}
+          {artifacts.length === 0 ? (
+            <p className="py-2 font-body text-[12px] text-outline">
+              No artifacts logged.
+            </p>
+          ) : (
+            artifacts.slice(0, 3).map((a) => (
+              <button
+                key={a.name}
+                className="flex h-7 items-center gap-2 rounded px-1 text-left hover:bg-surface-container"
+              >
+                <Icon
+                  name="chevron-right"
+                  size={12}
+                  className="text-outline"
+                />
+                <span className="flex-1 truncate font-sans text-[13px] text-on-surface-variant">
+                  {a.name}
+                </span>
+              </button>
+            ))
+          )}
         </div>
 
         <div className="mt-5 label-caps text-outline">
-          Diff vs {others[0]?.shortHash}
+          Diff vs {others[0]?.shortHash ?? "—"}
         </div>
-        <button
-          className="mt-1 flex items-center gap-1.5 font-sans text-[13px] text-primary hover:brightness-110"
-          onClick={() => setCompare(others[0]?.id ?? "")}
-        >
-          <Icon name="chevron-right" size={12} /> Show diff
-        </button>
+        {others[0] ? (
+          <button
+            className="mt-1 flex items-center gap-1.5 font-sans text-[13px] text-primary hover:brightness-110"
+            onClick={() => setCompare(others[0].id)}
+          >
+            <Icon name="chevron-right" size={12} /> Show diff
+          </button>
+        ) : (
+          <p className="mt-1 font-body text-[12px] text-outline">
+            No other runs to compare.
+          </p>
+        )}
 
         <button className="mt-5 flex h-8 w-full items-center justify-center gap-2 rounded border border-outline-variant font-sans text-[12px] text-secondary hover:bg-surface-container">
           <span className="text-outline">⌘E</span> Open in Inspector
@@ -386,7 +409,7 @@ export function ExperimentsTab({ runId }: { runId: string }) {
 
 function RunPill({ run, selected }: { run: Run selected?: boolean }) {
   const meta = STATE_META[run.state]
-  const vl = run.metrics.find((m) => m.key === "val_loss")!
+  const vl = run.metrics.find((m) => m.key === "val_loss")
   return (
     <div
       className={`flex flex-col gap-0.5 rounded-lg border px-3 py-2 ${
@@ -406,7 +429,7 @@ function RunPill({ run, selected }: { run: Run selected?: boolean }) {
       </div>
       <div className="flex items-center gap-2 font-sans text-[12px] text-on-surface-variant">
         <StatusDot token={meta.token} pulse={meta.pulse} size={7} /> val_loss{" "}
-        {vl.value.toFixed(2)} · {run.createdLabel}
+        {vl ? vl.value.toFixed(2) : "—"} · {run.createdLabel}
       </div>
     </div>
   )
@@ -438,25 +461,6 @@ function ComparePane({ run, other }: { run: Run other: Run }) {
               All parameters identical.
             </p>
           )}
-        </div>
-      </Card>
-      <Card title={`Metrics overlaid — ${run.commit} vs ${other.commit}`}>
-        <Chart
-          data={run.metrics[1].series}
-          totalSteps={run.totalSteps}
-          tone="positive"
-          height={200}
-          ariaLabel="overlaid metrics"
-        />
-        <div className="mt-2 flex items-center gap-4 font-sans text-[12px]">
-          <span className="flex items-center gap-1.5 text-on-surface-variant">
-            <span className="h-1 w-4 rounded bg-primary" /> {run.commit}{" "}
-            {run.metrics[1].value.toFixed(2)}
-          </span>
-          <span className="flex items-center gap-1.5 text-on-surface-variant">
-            <span className="h-1 w-4 rounded bg-outline" /> {other.commit}{" "}
-            {other.metrics[1].value.toFixed(2)}
-          </span>
         </div>
       </Card>
     </div>

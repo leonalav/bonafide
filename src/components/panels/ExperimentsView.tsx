@@ -1,14 +1,15 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Icon } from "../ui/Icon"
 import { Button, Chip } from "../ui/primitives"
 import { Sparkline } from "../ui/Sparkline"
 import { PanelHeader, PanelSearch } from "./shared"
 import { Select } from "../ui/Select"
 import {
-  EXPERIMENTS,
   EXPERIMENT_STATUS_META,
   type Experiment,
 } from "../../data/runs"
+import { bonafide } from "../../ipc/tauri"
+import { useWorkspaceRoot } from "../../ide/hooks"
 
 function ExperimentCard({
   exp,
@@ -116,6 +117,33 @@ export function ExperimentsView() {
   const [open, setOpen] = useState<string | null>(null)
   const [sort, setSort] = useState("best")
   const [group, setGroup] = useState("status")
+  const workspaceRoot = useWorkspaceRoot()
+
+  // P0-T7: Pull experiments from the IPC, not from `EXPERIMENTS`.
+  // Until the backend lands, the call resolves to `[]` and the panel
+  // shows a real empty state.
+  const [experiments, setExperiments] = useState<Experiment[]>([])
+  useEffect(() => {
+    let cancelled = false
+    if (!workspaceRoot) {
+      setExperiments([])
+      return () => {
+        cancelled = true
+      }
+    }
+    bonafide.agent
+      .listExperiments(workspaceRoot)
+      .then((rows) => {
+        if (!cancelled) setExperiments(rows ?? [])
+      })
+      .catch(() => {
+        if (!cancelled) setExperiments([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceRoot])
+
   return (
     <>
       <PanelHeader
@@ -153,14 +181,23 @@ export function ExperimentsView() {
         </div>
       </div>
       <div className="flex flex-1 flex-col gap-3 overflow-y-auto p-3">
-        {EXPERIMENTS.map((exp) => (
-          <ExperimentCard
-            key={exp.id}
-            exp={exp}
-            expanded={open === exp.id}
-            onToggle={() => setOpen((o) => (o === exp.id ? null : exp.id))}
-          />
-        ))}
+        {experiments.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
+            <Icon name="flask" size={28} className="text-outline-variant" />
+            <p className="font-body text-[13px] text-on-surface-variant">
+              No experiments yet. Start a run to create one.
+            </p>
+          </div>
+        ) : (
+          experiments.map((exp) => (
+            <ExperimentCard
+              key={exp.id}
+              exp={exp}
+              expanded={open === exp.id}
+              onToggle={() => setOpen((o) => (o === exp.id ? null : exp.id))}
+            />
+          ))
+        )}
         <Button variant="secondary" size="sm" className="mt-1 w-full">
           <Icon name="plus" size={13} /> New experiment
         </Button>

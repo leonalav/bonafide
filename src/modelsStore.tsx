@@ -16,6 +16,8 @@ import {
   useState,
   type ReactNode,
 } from "react"
+import { bonafide } from "@/ipc/tauri"
+import type { ModelEndpoint as SettingsModelEndpoint } from "@/data/settings"
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -94,12 +96,74 @@ function loadConfig(): ModelConfig {
   return DEFAULT_CONFIG
 }
 
+/** Bootstrap: read the settings store for the persisted `modelEndpoints`
+ *  and merge `available` status back into the local config. The full
+ *  endpoint list (id, label, baseUrl, defaultModel) comes from
+ *  localStorage; `available` comes from the settings store. Call this
+ *  once at module load (ModelsProvider mount) — it fires-and-forgets
+ *  the async IPC call so it never blocks render. */
+export function bootstrapFromSettings(): void {
+  void (async () => {
+    try {
+      const stored = await bonafide.settings.get("modelEndpoints")
+      if (!stored || typeof stored !== "object") return
+      const availableMap = stored as Record<string, { url?: string; apiKey?: string | null; available?: boolean }>
+      // Merge `available` into the in-memory config. The `available`
+      // field reflects the last test result; it's the only field in
+      // `modelEndpoints` that survives a settings round-trip.
+      _config = {
+        ..._config,
+        endpoints: _config.endpoints.map((ep) => {
+          const storedEp = availableMap[ep.id]
+          if (!storedEp) return ep
+          return {
+            ...ep,
+            // Only update fields that the settings store owns
+            baseUrl: storedEp.url ?? ep.baseUrl,
+            apiKey:
+              storedEp.apiKey != null
+                ? (storedEp.apiKey ?? ep.apiKey)
+                : ep.apiKey,
+          }
+        }),
+      }
+      _notify()
+    } catch {
+      /* ignore — localStorage stays authoritative */
+    }
+  })()
+}
+
 function saveConfig(cfg: ModelConfig) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg))
   } catch {
     /* ignore quota errors */
   }
+}
+
+// ─── Settings store persistence (P0-T6) ──────────────────────────────────────
+
+/** Fire-and-forget persist the `modelEndpoints` subset to the Rust
+ *  settings store (`~/.bonafide/settings.json`). The full endpoint
+ *  data (id, label, baseUrl, defaultModel) is already in localStorage;
+ *  we only push the `available` status and URL/API key so the Rust
+ *  side can track the persisted state. Errors are logged but never
+ *  throw — a settings-store failure must never break the UI. */
+function persistToSettings(endpoints: ModelConfig["endpoints"]) {
+  const asSettings: Record<string, SettingsModelEndpoint> = {}
+  for (const ep of endpoints) {
+    asSettings[ep.id] = {
+      url: ep.baseUrl,
+      apiKey: ep.apiKey || null,
+      available: false,
+    }
+  }
+  void bonafide.settings
+    .set("modelEndpoints", asSettings)
+    .catch((e) =>
+      console.warn("[modelsStore] setSetting modelEndpoints failed:", e),
+    )
 }
 
 // ─── Plain helpers (no React) ───────────────────────────────────────────────
@@ -120,12 +184,14 @@ export const modelsStore = {
   setEndpoints(endpoints: ModelEndpoint[]) {
     _config = { ..._config, endpoints }
     saveConfig(_config)
+    persistToSettings(endpoints)
     _notify()
   },
 
   addEndpoint(ep: ModelEndpoint) {
     _config = { ..._config, endpoints: [..._config.endpoints, ep] }
     saveConfig(_config)
+    persistToSettings(_config.endpoints)
     _notify()
   },
 
@@ -137,6 +203,7 @@ export const modelsStore = {
         _config.selectedEndpointId === id ? null : _config.selectedEndpointId,
     }
     saveConfig(_config)
+    persistToSettings(_config.endpoints)
     _notify()
   },
 
@@ -148,6 +215,7 @@ export const modelsStore = {
       ),
     }
     saveConfig(_config)
+    persistToSettings(_config.endpoints)
     _notify()
   },
 
@@ -186,6 +254,12 @@ export function ModelsProvider({ children }: { children: ReactNode }) {
   const [, forceUpdate] = useState(0)
 
   useEffect(() => {
+    // Bootstrap from the Rust settings store on first mount.
+    // `bootstrapFromSettings` is fire-and-forget — it merges the
+    // persisted `available` field into the in-memory config and
+    // calls `_notify()` so all subscribers re-render with the
+    // updated state.
+    bootstrapFromSettings()
     return modelsStore.subscribe(() => forceUpdate((n) => n + 1))
   }, [])
 

@@ -3,6 +3,11 @@
  *
  * Shows dollars + GPU hours spent vs. budget, colored by escalation level.
  * Renders only when a workspace is open (workspaceRoot is non-null).
+ *
+ * The GPU segment is hidden when no GPUs are visible — driven by
+ * `bonafide.gpu.getVisibility()`. Pure-CPU jobs and CI workspaces
+ * don't have a GPU to spend on, and showing a "0.0h / 0h GPU" line
+ * is just noise.
  */
 
 import { useEffect, useState } from "react"
@@ -29,6 +34,14 @@ export function BudgetMeter() {
   const workspaceRoot = useWorkspaceRoot()
   const [budget, setBudget] = useState<BudgetStatus | null>(null)
   const [loading, setLoading] = useState(false)
+  // P0-T11: GPU visibility comes from `bonafide.gpu.getVisibility()`
+  // rather than from budget metadata — that's the source of truth for
+  // whether the workspace has any GPUs worth showing. When the IPC
+  // isn't wired (browser preview) we fall back to `count: 0`, which
+  // hides the GPU segment entirely.
+  const [gpuVisibility, setGpuVisibility] = useState<{ count: number }>({
+    count: 0,
+  })
 
   // Fetch budget on mount and whenever the workspace changes.
   useEffect(() => {
@@ -57,6 +70,24 @@ export function BudgetMeter() {
     }
   }, [workspaceRoot])
 
+  // Independent fetch for GPU visibility — runs even when the
+  // workspace budget isn't available, because the segment should
+  // appear/disappear the moment the GPU detector changes its mind.
+  useEffect(() => {
+    let cancelled = false
+    bonafide.gpu
+      .getVisibility()
+      .then((v) => {
+        if (!cancelled) setGpuVisibility({ count: v?.count ?? 0 })
+      })
+      .catch(() => {
+        if (!cancelled) setGpuVisibility({ count: 0 })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
   if (!workspaceRoot || loading) return null
   if (!budget) return null
 
@@ -65,6 +96,20 @@ export function BudgetMeter() {
   const dollarsPct =
     budget.budgetDollars > 0
       ? Math.round((budget.spentDollars / budget.budgetDollars) * 100)
+      : 0
+
+  // P0-T11: GPU segment is hidden when no GPU is visible — either
+  // because the user is on a CPU-only machine, has disabled the GPU
+  // visibility toggle, or the backend hasn't reported yet.
+  // Combines the IPC result with the budget's GPU hours so we never
+  // show "0h / 0h GPU".
+  const gpuCount =
+    gpuVisibility.count > 0 && budget.budgetGpuHours > 0
+      ? gpuVisibility.count
+      : 0
+  const gpuPct =
+    gpuCount > 0
+      ? Math.round((budget.spentGpuHours / budget.budgetGpuHours) * 100)
       : 0
 
   return (
@@ -76,18 +121,18 @@ export function BudgetMeter() {
         </span>
         <span className="font-sans text-[10px] tabular-nums text-on-surface-variant">
           ${budget.spentDollars.toFixed(2)} / ${budget.budgetDollars.toFixed(0)}
-          {" · "}
-          {budget.spentGpuHours.toFixed(1)}h /{" "}
-          {budget.budgetGpuHours.toFixed(0)}h GPU
+          {gpuCount > 0
+            ? ` · ${budget.spentGpuHours.toFixed(1)}h / ${budget.budgetGpuHours.toFixed(0)}h GPU`
+            : ""}
         </span>
       </div>
 
-      {/* Progress bar */}
+      {/* Dollars progress bar */}
       <div
         className="h-1.5 w-full overflow-hidden rounded-full bg-surface-container"
         role="progressbar"
-        aria-label="Budget spent"
-        aria-valuenow={pct}
+        aria-label="Dollar budget spent"
+        aria-valuenow={dollarsPct}
         aria-valuemin={0}
         aria-valuemax={100}
       >
@@ -96,6 +141,31 @@ export function BudgetMeter() {
           style={{ width: barWidth(budget.spendRatio) }}
         />
       </div>
+
+      {/* GPU segment — only when the workspace has GPUs visible
+       *  (`gpuVisibility.count > 0`) AND has allocated GPU hours.
+       *  In either case the segment hides entirely instead of
+       *  showing a meaningless "0.0h / 0h GPU" line. */}
+      {gpuCount > 0 && (
+        <div className="flex items-center gap-2">
+          <div
+            className="h-1 flex-1 overflow-hidden rounded-full bg-surface-container"
+            role="progressbar"
+            aria-label="GPU budget spent"
+            aria-valuenow={gpuPct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+          >
+            <div
+              className={`h-full rounded-full transition-all duration-300 ${barColor(escalation)}`}
+              style={{ width: `${Math.min(100, gpuPct)}%` }}
+            />
+          </div>
+          <span className="font-sans text-[9px] tabular-nums text-outline">
+            GPU
+          </span>
+        </div>
+      )}
 
       {/* Exhausted warning */}
       {escalation === "exhausted" && (

@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
 import { Icon } from "../ui/Icon"
 
@@ -11,13 +11,15 @@ import { Composer, QuickSuggestions } from "./Composer"
 import { useWorkspaceRoot } from "../../ide/hooks"
 
 import {
-  CLOSED_COUNT,
-  CONVERSATION,
   ROLE_META,
-  TEMPLATES,
   THREAD_STATE_META,
+  type ConversationMessage,
   type Thread,
 } from "../../data/agents"
+
+import { TEMPLATES } from "../../llm/templates"
+
+import { bonafide } from "../../ipc/tauri"
 
 import { useThreads } from "../../data/threads"
 
@@ -219,6 +221,15 @@ function ThreadDetail({
     verification: { status: "none" as const, lines: [] },
   }
 
+  const [messages, setMessages] = useState<ConversationMessage[]>([])
+
+  useEffect(() => {
+    // Phase 0: thread messages IPC is not yet wired; render an empty
+    // log so the panel no longer relies on the hardcoded CONVERSATION
+    // mock. The full message IPC ships in WS5-T3 (Phase 1).
+    setMessages([])
+  }, [thread.id])
+
   return (
     <div className="flex h-full min-h-0">
       {/* pushed-left inbox context strip */}
@@ -261,31 +272,37 @@ function ThreadDetail({
               Conversation
             </span>
             <div className="flex flex-col gap-2">
-              {CONVERSATION.map((m, i) => (
-                <div
-                  key={i}
-                  className={`rounded border px-3 py-2 ${
-                    m.author === "USER"
-                      ? "border-primary/25 bg-primary/5"
-                      : m.author === "SYSTEM"
-                        ? "border-outline-variant/60 bg-surface-container-low"
-                        : "border-outline-variant bg-surface-container-low"
-                  }`}
-                >
-                  <div className="mb-0.5 label-caps text-outline">
-                    {m.author}
-                  </div>
-                  <p
-                    className={`font-body text-[12px] leading-[17px] ${
-                      m.card
-                        ? "italic text-on-surface-variant"
-                        : "text-on-surface"
+              {messages.length === 0 ? (
+                <p className="font-body text-[12px] italic text-outline">
+                  No messages yet.
+                </p>
+              ) : (
+                messages.map((m, i) => (
+                  <div
+                    key={i}
+                    className={`rounded border px-3 py-2 ${
+                      m.author === "USER"
+                        ? "border-primary/25 bg-primary/5"
+                        : m.author === "SYSTEM"
+                          ? "border-outline-variant/60 bg-surface-container-low"
+                          : "border-outline-variant bg-surface-container-low"
                     }`}
                   >
-                    {m.card ? `[ ${m.body} ]` : m.body}
-                  </p>
-                </div>
-              ))}
+                    <div className="mb-0.5 label-caps text-outline">
+                      {m.author}
+                    </div>
+                    <p
+                      className={`font-body text-[12px] leading-[17px] ${
+                        m.card
+                          ? "italic text-on-surface-variant"
+                          : "text-on-surface"
+                      }`}
+                    >
+                      {m.card ? `[ ${m.body} ]` : m.body}
+                    </p>
+                  </div>
+                ))
+              )}
             </div>
             <div className="mt-1 flex flex-col gap-3">
               <QuickSuggestions

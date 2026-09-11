@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Icon } from "../ui/Icon"
 
 // ── Port label map for common dev services ────────────────────────────────
@@ -30,27 +30,6 @@ type ForwardedPort = {
   label: string
   status: "active" | "error"
 }
-
-// ── Stub data ────────────────────────────────────────────────────────────
-
-const STUB_PORTS: ForwardedPort[] = [
-  {
-    id: "p1",
-    localPort: 16006,
-    remoteHost: "training-cluster-01",
-    remotePort: 6006,
-    label: "TensorBoard",
-    status: "active",
-  },
-  {
-    id: "p2",
-    localPort: 18888,
-    remoteHost: "training-cluster-01",
-    remotePort: 8888,
-    label: "Jupyter",
-    status: "active",
-  },
-]
 
 // ── PortRow ──────────────────────────────────────────────────────────────
 
@@ -101,7 +80,29 @@ function PortRow({
 // ── PortsTab ─────────────────────────────────────────────────────────────
 
 export function PortsTab() {
-  const [ports, setPorts] = useState<ForwardedPort[]>(STUB_PORTS)
+  // P0-T8: start with an empty list — STUB_PORTS is gone.
+  const [ports, setPorts] = useState<ForwardedPort[]>([])
+
+  // When the SSH forwarder IPC lands, populate from
+  // `bonafide.ports.list()`. Until then, the list stays empty and the
+  // empty state below renders.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const api = (
+        window as unknown as {
+          bonafide?: { ports?: { list?: () => Promise<ForwardedPort[]> } }
+        }
+      ).bonafide
+      const rows = api?.ports?.list ? await api.ports.list() : []
+      if (!cancelled) setPorts(rows ?? [])
+    })().catch(() => {
+      if (!cancelled) setPorts([])
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const handleRemove = (id: string) => {
     setPorts((prev) => prev.filter((p) => p.id !== id))
@@ -127,8 +128,7 @@ export function PortsTab() {
           <Icon name="network" size={28} className="mx-auto mb-2" />
           <p>No forwarded ports</p>
           <p className="mt-1 text-[12px]">
-            Forward ports from your training cluster to access services like
-            TensorBoard and Jupyter.
+            Forward a port to access training cluster services.
           </p>
         </div>
         <button

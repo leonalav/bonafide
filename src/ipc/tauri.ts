@@ -1085,6 +1085,7 @@ async function getBudgetStatus(
       escalation: "normal",
       spendRatio: 0,
       requiresApproval: false,
+      currency: "USD",
     }
   }
   return invoke<import("../data/budget").BudgetStatus>("get_budget_status", {
@@ -1146,8 +1147,10 @@ async function proposeExperiment(
     return {
       experimentId: `exp_preview_${Date.now()}`,
       title: input.title,
-      escalation: "escalate",
       withinBudget: false,
+      escalation: "escalate",
+      estimatedCost: 0,
+      warnings: ["Budget requires Tauri backend"],
     }
   }
   return invoke<import("../data/planner").ProposeExperimentOutput>(
@@ -1208,9 +1211,11 @@ async function runSmokeTest(
     return {
       exitCode: -1,
       stdout: "",
-      stderr: "(browser preview — smoke test skipped)",
+      stderr: "(preview mode — smoke test requires Tauri backend)",
       timedOut: false,
       summary: "Skipped in browser preview",
+      testsRun: 0,
+      durationMs: 0,
     }
   }
   return invoke<import("../data/scaffolder").SmokeTestResult>(
@@ -1301,7 +1306,8 @@ async function reviewCode(
       issues: [],
       recommendations: [],
       verdict: "skip",
-      summary: "(browser preview — critic skipped)",
+      summary: "(preview mode — code review requires Tauri backend)",
+      durationMs: 0,
     }
   }
   return invoke<import("../data/memory").CriticReview>("review_code", {

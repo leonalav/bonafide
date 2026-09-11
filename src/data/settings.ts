@@ -78,6 +78,21 @@ export interface Settings {
   // Model endpoints registry (Preferences → Models). Empty on first
   // run; the renderer populates as the user adds custom endpoints.
   modelEndpoints: Record<string, ModelEndpoint>
+
+  // Model preferences (Preferences → Models)
+  useBuiltInModelsByDefault: boolean
+  streamResponses: boolean
+}
+
+/** Model endpoint shape stored in the Rust settings store. Keyed by an
+ *  opaque ID the renderer generates. Only `url` / `apiKey` /
+ *  `available` round-trip through the Rust settings commands — the
+ *  full endpoint data (id, label, baseUrl, defaultModel) lives in
+ *  `modelsStore.tsx` / localStorage. */
+export interface ModelEndpoint {
+  url: string
+  apiKey: string | null
+  available: boolean
 }
 
 /** Default settings — mirrors the Rust `Settings::default()` impl.
@@ -128,6 +143,9 @@ export const DEFAULT_SETTINGS: Settings = {
   mlflowProject: null,
 
   modelEndpoints: {},
+
+  useBuiltInModelsByDefault: true,
+  streamResponses: false,
 }
 
 /** Keys that the Rust `set_setting` Tauri command accepts. Any value

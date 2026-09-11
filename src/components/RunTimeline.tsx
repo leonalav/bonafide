@@ -17,13 +17,11 @@ export function RunTimeline({
   onToggle,
   selectedRun,
   onSelectRun,
-  runningCount,
 }: {
   collapsed: boolean
   onToggle: () => void
   selectedRun: string
   onSelectRun: (id: string) => void
-  runningCount: number
 }) {
   const [sort, setSort] = useState<SortKey>("created")
   const [filter, setFilter] = useState("val_loss")
@@ -37,7 +35,8 @@ export function RunTimeline({
             Experiments
           </span>
           <span className="font-sans text-[12px] text-outline">
-            27 runs · {runningCount} running · last sync 12s ago
+            {RUNS.length} runs ·{" "}
+            {RUNS.filter((r) => r.state === "running").length} running
           </span>
         </div>
         <button
@@ -45,6 +44,24 @@ export function RunTimeline({
           className="flex items-center gap-1 font-sans text-[12px] text-outline hover:text-on-surface"
         >
           <Icon name="chevron-up" size={13} /> Expand
+        </button>
+      </div>
+    )
+  }
+
+  if (RUNS.length === 0) {
+    return (
+      <div className="flex h-[220px] shrink-0 flex-col items-center justify-center gap-2 border-t border-outline-variant bg-surface-container-low px-4 text-center">
+        <span className="label-caps text-on-surface-variant">Experiments</span>
+        <p className="font-body text-[12px] text-outline">
+          No runs yet. Start a training script or connect a tracker to populate
+          the timeline.
+        </p>
+        <button
+          onClick={onToggle}
+          className="flex h-6 items-center gap-1 rounded px-2 font-sans text-[12px] text-outline hover:bg-surface-container hover:text-on-surface"
+        >
+          <Icon name="minimize" size={12} /> Hide
         </button>
       </div>
     )
@@ -131,8 +148,8 @@ export function RunTimeline({
           <tbody>
             {RUNS.map((run) => {
               const meta = STATE_META[run.state]
-              const vl = run.metrics.find((m) => m.key === "val_loss")!
-              const acc = run.metrics.find((m) => m.key === "acc")!
+              const vl = run.metrics.find((m) => m.key === "val_loss")
+              const acc = run.metrics.find((m) => m.key === "acc")
               const sel = selectedRun === run.id
               return (
                 <tr
@@ -167,20 +184,28 @@ export function RunTimeline({
                     </span>
                   </td>
                   <td className="px-3">
-                    <Sparkline
-                      data={vl.series}
-                      width={60}
-                      height={18}
-                      tone={metricTone(vl)}
-                    />
+                    {vl ? (
+                      <Sparkline
+                        data={vl.series}
+                        width={60}
+                        height={18}
+                        tone={metricTone(vl)}
+                      />
+                    ) : (
+                      <span className="font-sans text-[12px] text-outline">—</span>
+                    )}
                   </td>
                   <td className="px-3">
-                    <Sparkline
-                      data={acc.series}
-                      width={60}
-                      height={18}
-                      tone={metricTone(acc)}
-                    />
+                    {acc ? (
+                      <Sparkline
+                        data={acc.series}
+                        width={60}
+                        height={18}
+                        tone={metricTone(acc)}
+                      />
+                    ) : (
+                      <span className="font-sans text-[12px] text-outline">—</span>
+                    )}
                   </td>
                   <td className="px-3 font-sans text-[13px] tabular-nums text-on-surface-variant">
                     {run.duration}

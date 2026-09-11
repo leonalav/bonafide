@@ -1,7 +1,8 @@
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { Icon } from "../ui/Icon"
 import { Button } from "../ui/primitives"
 import { Card, CardHeader, Checkbox, Field } from "../ui/controls"
+import { bonafide } from "@/ipc/tauri"
 import {
   useModelsStore,
   BUILT_IN_MODELS,
@@ -280,6 +281,45 @@ export function ModelsSection() {
   const [editingId, setEditingId] = useState<string | null>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
+  // Model preference toggles — loaded from / persisted to the settings store.
+  const [useBuiltInModelsByDefault, setUseBuiltInModelsByDefault] = useState(true)
+  const [streamResponses, setStreamResponses] = useState(false)
+
+  // Load initial values from the settings store on mount.
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const settings = await bonafide.settings.getAll().catch(() => null)
+      if (cancelled) return
+      setUseBuiltInModelsByDefault(
+        settings?.useBuiltInModelsByDefault ?? true,
+      )
+      setStreamResponses(settings?.streamResponses ?? false)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  // Persist toggle changes to the settings store.
+  function handleBuiltInModelsChange(value: boolean) {
+    setUseBuiltInModelsByDefault(value)
+    void bonafide.settings
+      .set("useBuiltInModelsByDefault", value)
+      .catch((err) =>
+        console.error("[ModelsSection] useBuiltInModelsByDefault save failed:", err),
+      )
+  }
+
+  function handleStreamResponsesChange(value: boolean) {
+    setStreamResponses(value)
+    void bonafide.settings
+      .set("streamResponses", value)
+      .catch((err) =>
+        console.error("[ModelsSection] streamResponses save failed:", err),
+      )
+  }
+
   function handleSave(ep: ModelEndpoint) {
     if (editingId) {
       updateEndpoint(ep.id, ep)
@@ -318,7 +358,8 @@ export function ModelsSection() {
         <Checkbox
           label="Use built-in models by default"
           description="When no custom endpoint is selected, route all agent requests to Bonafide's default endpoint."
-          defaultChecked
+          checked={useBuiltInModelsByDefault}
+          onChange={handleBuiltInModelsChange}
         />
       </Card>
 
@@ -446,7 +487,8 @@ Content-Type: application/json
           <Checkbox
             label="Stream responses (SSE)"
             description="Not yet supported — responses are always buffered."
-            defaultChecked
+            checked={streamResponses}
+            onChange={handleStreamResponsesChange}
           />
         </div>
       </Card>
