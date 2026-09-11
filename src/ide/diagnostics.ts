@@ -22,31 +22,27 @@
  * list, and a single linter that reads from it.
  */
 
-import {
-  linter,
-  lintGutter,
-  type Diagnostic,
-} from "@codemirror/lint";
-import { StateField, StateEffect, type Extension } from "@codemirror/state";
-import { EditorView } from "@codemirror/view";
+import { linter, lintGutter, type Diagnostic } from "@codemirror/lint"
+import { StateField, StateEffect, type Extension } from "@codemirror/state"
+import { EditorView } from "@codemirror/view"
 
 /** A domain-level diagnostic (not from an LSP server). */
 export type DomainDiagnostic = {
   /** Range in CodeMirror document offsets. */
-  from: number;
-  to: number;
+  from: number
+  to: number
   /** 1-based line number. */
-  line: number;
+  line: number
   /** 1-based column number. */
-  col: number;
-  severity: "error" | "warning" | "info" | "hint";
-  message: string;
+  col: number
+  severity: "error" | "warning" | "info" | "hint"
+  message: string
   /** Source identifier (e.g. "mlflow", "experiment-runner"). */
-  source: string;
-};
+  source: string
+}
 
 /** Set or replace the domain diagnostics for an editor. */
-export const setDomainDiagnostics = StateEffect.define<DomainDiagnostic[]>();
+export const setDomainDiagnostics = StateEffect.define<DomainDiagnostic[]>()
 
 /** State field holding domain diagnostics for an editor. */
 export const domainDiagnosticsField = StateField.define<DomainDiagnostic[]>({
@@ -54,12 +50,12 @@ export const domainDiagnosticsField = StateField.define<DomainDiagnostic[]>({
   update: (value, tr) => {
     for (const e of tr.effects) {
       if (e.is(setDomainDiagnostics)) {
-        return e.value;
+        return e.value
       }
     }
-    return value;
+    return value
   },
-});
+})
 
 /** Convert domain diagnostics to CodeMirror `Diagnostic[]`. */
 export function domainToCodeMirror(diags: DomainDiagnostic[]): Diagnostic[] {
@@ -76,7 +72,7 @@ export function domainToCodeMirror(diags: DomainDiagnostic[]): Diagnostic[] {
             : "hint",
     message: d.message,
     source: d.source,
-  }));
+  }))
 }
 
 /**
@@ -90,20 +86,16 @@ export function domainToCodeMirror(diags: DomainDiagnostic[]): Diagnostic[] {
  */
 export const domainLinter = linter(
   (view) => {
-    const domain = view.state.field(domainDiagnosticsField, false);
-    if (!domain) return [];
-    return domainToCodeMirror(domain);
+    const domain = view.state.field(domainDiagnosticsField, false)
+    if (!domain) return []
+    return domainToCodeMirror(domain)
   },
   { delay: 200 },
-);
+)
 
 /** Default extension set for the diagnostics surface. */
 export function diagnosticsExtensions(): Extension[] {
-  return [
-    lintGutter(),
-    domainDiagnosticsField,
-    domainLinter,
-  ];
+  return [lintGutter(), domainDiagnosticsField, domainLinter]
 }
 
 /**
@@ -114,6 +106,6 @@ export function applyDomainDiagnostics(
   view: EditorView | null,
   diagnostics: DomainDiagnostic[],
 ): void {
-  if (!view) return;
-  view.dispatch({ effects: setDomainDiagnostics.of(diagnostics) });
+  if (!view) return
+  view.dispatch({ effects: setDomainDiagnostics.of(diagnostics) })
 }

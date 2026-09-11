@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
-import { Icon } from "./ui/Icon";
-import { ChartTab } from "./ChartTab";
-import { ExperimentsTab } from "./ExperimentsTab";
-import { CodeMirrorEditor } from "./CodeMirrorEditor";
-import { MergeViewEditor } from "../ide/MergeViewEditor";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+} from "react"
+import { Icon } from "./ui/Icon"
+import { ChartTab } from "./ChartTab"
+import { ExperimentsTab } from "./ExperimentsTab"
+import { CodeMirrorEditor } from "./CodeMirrorEditor"
+import { MergeViewEditor } from "../ide/MergeViewEditor"
 import {
   useActiveFile,
   useActiveMergeReview,
@@ -13,11 +19,11 @@ import {
   useTabs,
   useToast,
   useWorkspaceRoot,
-} from "../ide/hooks";
-import { ContextMenu } from "./ContextMenu";
-import { getTabMenu, getEditorMenu } from "../ide/menus";
-import { bonafide } from "../ipc/tauri";
-import type { Tab, DiagnosticEntry } from "../ide/store.tsx";
+} from "../ide/hooks"
+import { ContextMenu } from "./ContextMenu"
+import { getTabMenu, getEditorMenu } from "../ide/menus"
+import { bonafide } from "../ipc/tauri"
+import type { Tab, DiagnosticEntry } from "../ide/store.tsx"
 
 // ── Tab strip ─────────────────────────────────────────────────────────────
 
@@ -28,76 +34,80 @@ function TabStrip({
   onAdd,
   onContextMenu,
 }: {
-  activeId: string;
-  onActivate: (id: string) => void;
-  onClose: (id: string) => void;
-  onAdd: () => void;
-  onContextMenu: (e: React.MouseEvent, tabId: string) => void;
+  activeId: string
+  onActivate: (id: string) => void
+  onClose: (id: string) => void
+  onAdd: () => void
+  onContextMenu: (e: React.MouseEvent, tabId: string) => void
 }) {
-  const tabs = useTabs();
-  const store = useIdeStore();
-  const [renamingTabId, setRenamingTabId] = useState<string | null>(null);
-  const [renameValue, setRenameValue] = useState("");
-  const renameRef = useRef<HTMLInputElement | null>(null);
+  const tabs = useTabs()
+  const store = useIdeStore()
+  const [renamingTabId, setRenamingTabId] = useState<string | null>(null)
+  const [renameValue, setRenameValue] = useState("")
+  const renameRef = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
     if (renamingTabId && renameRef.current) {
-      renameRef.current.focus();
-      renameRef.current.select();
+      renameRef.current.focus()
+      renameRef.current.select()
     }
-  }, [renamingTabId]);
+  }, [renamingTabId])
 
   function startRename(tab: Tab) {
-    setRenamingTabId(tab.id);
-    setRenameValue(tab.name);
+    setRenamingTabId(tab.id)
+    setRenameValue(tab.name)
   }
 
   function commitRename(tab: Tab) {
-    const newName = renameValue.trim();
+    const newName = renameValue.trim()
     if (newName && newName !== tab.name) {
-      store.dispatch({ type: "RENAME", nodeId: tab.fileId, name: newName });
+      store.dispatch({ type: "RENAME", nodeId: tab.fileId, name: newName })
     }
-    setRenamingTabId(null);
+    setRenamingTabId(null)
   }
 
   function onRenameKey(e: ReactKeyboardEvent<HTMLInputElement>, tab: Tab) {
     if (e.key === "Enter") {
-      e.preventDefault();
-      commitRename(tab);
+      e.preventDefault()
+      commitRename(tab)
     } else if (e.key === "Escape") {
-      e.preventDefault();
-      setRenamingTabId(null);
+      e.preventDefault()
+      setRenamingTabId(null)
     }
   }
 
   // Listen for "rename tab" events dispatched from the tab context menu
   useEffect(() => {
     function onRenameRequest(e: Event) {
-      const tabId = (e as CustomEvent).detail as string;
-      const tab = tabs.find((t) => t.id === tabId);
-      if (tab) startRename(tab);
+      const tabId = (e as CustomEvent).detail as string
+      const tab = tabs.find((t) => t.id === tabId)
+      if (tab) startRename(tab)
     }
-    window.addEventListener("ide:rename-tab", onRenameRequest as EventListener);
-    return () => window.removeEventListener("ide:rename-tab", onRenameRequest as EventListener);
+    window.addEventListener("ide:rename-tab", onRenameRequest as EventListener)
+    return () =>
+      window.removeEventListener(
+        "ide:rename-tab",
+        onRenameRequest as EventListener,
+      )
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tabs]);
+  }, [tabs])
 
   return (
     <div className="flex h-9 shrink-0 items-stretch border-b border-outline-variant bg-surface-container-lowest">
       {tabs.map((t) => {
-        const isActive = t.id === activeId;
-        const isRenaming = renamingTabId === t.id;
-        const isChartTab = t.fileId === "__virtual__/chart";
-        const isExperimentsTab = t.fileId === "__virtual__/experiments";
+        const isActive = t.id === activeId
+        const isRenaming = renamingTabId === t.id
+        const isChartTab = t.fileId === "__virtual__/chart"
+        const isExperimentsTab = t.fileId === "__virtual__/experiments"
 
-        let icon = "python";
-        let iconClass = "text-tertiary";
+        let icon = "python"
+        let iconClass = "text-tertiary"
         if (isChartTab) {
-          icon = "line-chart";
-          iconClass = "text-primary";
+          icon = "line-chart"
+          iconClass = "text-primary"
         } else if (isExperimentsTab) {
-          icon = "flask-conical";
-          iconClass = "text-secondary";
+          icon = "flask-conical"
+          iconClass = "text-secondary"
         }
 
         return (
@@ -111,7 +121,9 @@ function TabStrip({
                 : "bg-surface-container-low text-on-surface-variant hover:bg-surface-container-high"
             }`}
           >
-            {isActive && <span className="absolute left-0 top-0 h-0.5 w-full bg-primary" />}
+            {isActive && (
+              <span className="absolute left-0 top-0 h-0.5 w-full bg-primary" />
+            )}
             <Icon name={icon} size={14} className={iconClass} />
             {isRenaming ? (
               <input
@@ -133,17 +145,13 @@ function TabStrip({
             )}
             {t.pinned && (
               <span title="Pinned">
-                <Icon
-                  name="pin"
-                  size={10}
-                  className="text-outline shrink-0"
-                />
+                <Icon name="pin" size={10} className="text-outline shrink-0" />
               </span>
             )}
             <button
               onClick={(e) => {
-                e.stopPropagation();
-                onClose(t.id);
+                e.stopPropagation()
+                onClose(t.id)
               }}
               className="text-outline opacity-0 transition-opacity hover:text-on-surface group-hover:opacity-60"
               aria-label={`Close ${t.name}`}
@@ -151,7 +159,7 @@ function TabStrip({
               <Icon name="x" size={12} />
             </button>
           </div>
-        );
+        )
       })}
       <button
         onClick={onAdd}
@@ -179,7 +187,7 @@ function TabStrip({
         </button>
       </div>
     </div>
-  );
+  )
 }
 
 // ── Editor pane ───────────────────────────────────────────────────────────
@@ -191,30 +199,30 @@ export function EditorPane({
   onSelectRun: _onSelectRun,
   chartTarget,
   experimentsRun,
-}: {
-  activeTabId: string;
-  onActivate: (id: string) => void;
-  onClose: (id: string) => void;
   /** Kept for prop compatibility. Decorations were removed with mock runs. */
-  onSelectRun?: (id: string) => void;
-  chartTarget?: { runId: string; metricKey: string };
-  experimentsRun?: string;
+}: {
+  activeTabId: string
+  onActivate: (id: string) => void
+  onClose: (id: string) => void
+  onSelectRun?: (id: string) => void
+  chartTarget?: { runId: string metricKey: string }
+  experimentsRun?: string
 }) {
-  const store = useIdeStore();
-  const dispatch = useDispatch();
-  const pushToast = useToast();
-  const tabs = useTabs();
-  const activeFile = useActiveFile();
-  const activeMergeReview = useActiveMergeReview();
-  const ctxMenu = useContextMenuState();
+  const store = useIdeStore()
+  const dispatch = useDispatch()
+  const pushToast = useToast()
+  const tabs = useTabs()
+  const activeFile = useActiveFile()
+  const activeMergeReview = useActiveMergeReview()
+  const ctxMenu = useContextMenuState()
 
   function onTabContextMenu(e: React.MouseEvent, tabId: string) {
-    e.preventDefault();
-    e.stopPropagation();
+    e.preventDefault()
+    e.stopPropagation()
     dispatch({
       type: "OPEN_CONTEXT_MENU",
       payload: { surface: "tab", targetId: tabId, x: e.clientX, y: e.clientY },
-    });
+    })
   }
 
   // Listen for editor context menu events dispatched from the editor wrapper.
@@ -223,7 +231,7 @@ export function EditorPane({
   // Monaco's built-in DOM context menu.
   useEffect(() => {
     function onEditorCtx(e: Event) {
-      const detail = (e as CustomEvent).detail as { x: number; y: number };
+      const detail = (e as CustomEvent).detail as { x: number y: number }
       dispatch({
         type: "OPEN_CONTEXT_MENU",
         payload: {
@@ -232,11 +240,11 @@ export function EditorPane({
           x: detail.x,
           y: detail.y,
         },
-      });
+      })
     }
-    window.addEventListener("ide:editor-ctx", onEditorCtx);
-    return () => window.removeEventListener("ide:editor-ctx", onEditorCtx);
-  }, [dispatch, activeTabId]);
+    window.addEventListener("ide:editor-ctx", onEditorCtx)
+    return () => window.removeEventListener("ide:editor-ctx", onEditorCtx)
+  }, [dispatch, activeTabId])
 
   // Listen for "open merge review" events from the editor context menu.
   // The merge review shows the original vs proposed text in a side-by-side
@@ -246,28 +254,28 @@ export function EditorPane({
   useEffect(() => {
     function onEditorMerge(e: Event) {
       const detail = (e as CustomEvent).detail as {
-        tabId: string;
-        fileId: string;
-        proposedText?: string;
-      };
-      const state = store.getState();
-      const file = state.fileTree.find((n) => n.id === detail.fileId);
-      if (!file) return;
-      const rootPath = state.workspaceRoot;
-      if (!rootPath) return;
-      const absPath = `${rootPath}/${file.id}`;
-      const proposed = detail.proposedText ?? file.content ?? "";
+        tabId: string
+        fileId: string
+        proposedText?: string
+      }
+      const state = store.getState()
+      const file = state.fileTree.find((n) => n.id === detail.fileId)
+      if (!file) return
+      const rootPath = state.workspaceRoot
+      if (!rootPath) return
+      const absPath = `${rootPath}/${file.id}`
+      const proposed = detail.proposedText ?? file.content ?? ""
       dispatch({
         type: "OPEN_MERGE_REVIEW",
         absPath,
         originalText: file.content ?? "",
         proposedText: proposed,
         source: "manual review",
-      });
+      })
     }
-    window.addEventListener("ide:editor-merge", onEditorMerge);
-    return () => window.removeEventListener("ide:editor-merge", onEditorMerge);
-  }, [dispatch, store]);
+    window.addEventListener("ide:editor-merge", onEditorMerge)
+    return () => window.removeEventListener("ide:editor-merge", onEditorMerge)
+  }, [dispatch, store])
 
   // Listen for "run ruff" events. We invoke ruff-check via Tauri IPC and
   // push the resulting diagnostics into the editor's domain-diagnostics
@@ -275,58 +283,73 @@ export function EditorPane({
   // primary surface, but ruff-check is the explicit one-shot entry.)
   useEffect(() => {
     function onEditorRuff(e: Event) {
-      const detail = (e as CustomEvent).detail as { tabId: string; fileId: string };
-      const state = store.getState();
-      const file = state.fileTree.find((n) => n.id === detail.fileId);
-      if (!file) return;
-      const rootPath = state.workspaceRoot;
-      if (!rootPath) return;
+      const detail = (e as CustomEvent).detail as {
+        tabId: string
+        fileId: string
+      }
+      const state = store.getState()
+      const file = state.fileTree.find((n) => n.id === detail.fileId)
+      if (!file) return
+      const rootPath = state.workspaceRoot
+      if (!rootPath) return
       void (async () => {
         try {
-          const { ruffCheckAsDomain } = await import("../ide/ruff-linter");
+          const { ruffCheckAsDomain } = await import("../ide/ruff-linter")
           const diags = await ruffCheckAsDomain(
             `${rootPath}/${file.id}`,
             file.content ?? "",
-          );
+          )
 
           // Aggregate ruff diagnostics into the panel's Problems tab so
           // the user sees them aggregated across files (this ruff call is
           // for one file; later we'll loop across all open files and union).
-          const existing = store.getState().panel.diagnostics.filter(
-            (d) => !(d.fileId === file.id && d.source === "ruff"),
-          );
+          const existing = store
+            .getState()
+            .panel.diagnostics.filter(
+              (d) => !(d.fileId === file.id && d.source === "ruff"),
+            )
           const newEntries: DiagnosticEntry[] = diags.map((d, idx) => ({
             id: `ruff_${file.id}_${idx}_${Date.now()}`,
             fileId: file.id,
             fileLabel: file.id,
             line: d.line,
             col: d.col,
-            severity: d.severity === "info" ? "info" : d.severity === "warning" ? "warning" : "error",
+            severity:
+              d.severity === "info"
+                ? "info"
+                : d.severity === "warning"
+                  ? "warning"
+                  : "error",
             code: d.source ?? "ruff",
             message: d.message,
             source: "ruff",
-          }));
-          dispatch({ type: "SET_DIAGNOSTICS", diagnostics: [...existing, ...newEntries] });
-          dispatch({ type: "SET_PANEL_TAB", tab: "problems" });
+          }))
+          dispatch({
+            type: "SET_DIAGNOSTICS",
+            diagnostics: [...existing, ...newEntries],
+          })
+          dispatch({ type: "SET_PANEL_TAB", tab: "problems" })
           if (diags.length > 0) {
-            dispatch({ type: "TOGGLE_PANEL" });
+            dispatch({ type: "TOGGLE_PANEL" })
           }
 
           pushToast(
             diags.length === 0
               ? "No ruff issues found"
-              : `Ruff found ${diags.length} issue${diags.length === 1 ? "" : "s"}`,
+              : `Ruff found ${diags.length} issue${
+                  diags.length === 1 ? "" : "s"
+                }`,
             diags.length === 0 ? "success" : "info",
-          );
+          )
         } catch (err) {
-          console.error("[ruff] check failed", err);
-          pushToast("Ruff check failed", "error");
+          console.error("[ruff] check failed", err)
+          pushToast("Ruff check failed", "error")
         }
-      })();
+      })()
     }
-    window.addEventListener("ide:editor-ruff", onEditorRuff);
-    return () => window.removeEventListener("ide:editor-ruff", onEditorRuff);
-  }, [dispatch, pushToast, store]);
+    window.addEventListener("ide:editor-ruff", onEditorRuff)
+    return () => window.removeEventListener("ide:editor-ruff", onEditorRuff)
+  }, [dispatch, pushToast, store])
 
   // ── Save handler ───────────────────────────────────────────────────────
   // Called by CodeMirrorEditor when the user hits Ctrl+S. The
@@ -340,27 +363,27 @@ export function EditorPane({
       // the store is always in sync with what's on disk. This matters for
       // file-reopen: if the user saves and immediately closes the tab,
       // the debounced handleChange might not have fired yet.
-      dispatch({ type: "SET_CONTENT", fileId, content: currentValue });
-      const state = store.getState();
-      const tab = state.tabs.find((t) => t.fileId === fileId);
+      dispatch({ type: "SET_CONTENT", fileId, content: currentValue })
+      const state = store.getState()
+      const tab = state.tabs.find((t) => t.fileId === fileId)
       if (tab) {
-        dispatch({ type: "MARK_DIRTY", tabId: tab.id, dirty: false });
+        dispatch({ type: "MARK_DIRTY", tabId: tab.id, dirty: false })
       }
       if (!absPath) {
-        pushToast(`Saved "${tab?.name ?? "file"}"`, "success");
-        return;
+        pushToast(`Saved "${tab?.name ?? "file"}"`, "success")
+        return
       }
       try {
-        await bonafide.fs.writeFile(absPath, currentValue);
-        pushToast(`Saved "${tab?.name ?? "file"}"`, "success");
+        await bonafide.fs.writeFile(absPath, currentValue)
+        pushToast(`Saved "${tab?.name ?? "file"}"`, "success")
       } catch (err) {
         // eslint-disable-next-line no-console
-        console.error("[EditorPane] failed to write file", absPath, err);
-        pushToast("Failed to save file", "error");
+        console.error("[EditorPane] failed to write file", absPath, err)
+        pushToast("Failed to save file", "error")
       }
     },
     [dispatch, pushToast, store],
-  );
+  )
 
   // Global Ctrl+S safety net: if focus is somewhere outside Monaco (e.g.
   // a rename input, or the gutter area), Ctrl+S still saves the active
@@ -368,40 +391,51 @@ export function EditorPane({
   // only fires when no editor is focused.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "s")) {
-        return;
+      if (
+        !(
+          (e.ctrlKey || e.metaKey) &&
+          !e.shiftKey &&
+          !e.altKey &&
+          e.key.toLowerCase() === "s"
+        )
+      ) {
+        return
       }
-      const target = e.target as HTMLElement | null;
+      const target = e.target as HTMLElement | null
       // If focus is inside a Monaco textarea, Monaco already handled it
       // and called preventDefault. Don't double-fire.
-      if (target && target.tagName === "TEXTAREA" && target.classList.contains("inputarea")) {
-        return;
+      if (
+        target &&
+        target.tagName === "TEXTAREA" &&
+        target.classList.contains("inputarea")
+      ) {
+        return
       }
-      const state = store.getState();
+      const state = store.getState()
       const tab = state.activeTabId
         ? state.tabs.find((t) => t.id === state.activeTabId)
-        : null;
-      if (!tab || !tab.dirty) return;
-      e.preventDefault();
-      const file = state.fileTree.find((n) => n.id === tab.fileId);
-      if (!file) return;
+        : null
+      if (!tab || !tab.dirty) return
+      e.preventDefault()
+      const file = state.fileTree.find((n) => n.id === tab.fileId)
+      if (!file) return
       const absPath = state.workspaceRoot
         ? `${state.workspaceRoot}/${file.id}`
-        : null;
-      void onEditorSave(file.id, absPath, file.content ?? "");
+        : null
+      void onEditorSave(file.id, absPath, file.content ?? "")
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onEditorSave, store]);
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [onEditorSave, store])
 
-  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const activeTab = tabs.find((t) => t.id === activeTabId)
 
   // Use the reactive selector so absPath updates the moment the workspace
   // is opened. The previous code read store.getState().workspaceRoot once
   // at mount — so absPath was always null even after openFolder succeeded.
-  const workspaceRoot = useWorkspaceRoot();
+  const workspaceRoot = useWorkspaceRoot()
   const activeAbsPath =
-    activeFile && workspaceRoot ? `${workspaceRoot}/${activeFile.id}` : null;
+    activeFile && workspaceRoot ? `${workspaceRoot}/${activeFile.id}` : null
 
   // Monaco now owns the contextmenu event via a capture-phase listener
   // (set in handleMount) so Bonafide's menu opens without needing a
@@ -435,23 +469,26 @@ export function EditorPane({
               type: "RESOLVE_MERGE_REVIEW",
               reviewId: activeMergeReview.id,
               mergedText,
-            });
+            })
             void bonafide.fs
               .writeFile(activeMergeReview.absPath, mergedText)
               .then(() => {
                 pushToast(
                   `Wrote ${activeMergeReview.absPath.split("/").pop() ?? activeMergeReview.absPath} to disk`,
                   "success",
-                );
+                )
               })
               .catch((err) => {
-                console.error("[merge] writeFile failed", err);
-                pushToast("Failed to write merged file", "error");
-              });
+                console.error("[merge] writeFile failed", err)
+                pushToast("Failed to write merged file", "error")
+              })
           }}
           onReject={() => {
-            dispatch({ type: "CLOSE_MERGE_REVIEW", reviewId: activeMergeReview.id });
-            pushToast("Rejected changes", "info");
+            dispatch({
+              type: "CLOSE_MERGE_REVIEW",
+              reviewId: activeMergeReview.id,
+            })
+            pushToast("Rejected changes", "info")
           }}
         />
       ) : activeFile ? (
@@ -497,7 +534,11 @@ export function EditorPane({
       ) : (
         <div className="flex flex-1 items-center justify-center bg-surface font-body text-[13px] text-on-surface-variant">
           <div className="text-center">
-            <Icon name="file" size={28} className="mx-auto mb-2 text-outline-variant" />
+            <Icon
+              name="file"
+              size={28}
+              className="mx-auto mb-2 text-outline-variant"
+            />
             <p>No file open</p>
             <p className="mt-1 text-[12px] text-outline">
               Click a file in the Explorer or press Ctrl+N to create one.
@@ -509,8 +550,8 @@ export function EditorPane({
       {/* Tab context menu */}
       {ctxMenu?.surface === "tab" &&
         (() => {
-          const tab = tabs.find((t) => t.id === ctxMenu.targetId);
-          if (!tab) return null;
+          const tab = tabs.find((t) => t.id === ctxMenu.targetId)
+          if (!tab) return null
           return (
             <ContextMenu
               x={ctxMenu.x}
@@ -518,7 +559,7 @@ export function EditorPane({
               items={getTabMenu(store, tab)}
               onClose={() => dispatch({ type: "CLOSE_CONTEXT_MENU" })}
             />
-          );
+          )
         })()}
 
       {/* Editor context menu */}
@@ -531,5 +572,5 @@ export function EditorPane({
         />
       )}
     </div>
-  );
+  )
 }

@@ -35,7 +35,7 @@
  *     inline on the failed assistant turn.
  */
 
-import type { ModelEndpoint } from "../modelsStore";
+import type { ModelEndpoint } from "../modelsStore"
 import type {
   ApiChatMessage,
   ApiChatResponse,
@@ -43,9 +43,9 @@ import type {
   ApiContentPart,
   ChatRequest,
   ChatResponse,
-} from "./types";
+} from "./types"
 
-const DEFAULT_TEMPERATURE = 0.2;
+const DEFAULT_TEMPERATURE = 0.2
 
 /**
  * Send one chat completion request and return the normalised reply.
@@ -67,32 +67,34 @@ export async function chatCompletion(req: ChatRequest): Promise<ChatResponse> {
   if (!req.endpoint) {
     throw new Error(
       "No chat endpoint configured. Add one in Preferences → Models.",
-    );
+    )
   }
 
-  const url = buildCompletionsUrl(req.endpoint.baseUrl);
-  const body = buildRequestBody(req);
+  const url = buildCompletionsUrl(req.endpoint.baseUrl)
+  const body = buildRequestBody(req)
 
-  let res: Response;
+  let res: Response
   try {
     res = await fetch(url, {
       method: "POST",
       headers: buildHeaders(req.endpoint),
       body,
       signal: req.signal,
-    });
+    })
   } catch (err) {
     // AbortError surfaces here — let the caller distinguish it without
     // wrapping. `DOMException.name === "AbortError"` is the canonical check.
-    if (isAbortError(err)) throw err;
+    if (isAbortError(err)) throw err
     throw new Error(
-      `Network unreachable: ${err instanceof Error ? err.message : String(err)}`,
-    );
+      `Network unreachable: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    )
   }
 
   if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    const snippet = text.length > 280 ? `${text.slice(0, 280)}…` : text;
+    const text = await res.text().catch(() => "")
+    const snippet = text.length > 280 ? `${text.slice(0, 280)}…` : text
     // REVIEW(opus) FINDING 8 [medium]: a bare "HTTP 401" gives the user
     // nothing to act on. Each status code gets a one-line hint that
     // points at the most likely remediation in Preferences → Models.
@@ -105,22 +107,22 @@ export async function chatCompletion(req: ChatRequest): Promise<ChatResponse> {
             ? " Verify the base URL and model ID in Preferences → Models."
             : res.status === 429
               ? " Rate limited — try again in a moment."
-              : "";
+              : ""
     throw new Error(
       `HTTP ${res.status} ${res.statusText}: ${snippet}${hint}`.trim(),
-    );
+    )
   }
 
-  let parsed: ApiChatResponse;
+  let parsed: ApiChatResponse
   try {
-    parsed = (await res.json()) as ApiChatResponse;
+    parsed = ((await res.json()) as ApiChatResponse)
   } catch (err) {
     throw new Error(
       `Malformed response: ${err instanceof Error ? err.message : String(err)}`,
-    );
+    )
   }
 
-  return normaliseResponse(parsed);
+  return normaliseResponse(parsed)
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -136,8 +138,8 @@ export async function chatCompletion(req: ChatRequest): Promise<ChatResponse> {
  * work with this normalisation.
  */
 function buildCompletionsUrl(baseUrl: string): string {
-  const trimmed = baseUrl.replace(/\/+$/, "");
-  return `${trimmed}/chat/completions`;
+  const trimmed = baseUrl.replace(/\/+$/, "")
+  return `${trimmed}/chat/completions`
 }
 
 /**
@@ -156,15 +158,15 @@ function buildRequestBody(req: ChatRequest): string {
   const messages: ApiChatMessage[] = req.messages.map((m) => ({
     role: m.role,
     content: m.content,
-  }));
+  }))
 
   const payload = {
     model: req.model,
     messages,
     stream: false,
     temperature: req.temperature ?? DEFAULT_TEMPERATURE,
-  };
-  return JSON.stringify(payload);
+  }
+  return JSON.stringify(payload)
 }
 
 /**
@@ -175,43 +177,45 @@ function buildRequestBody(req: ChatRequest): string {
  * has no attachments the output is the plain string form so we hit
  * the cheapest code path on the wire.
  */
-export function buildApiChatMessage(
-  m: { role: import("../chats/ChatStore").ChatRole; content: string; attachments?: import("../chats/ChatStore").Attachment[] },
-): ApiChatMessage {
+export function buildApiChatMessage(m: {
+  role: import("../chats/ChatStore").ChatRole
+  content: string
+  attachments?: import("../chats/ChatStore").Attachment[]
+}): ApiChatMessage {
   if (!m.attachments || m.attachments.length === 0) {
-    return { role: m.role, content: m.content };
+    return { role: m.role, content: m.content }
   }
-  const parts: ApiContentPart[] = [];
+  const parts: ApiContentPart[] = []
   if (m.content.length > 0) {
-    parts.push({ type: "text", text: m.content });
+    parts.push({ type: "text", text: m.content })
   }
   for (const a of m.attachments) {
     if (a.kind === "image") {
       parts.push({
         type: "image_url",
         image_url: { url: a.dataUrl, detail: "auto" },
-      });
+      })
     } else {
       parts.push({
         type: "file",
         file: { filename: a.name, file_data: a.dataUrl },
-      });
+      })
     }
   }
-  return { role: m.role, content: parts };
+  return { role: m.role, content: parts }
 }
 
 function buildHeaders(endpoint: ModelEndpoint): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-  };
+  }
   // Some local endpoints (LM Studio with `--no-api-key`) reject
   // Authorization headers. Skip the header entirely when the key is
   // empty so we don't break those setups.
   if (endpoint.apiKey && endpoint.apiKey.length > 0) {
-    headers.Authorization = `Bearer ${endpoint.apiKey}`;
+    headers.Authorization = `Bearer ${endpoint.apiKey}`
   }
-  return headers;
+  return headers
 }
 
 /**
@@ -221,23 +225,23 @@ function buildHeaders(endpoint: ModelEndpoint): Record<string, string> {
  * conversation for policy reasons and returned only an error payload.
  */
 function normaliseResponse(res: ApiChatResponse): ChatResponse {
-  const first: ApiChoice | undefined = res.choices?.[0];
+  const first: ApiChoice | undefined = res.choices?.[0]
   if (!first) {
     // REVIEW(opus) FINDING 9 [low]: a 200 with `choices: []` is often
     // a provider returning a policy rejection or an error payload
     // instead of choices. We surface whichever the provider gave us so
     // the user gets a real reason rather than a generic shape error.
     const errPayload = (res as unknown as {
-      error?: { message?: string; code?: string };
-    }).error;
+      error?: { message?: string code?: string }
+    }).error
     if (errPayload?.message) {
-      throw new Error(`Provider rejected request: ${errPayload.message}`);
+      throw new Error(`Provider rejected request: ${errPayload.message}`)
     }
-    throw new Error("Malformed response: no choices returned.");
+    throw new Error("Malformed response: no choices returned.")
   }
 
-  const message = first.message ?? {};
-  const content = (message.content ?? "").toString();
+  const message = first.message ?? {}
+  const content = (message.content ?? "").toString()
 
   // Probe reasoning fields in provider-order. Empty strings and `null`
   // both fall through to the next probe.
@@ -247,24 +251,21 @@ function normaliseResponse(res: ApiChatResponse): ChatResponse {
     nonEmpty(
       // top-level `reasoning` field used by some Anthropic-compatible proxies
       (res as unknown as { reasoning?: string | null }).reasoning,
-    );
+    )
 
   return {
     content,
     ...(reasoning ? { reasoning } : {}),
     ...(res.usage ? { usage: res.usage } : {}),
-  };
+  }
 }
 
 function nonEmpty(value: string | null | undefined): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
 }
 
 function isAbortError(err: unknown): boolean {
-  return (
-    err instanceof DOMException &&
-    err.name === "AbortError"
-  );
+  return err instanceof DOMException && err.name === "AbortError"
 }

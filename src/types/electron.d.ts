@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import type { BonafideAPI } from "../ipc/tauri";
+import type { BonafideAPI } from "../ipc/tauri"
 
 declare global {
   interface Window {
@@ -7,8 +7,8 @@ declare global {
      * electronAPI shape; see `src/ipc/tauri.ts`. Components should
      * import the typed `bonafide` object directly rather than reading
      * `window.electronAPI`. */
-    electronAPI?: BonafideAPI;
+    electronAPI?: BonafideAPI
   }
 }
 
-export {};
+export {}

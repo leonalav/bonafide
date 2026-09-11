@@ -35,13 +35,13 @@
  *     mode / per role).
  */
 
-import type { ModelEndpoint } from "../modelsStore";
+import type { ModelEndpoint } from "../modelsStore"
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-export type ChatRole = "user" | "assistant" | "system";
+export type ChatRole = "user" | "assistant" | "system"
 
-export type ChatStatus = "idle" | "sending" | "error";
+export type ChatStatus = "idle" | "sending" | "error"
 
 /**
  * An attachment uploaded by the user for one chat message.
@@ -62,72 +62,72 @@ export type ChatStatus = "idle" | "sending" | "error";
  * encoded form.
  */
 export type Attachment = {
-  id: string;
-  kind: "image" | "file";
+  id: string
+  kind: "image" | "file"
   /** Original file name, e.g. "screenshot.png". */
-  name: string;
+  name: string
   /** MIME type, e.g. "image/png" or "application/pdf". */
-  mime: string;
+  mime: string
   /** File size in bytes. */
-  size: number;
+  size: number
   /** Data URL (`data:image/png;base64,...`) used for both preview and API transport. */
-  dataUrl: string;
-};
+  dataUrl: string
+}
 
 export type ChatMessage = {
-  id: string;
-  role: ChatRole;
+  id: string
+  role: ChatRole
   /** Visible content. May be empty for partial / streaming turns (Phase 3). */
-  content: string;
+  content: string
   /** Reasoning text returned by the model, if any. */
-  reasoning?: string;
+  reasoning?: string
   /** Error message if this turn failed. */
-  error?: string;
+  error?: string
   /** Milliseconds since epoch. */
-  ts: number;
+  ts: number
   /**
    * Files / images attached to this turn by the user. Persisted with
    * the message so reloads keep the context intact. Attachments on
    * assistant turns are reserved for Phase 2's tool-call outputs and
    * aren't set today.
    */
-  attachments?: Attachment[];
-};
+  attachments?: Attachment[]
+}
 
-export type ChatThreadMode = "debug" | "scaffold" | "plan" | "research" | "multitask";
+export type ChatThreadMode = "debug" | "scaffold" | "plan" | "research" | "multitask"
 
 export type ChatThread = {
-  id: string;
+  id: string
   /** Auto-generated from first user message, editable inline. */
-  title: string;
-  createdAt: number;
-  updatedAt: number;
+  title: string
+  createdAt: number
+  updatedAt: number
   /** Mode picked at the time the thread was created. */
-  mode: ChatThreadMode;
+  mode: ChatThreadMode
   /** Endpoint ID from modelsStore — null means use built-in default. */
-  endpointId: string | null;
+  endpointId: string | null
   /** Model ID sent to the API at submit time. */
-  model: string;
-  messages: ChatMessage[];
-  status: ChatStatus;
-};
+  model: string
+  messages: ChatMessage[]
+  status: ChatStatus
+}
 
 export type ChatConfig = {
-  activeThreadId: string | null;
-  threads: ChatThread[];
-};
+  activeThreadId: string | null
+  threads: ChatThread[]
+}
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
-const STORAGE_KEY = "__bonafide_chats";
-const MAX_TITLE_LEN = 60;
+const STORAGE_KEY = "__bonafide_chats"
+const MAX_TITLE_LEN = 60
 
 // ── Persistence helpers ─────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG: ChatConfig = {
   activeThreadId: null,
   threads: [],
-};
+}
 
 // REVIEW(opus) FINDINGS 2 + 7 [critical/medium]: prior validation only
 // checked `Array.isArray(parsed.threads)`. A thread with
@@ -137,8 +137,8 @@ const DEFAULT_CONFIG: ChatConfig = {
 // checks downstream. The guard below enforces every required field
 // the store touches.
 function isValidThread(t: unknown): t is ChatThread {
-  if (!t || typeof t !== "object") return false;
-  const o = t as Record<string, unknown>;
+  if (!t || typeof t !== "object") return false
+  const o = t as Record<string, unknown>
   return (
     typeof o.id === "string" &&
     typeof o.title === "string" &&
@@ -153,12 +153,12 @@ function isValidThread(t: unknown): t is ChatThread {
     typeof o.model === "string" &&
     Array.isArray(o.messages) &&
     (o.status === "idle" || o.status === "sending" || o.status === "error")
-  );
+  )
 }
 
 function isValidMessage(m: unknown): m is ChatMessage {
-  if (!m || typeof m !== "object") return false;
-  const o = m as Record<string, unknown>;
+  if (!m || typeof m !== "object") return false
+  const o = m as Record<string, unknown>
   // attachments is optional; when present it must be an array of
   // objects with the fields we use downstream. We don't validate the
   // dataUrl contents here (could be megabytes) — loadConfig will
@@ -179,21 +179,21 @@ function isValidMessage(m: unknown): m is ChatMessage {
           typeof (a as Attachment).dataUrl === "string" &&
           ((a as Attachment).kind === "image" ||
             (a as Attachment).kind === "file"),
-      ));
+      ))
   return (
     typeof o.id === "string" &&
     (o.role === "user" || o.role === "assistant" || o.role === "system") &&
     typeof o.content === "string" &&
     typeof o.ts === "number" &&
     attOk
-  );
+  )
 }
 
 function loadConfig(): ChatConfig {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
-      const parsed = JSON.parse(raw) as Partial<ChatConfig>;
+      const parsed = JSON.parse(raw) as Partial<ChatConfig>
       // Light validation — discard malformed shapes instead of crashing.
       if (
         parsed &&
@@ -203,18 +203,18 @@ function loadConfig(): ChatConfig {
         (parsed.activeThreadId === null ||
           typeof parsed.activeThreadId === "string")
       ) {
-        return parsed as ChatConfig;
+        return parsed as ChatConfig
       }
     }
   } catch {
     /* ignore parse errors, fall through to default */
   }
-  return DEFAULT_CONFIG;
+  return DEFAULT_CONFIG
 }
 
 function saveConfig(cfg: ChatConfig) {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(cfg))
   } catch {
     /* ignore quota errors; in-memory copy still works */
   }
@@ -222,55 +222,55 @@ function saveConfig(cfg: ChatConfig) {
 
 // ── Module-level state ───────────────────────────────────────────────────────
 
-let _config: ChatConfig = loadConfig();
+let _config: ChatConfig = loadConfig()
 
-type Listener = () => void;
-const _listeners = new Set<Listener>();
+type Listener = () => void
+const _listeners = new Set<Listener>()
 
 function _notify() {
   // Notify on a microtask so multiple synchronous updates batch into one
   // render. The React provider uses `forceUpdate` on this event.
   queueMicrotask(() => {
-    _listeners.forEach((l) => l());
-  });
+    _listeners.forEach((l) => l())
+  })
 }
 
 // ── AbortControllers, keyed by thread id ─────────────────────────────────────
 
-const _abortControllers = new Map<string, AbortController>();
+const _abortControllers = new Map<string, AbortController>()
 
 function getAbortController(threadId: string): AbortController {
-  let c = _abortControllers.get(threadId);
+  let c = _abortControllers.get(threadId)
   if (!c) {
-    c = new AbortController();
-    _abortControllers.set(threadId, c);
+    c = new AbortController()
+    _abortControllers.set(threadId, c)
   }
-  return c;
+  return c
 }
 
 function clearAbortController(threadId: string) {
-  _abortControllers.delete(threadId);
+  _abortControllers.delete(threadId)
 }
 
 // ── Public store API ─────────────────────────────────────────────────────────
 
 export type CreateThreadInput = {
-  mode: ChatThreadMode;
-  endpointId: string | null;
-  model: string;
+  mode: ChatThreadMode
+  endpointId: string | null
+  model: string
   /** Optional seed for the auto-generated title (first user message). */
-  seedTitle?: string;
-};
+  seedTitle?: string
+}
 
 export const chatsStore = {
   /** Return the current config (live reference — do not mutate). */
   getConfig(): ChatConfig {
-    return _config;
+    return _config
   },
 
   /** Look up a thread by id, or `null` when not found. */
   getThread(id: string): ChatThread | null {
-    return _config.threads.find((t) => t.id === id) ?? null;
+    return _config.threads.find((t) => t.id === id) ?? null
   },
 
   /**
@@ -286,10 +286,9 @@ export const chatsStore = {
    */
   getThreadByMessageId(messageId: string): ChatThread | null {
     return (
-      _config.threads.find((t) =>
-        t.messages.some((m) => m.id === messageId),
-      ) ?? null
-    );
+      _config.threads.find((t) => t.messages.some((m) => m.id === messageId)) ??
+      null
+    )
   },
 
   /**
@@ -298,13 +297,13 @@ export const chatsStore = {
    * `appendMessage` immediately after creation.
    */
   createThread(input: CreateThreadInput): ChatThread {
-    const now = Date.now();
+    const now = Date.now()
     // REVIEW(opus) FINDING 10 [low]: prior code passed an empty
     // `deriveTitle("   ")` result straight through to the title field,
     // producing a blank thread name. We now fall back to "New chat".
     const title = input.seedTitle
       ? deriveTitle(input.seedTitle) || "New chat"
-      : "New chat";
+      : "New chat"
     const thread: ChatThread = {
       id: uid(),
       title,
@@ -315,14 +314,14 @@ export const chatsStore = {
       model: input.model,
       messages: [],
       status: "idle",
-    };
+    }
     _config = {
       activeThreadId: thread.id,
       threads: [..._config.threads, thread],
-    };
-    saveConfig(_config);
-    _notify();
-    return thread;
+    }
+    saveConfig(_config)
+    _notify()
+    return thread
   },
 
   /**
@@ -331,41 +330,41 @@ export const chatsStore = {
    * validation.
    */
   renameThread(id: string, title: string) {
-    const trimmed = title.trim();
-    if (!trimmed) return;
+    const trimmed = title.trim()
+    if (!trimmed) return
     _config = {
       ..._config,
       threads: _config.threads.map((t) =>
         t.id === id ? { ...t, title: trimmed, updatedAt: Date.now() } : t,
       ),
-    };
-    saveConfig(_config);
-    _notify();
+    }
+    saveConfig(_config)
+    _notify()
   },
 
   /** Delete a thread and switch to the most-recent remaining one, if any. */
   deleteThread(id: string) {
     // Cancel any in-flight request for this thread before dropping it.
-    _abortControllers.get(id)?.abort();
-    clearAbortController(id);
+    _abortControllers.get(id)?.abort()
+    clearAbortController(id)
 
-    const remaining = _config.threads.filter((t) => t.id !== id);
+    const remaining = _config.threads.filter((t) => t.id !== id)
     const nextActive =
       _config.activeThreadId === id
         ? remaining.length > 0
           ? remaining[remaining.length - 1]!.id
           : null
-        : _config.activeThreadId;
-    _config = { activeThreadId: nextActive, threads: remaining };
-    saveConfig(_config);
-    _notify();
+        : _config.activeThreadId
+    _config = { activeThreadId: nextActive, threads: remaining }
+    saveConfig(_config)
+    _notify()
   },
 
   /** Switch the active thread. Pass `null` to clear selection. */
   setActiveThread(id: string | null) {
-    _config = { ..._config, activeThreadId: id };
-    saveConfig(_config);
-    _notify();
+    _config = { ..._config, activeThreadId: id }
+    saveConfig(_config)
+    _notify()
   },
 
   /**
@@ -381,9 +380,9 @@ export const chatsStore = {
           ? { ...t, messages: [...t.messages, message], updatedAt: Date.now() }
           : t,
       ),
-    };
-    saveConfig(_config);
-    _notify();
+    }
+    saveConfig(_config)
+    _notify()
   },
 
   /**
@@ -408,9 +407,9 @@ export const chatsStore = {
             }
           : t,
       ),
-    };
-    saveConfig(_config);
-    _notify();
+    }
+    saveConfig(_config)
+    _notify()
   },
 
   /**
@@ -439,9 +438,9 @@ export const chatsStore = {
             }
           : t,
       ),
-    };
-    saveConfig(_config);
-    _notify();
+    }
+    saveConfig(_config)
+    _notify()
   },
 
   /**
@@ -460,15 +459,15 @@ export const chatsStore = {
     // was about to fill in. Without this the .then() / .finally()
     // handlers would attempt to updateMessage against an id that no
     // longer exists, which is harmless but wasteful.
-    _abortControllers.get(threadId)?.abort();
-    clearAbortController(threadId);
+    _abortControllers.get(threadId)?.abort()
+    clearAbortController(threadId)
 
     _config = {
       ..._config,
       threads: _config.threads.map((t) => {
-        if (t.id !== threadId) return t;
-        const idx = t.messages.findIndex((m) => m.id === messageId);
-        if (idx === -1) return t;
+        if (t.id !== threadId) return t
+        const idx = t.messages.findIndex((m) => m.id === messageId)
+        if (idx === -1) return t
         return {
           ...t,
           // The slice includes the target message itself so its
@@ -479,11 +478,11 @@ export const chatsStore = {
           messages: t.messages.slice(0, idx + 1),
           updatedAt: Date.now(),
           status: "idle",
-        };
+        }
       }),
-    };
-    saveConfig(_config);
-    _notify();
+    }
+    saveConfig(_config)
+    _notify()
   },
 
   /** Set a thread's status (idle / sending / error). */
@@ -493,9 +492,9 @@ export const chatsStore = {
       threads: _config.threads.map((t) =>
         t.id === threadId ? { ...t, status } : t,
       ),
-    };
-    saveConfig(_config);
-    _notify();
+    }
+    saveConfig(_config)
+    _notify()
   },
 
   /**
@@ -504,7 +503,7 @@ export const chatsStore = {
    * `signal` via `chatCompletion({ ..., signal: controller.signal })`.
    */
   getAbortSignal(threadId: string): AbortSignal {
-    return getAbortController(threadId).signal;
+    return getAbortController(threadId).signal
   },
 
   /**
@@ -516,17 +515,17 @@ export const chatsStore = {
    * "sending".
    */
   tryBeginSend(threadId: string): boolean {
-    const thread = _config.threads.find((t) => t.id === threadId);
-    if (!thread || thread.status === "sending") return false;
+    const thread = _config.threads.find((t) => t.id === threadId)
+    if (!thread || thread.status === "sending") return false
     _config = {
       ..._config,
       threads: _config.threads.map((t) =>
         t.id === threadId ? { ...t, status: "sending" } : t,
       ),
-    };
-    saveConfig(_config);
-    _notify();
-    return true;
+    }
+    saveConfig(_config)
+    _notify()
+    return true
   },
 
   /**
@@ -538,17 +537,17 @@ export const chatsStore = {
    * so it can't resurrect a stale entry.
    */
   finishSend(threadId: string, finalStatus: ChatStatus = "idle") {
-    clearAbortController(threadId);
-    const stillExists = _config.threads.some((t) => t.id === threadId);
-    if (!stillExists) return;
+    clearAbortController(threadId)
+    const stillExists = _config.threads.some((t) => t.id === threadId)
+    if (!stillExists) return
     _config = {
       ..._config,
       threads: _config.threads.map((t) =>
         t.id === threadId ? { ...t, status: finalStatus } : t,
       ),
-    };
-    saveConfig(_config);
-    _notify();
+    }
+    saveConfig(_config)
+    _notify()
   },
 
   /** Cancel an in-flight request for a thread. Status reverts to idle. */
@@ -557,27 +556,27 @@ export const chatsStore = {
     // unconditionally even when the thread no longer existed. Mirror
     // finishSend's stillExists guard so a stale abort handler can't
     // touch the store after deletion.
-    const stillExists = _config.threads.some((t) => t.id === threadId);
-    _abortControllers.get(threadId)?.abort();
-    clearAbortController(threadId);
-    if (!stillExists) return;
+    const stillExists = _config.threads.some((t) => t.id === threadId)
+    _abortControllers.get(threadId)?.abort()
+    clearAbortController(threadId)
+    if (!stillExists) return
     _config = {
       ..._config,
       threads: _config.threads.map((t) =>
         t.id === threadId ? { ...t, status: "idle" } : t,
       ),
-    };
-    saveConfig(_config);
-    _notify();
+    }
+    saveConfig(_config)
+    _notify()
   },
 
   subscribe(listener: Listener): () => void {
-    _listeners.add(listener);
+    _listeners.add(listener)
     return () => {
-      _listeners.delete(listener);
-    };
+      _listeners.delete(listener)
+    }
   },
-};
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -588,13 +587,16 @@ export const chatsStore = {
  * available, with a graceful fallback to the timestamp + counter
  * approach for environments without the Web Crypto API.
  */
-let _uidCounter = 0;
+let _uidCounter = 0
 function uid(): string {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID();
+  if (
+    typeof crypto !== "undefined" &&
+    typeof crypto.randomUUID === "function"
+  ) {
+    return crypto.randomUUID()
   }
-  _uidCounter += 1;
-  return `${Date.now().toString(36)}-${_uidCounter}-${Math.random().toString(36).slice(2, 7)}`;
+  _uidCounter += 1
+  return `${Date.now().toString(36)}-${_uidCounter}-${Math.random().toString(36).slice(2, 7)}`
 }
 
 /**
@@ -608,13 +610,13 @@ export function deriveTitle(text: string): string {
     text
       .split(/\r?\n/)
       .map((l) => l.trim())
-      .find((l) => l.length > 0) ?? "";
-  const collapsed = firstLine.replace(/\s+/g, " ");
-  if (collapsed.length <= MAX_TITLE_LEN) return collapsed;
-  const cut = collapsed.slice(0, MAX_TITLE_LEN);
+      .find((l) => l.length > 0) ?? ""
+  const collapsed = firstLine.replace(/\s+/g, " ")
+  if (collapsed.length <= MAX_TITLE_LEN) return collapsed
+  const cut = collapsed.slice(0, MAX_TITLE_LEN)
   // Walk back to the last whitespace so we don't slice mid-word.
-  const lastSpace = cut.lastIndexOf(" ");
-  return `${cut.slice(0, lastSpace > 20 ? lastSpace : MAX_TITLE_LEN).trimEnd()}…`;
+  const lastSpace = cut.lastIndexOf(" ")
+  return `${cut.slice(0, lastSpace > 20 ? lastSpace : MAX_TITLE_LEN).trimEnd()}…`
 }
 
 /**
@@ -639,13 +641,13 @@ export function resolveSendTarget(
   thread: ChatThread,
   selectedEndpoint: ModelEndpoint | null,
   endpoints: ModelEndpoint[],
-): { endpoint: ModelEndpoint | null; model: string } {
-  let endpoint: ModelEndpoint | null = null;
+): { endpoint: ModelEndpoint | null model: string } {
+  let endpoint: ModelEndpoint | null = null
   if (thread.endpointId) {
-    endpoint = endpoints.find((e) => e.id === thread.endpointId) ?? null;
-    if (!endpoint) endpoint = selectedEndpoint;
+    endpoint = endpoints.find((e) => e.id === thread.endpointId) ?? null
+    if (!endpoint) endpoint = selectedEndpoint
   } else {
-    endpoint = selectedEndpoint;
+    endpoint = selectedEndpoint
   }
-  return { endpoint, model: thread.model };
+  return { endpoint, model: thread.model }
 }

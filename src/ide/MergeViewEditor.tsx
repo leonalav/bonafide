@@ -25,13 +25,31 @@
  * is correct because diffs are stateless functions of the inputs.
  */
 
-import { useEffect, useRef } from "react";
-import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror";
-import { EditorView, keymap, lineNumbers, highlightActiveLine } from "@codemirror/view";
-import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
-import { bracketMatching, indentOnInput, indentUnit } from "@codemirror/language";
-import { python } from "@codemirror/lang-python";
-import { autocompletion, closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
+import { useEffect, useRef } from "react"
+import CodeMirror, { type ReactCodeMirrorRef } from "@uiw/react-codemirror"
+import {
+  EditorView,
+  keymap,
+  lineNumbers,
+  highlightActiveLine,
+} from "@codemirror/view"
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+} from "@codemirror/commands"
+import {
+  bracketMatching,
+  indentOnInput,
+  indentUnit,
+} from "@codemirror/language"
+import { python } from "@codemirror/lang-python"
+import {
+  autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+} from "@codemirror/autocomplete"
 import {
   unifiedMergeView,
   acceptChunk,
@@ -41,24 +59,24 @@ import {
   getOriginalDoc,
   getChunks,
   MergeView,
-} from "@codemirror/merge";
-import { type Extension } from "@codemirror/state";
-import { bonafideTheme } from "./cm-theme";
+} from "@codemirror/merge"
+import { type Extension } from "@codemirror/state"
+import { bonafideTheme } from "./cm-theme"
 
 export type MergeViewEditorProps = {
   /** The current/original file content (read-only reference). */
-  originalText: string;
+  originalText: string
   /** The agent's proposed changes (this is what the editor starts with). */
-  proposedText: string;
+  proposedText: string
   /** Called when the user accepts the merged result. */
-  onAccept: (mergedText: string) => void;
+  onAccept: (mergedText: string) => void
   /** Called when the user rejects the changes. */
-  onReject: () => void;
+  onReject: () => void
   /** Optional language extension. Defaults to Python. */
-  languageExtension?: Extension;
+  languageExtension?: Extension
   /** Optional className for the outer wrapper. */
-  className?: string;
-};
+  className?: string
+}
 
 export function MergeViewEditor({
   originalText,
@@ -68,16 +86,16 @@ export function MergeViewEditor({
   languageExtension,
   className,
 }: MergeViewEditorProps) {
-  const editorRef = useRef<ReactCodeMirrorRef | null>(null);
+  const editorRef = useRef<ReactCodeMirrorRef | null>(null)
   // Keep latest callbacks in refs so the editor's keymap can read them
   // without needing to remount when they change.
-  const onAcceptRef = useRef(onAccept);
-  onAcceptRef.current = onAccept;
-  const onRejectRef = useRef(onReject);
-  onRejectRef.current = onReject;
+  const onAcceptRef = useRef(onAccept)
+  onAcceptRef.current = onAccept
+  const onRejectRef = useRef(onReject)
+  onRejectRef.current = onReject
 
   // Build extensions for the proposed-text editor with unifiedMergeView.
-  const extensions = useRef<Extension[]>([]);
+  const extensions = useRef<Extension[]>([])
   extensions.current = [
     lineNumbers(),
     highlightActiveLine(),
@@ -122,7 +140,7 @@ export function MergeViewEditor({
       ...historyKeymap,
       ...closeBracketsKeymap,
     ]),
-  ];
+  ]
 
   return (
     <div className={`flex min-h-0 flex-1 flex-col ${className ?? ""}`}>
@@ -132,7 +150,8 @@ export function MergeViewEditor({
           <span className="label-caps">Review Changes</span>
           <span className="text-outline">·</span>
           <span className="font-mono text-on-surface-variant">
-            {originalText.split("\n").length} → {proposedText.split("\n").length} lines
+            {originalText.split("\n").length} →{" "}
+            {proposedText.split("\n").length} lines
           </span>
           <span className="text-outline">·</span>
           <span className="text-[11px] text-outline">
@@ -142,11 +161,11 @@ export function MergeViewEditor({
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => {
-              const view = editorRef.current?.view;
-              if (!view) return;
+              const view = editorRef.current?.view
+              if (!view) return
               // Accept the merged result by reading the editor's current doc.
-              const mergedText = view.state.doc.toString();
-              onAcceptRef.current(mergedText);
+              const mergedText = view.state.doc.toString()
+              onAcceptRef.current(mergedText)
             }}
             className="flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium text-primary hover:bg-primary/10"
           >
@@ -181,7 +200,7 @@ export function MergeViewEditor({
         extensions={extensions.current}
       />
     </div>
-  );
+  )
 }
 
 /**
@@ -198,16 +217,16 @@ export function SideBySideMergeEditor({
   onReject,
   className,
 }: MergeViewEditorProps) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
-  const viewRef = useRef<{ a: EditorView; b: EditorView } | null>(null);
-  const onAcceptRef = useRef(onAccept);
-  onAcceptRef.current = onAccept;
-  const onRejectRef = useRef(onReject);
-  onRejectRef.current = onReject;
+  const hostRef = useRef<HTMLDivElement | null>(null)
+  const viewRef = useRef<{ a: EditorView b: EditorView } | null>(null)
+  const onAcceptRef = useRef(onAccept)
+  onAcceptRef.current = onAccept
+  const onRejectRef = useRef(onReject)
+  onRejectRef.current = onReject
 
   useEffect(() => {
-    if (!hostRef.current) return;
-    let mounted = true;
+    if (!hostRef.current) return
+    let mounted = true
     const mergeView = new MergeView({
       a: {
         doc: originalText,
@@ -241,16 +260,16 @@ export function SideBySideMergeEditor({
               key: "Mod-Shift-Enter",
               preventDefault: true,
               run: () => {
-                acceptChunk(mergeView.b, mergeView.b.state.selection.main.head);
-                return true;
+                acceptChunk(mergeView.b, mergeView.b.state.selection.main.head)
+                return true
               },
             },
             {
               key: "Mod-Shift-Backspace",
               preventDefault: true,
               run: () => {
-                rejectChunk(mergeView.b, mergeView.b.state.selection.main.head);
-                return true;
+                rejectChunk(mergeView.b, mergeView.b.state.selection.main.head)
+                return true
               },
             },
             indentWithTab,
@@ -260,15 +279,15 @@ export function SideBySideMergeEditor({
       highlightChanges: true,
       gutter: true,
       parent: hostRef.current,
-    });
-    viewRef.current = { a: mergeView.a, b: mergeView.b };
+    })
+    viewRef.current = { a: mergeView.a, b: mergeView.b }
 
     return () => {
-      if (!mounted) return;
-      mounted = false;
-      mergeView.destroy();
-    };
-  }, [originalText, proposedText]);
+      if (!mounted) return
+      mounted = false
+      mergeView.destroy()
+    }
+  }, [originalText, proposedText])
 
   return (
     <div className={`flex min-h-0 flex-1 flex-col ${className ?? ""}`}>
@@ -279,9 +298,9 @@ export function SideBySideMergeEditor({
         <div className="flex items-center gap-1.5">
           <button
             onClick={() => {
-              const view = viewRef.current;
-              if (!view) return;
-              onAcceptRef.current(view.b.state.doc.toString());
+              const view = viewRef.current
+              if (!view) return
+              onAcceptRef.current(view.b.state.doc.toString())
             }}
             className="flex items-center gap-1 rounded px-2 py-1 text-[12px] font-medium text-primary hover:bg-primary/10"
           >
@@ -295,7 +314,10 @@ export function SideBySideMergeEditor({
           </button>
         </div>
       </div>
-      <div ref={hostRef} className="min-h-0 flex-1 overflow-hidden bg-surface" />
+      <div
+        ref={hostRef}
+        className="min-h-0 flex-1 overflow-hidden bg-surface"
+      />
     </div>
-  );
+  )
 }

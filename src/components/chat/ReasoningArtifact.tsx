@@ -24,29 +24,29 @@
  * never visible — left in for Phase 3's streaming rollout.
  */
 
-import { useState } from "react";
-import { Icon } from "../ui/Icon";
+import { useState } from "react"
+import { Icon } from "../ui/Icon"
 
-const COLLAPSED_LINE_COUNT = 3;
+const COLLAPSED_LINE_COUNT = 3
 
 export function ReasoningArtifact({
   reasoning,
   streaming = false,
-}: {
-  reasoning: string;
   /**
    * When true, the header shows the animated 3-dot "thinking"
    * indicator. Phase 1 only ships buffered replies, so it stays
    * `false` everywhere. Phase 3's streaming rollout flips this on
    * for the duration of the live reasoning chunk.
    */
-  streaming?: boolean;
+}: {
+  reasoning: string
+  streaming?: boolean
 }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(false)
 
-  const lines = reasoning.split(/\r?\n/);
-  const previewLines = lines.slice(0, COLLAPSED_LINE_COUNT).join("\n");
-  const overflowCount = Math.max(0, lines.length - COLLAPSED_LINE_COUNT);
+  const lines = reasoning.split(/\r?\n/)
+  const previewLines = lines.slice(0, COLLAPSED_LINE_COUNT).join("\n")
+  const overflowCount = Math.max(0, lines.length - COLLAPSED_LINE_COUNT)
 
   // Auto-title: first non-empty line, clamped to ~60 chars.
   // REVIEW(opus) FINDING 2 [high]: the original regex /\s+\S*$/
@@ -58,13 +58,13 @@ export function ReasoningArtifact({
       .map((l) => l.trim())
       .find((l) => l.length > 0)
       ?.slice(0, 60)
-      .replace(/\s+$/, " ") ?? "Reasoning";
+      .replace(/\s+$/, " ") ?? "Reasoning"
 
   // Heuristic: very long reasoning = "High" confidence placeholder.
   // Phase 2 will source this from `message.confidence` once the model
   // surface standardises on it.
   const confidence: "Low" | "Medium" | "High" =
-    reasoning.length > 1500 ? "High" : reasoning.length > 400 ? "Medium" : "Low";
+    reasoning.length > 1500 ? "High" : reasoning.length > 400 ? "Medium" : "Low"
 
   return (
     <div
@@ -116,7 +116,9 @@ export function ReasoningArtifact({
           </div>
         </div>
         <span
-          className={`flex h-5 w-5 shrink-0 items-center justify-center text-outline transition-transform ${open ? "rotate-180" : ""}`}
+          className={`flex h-5 w-5 shrink-0 items-center justify-center text-outline transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
           aria-hidden="true"
         >
           <Icon name="chevron-down" size={12} />
@@ -160,7 +162,7 @@ export function ReasoningArtifact({
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 /** Map (confidence, segmentIndex) to a background colour. */
@@ -176,14 +178,13 @@ function confidenceTone(
   //   Medium → 2 filled (tertiary)
   //   Low    → 1 filled (outline)
   // Segments at index >= filled always render empty.
-  const filled =
-    confidence === "High" ? 3 : confidence === "Medium" ? 2 : 1;
+  const filled = confidence === "High" ? 3 : confidence === "Medium" ? 2 : 1
   if (segment < filled) {
     return confidence === "High"
       ? "bg-primary"
       : confidence === "Medium"
         ? "bg-tertiary"
-        : "bg-outline";
+        : "bg-outline"
   }
-  return "bg-outline/30";
+  return "bg-outline/30"
 }

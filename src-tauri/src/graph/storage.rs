@@ -96,16 +96,22 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
         CREATE TABLE IF NOT EXISTS insights (
             id TEXT PRIMARY KEY,
-            thread_id TEXT NOT NULL,
-            statement TEXT NOT NULL,
-            created_at INTEGER NOT NULL
+            workspace_hash TEXT NOT NULL,
+            finding TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            confidence TEXT NOT NULL,
+            source_thread TEXT,
+            source_runs TEXT,
+            created_at INTEGER NOT NULL,
+            expires_at INTEGER
         );
 
         CREATE TABLE IF NOT EXISTS dead_ends (
             id TEXT PRIMARY KEY,
-            thread_id TEXT NOT NULL,
-            attempted_fix TEXT NOT NULL,
-            outcome TEXT NOT NULL,
+            workspace_hash TEXT NOT NULL,
+            hypothesis TEXT NOT NULL,
+            evidence TEXT NOT NULL,
+            tried_runs TEXT,
             created_at INTEGER NOT NULL
         );
 
@@ -151,6 +157,37 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
 
         CREATE INDEX IF NOT EXISTS threads_workspace ON threads(workspace_hash);
         CREATE INDEX IF NOT EXISTS threads_updated_at ON threads(updated_at DESC);
+
+        -- Phase 2: experiment tracking
+        CREATE TABLE IF NOT EXISTS experiments (
+            id               TEXT PRIMARY KEY,
+            title            TEXT NOT NULL,
+            hypothesis       TEXT NOT NULL,
+            goal_metric      TEXT NOT NULL,
+            goal_direction   TEXT NOT NULL,
+            goal_target      REAL NOT NULL,
+            goal_condition   TEXT NOT NULL,
+            status           TEXT NOT NULL DEFAULT 'proposed',
+            budget_dollars   REAL NOT NULL DEFAULT 10.0,
+            budget_gpu_hours REAL NOT NULL DEFAULT 4.0,
+            created_at       INTEGER NOT NULL,
+            updated_at       INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS experiments_status ON experiments(status);
+        CREATE INDEX IF NOT EXISTS experiments_updated_at ON experiments(updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS experiment_runs (
+            id               TEXT PRIMARY KEY,
+            experiment_id    TEXT NOT NULL REFERENCES experiments(id) ON DELETE CASCADE,
+            run_id           TEXT NOT NULL,
+            config_overrides TEXT NOT NULL DEFAULT '{}',
+            status           TEXT NOT NULL DEFAULT 'queued',
+            metrics_summary  TEXT NOT NULL DEFAULT '{}',
+            created_at       INTEGER NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS experiment_runs_experiment_id ON experiment_runs(experiment_id);
         "#
     )
 }

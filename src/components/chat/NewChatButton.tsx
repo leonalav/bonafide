@@ -6,13 +6,13 @@
  * currently-selected Composer mode here.
  */
 
-import { Icon } from "../ui/Icon";
-import { useModelsStore } from "../../modelsStore";
-import { useChatsStore } from "../../chats/ChatStoreProvider";
+import { Icon } from "../ui/Icon"
+import { useModelsStore } from "../../modelsStore"
+import { useChatsStore } from "../../chats/ChatStoreProvider"
 
 export function NewChatButton() {
-  const { createThread, setActiveThread } = useChatsStore();
-  const { selectedEndpoint, config } = useModelsStore();
+  const { createThread, setActiveThread } = useChatsStore()
+  const { selectedEndpoint, config } = useModelsStore()
 
   function onClick() {
     // REVIEW(opus) FINDING 5 [medium]: previously hardcoded `"fable"` as
@@ -22,15 +22,15 @@ export function NewChatButton() {
     const defaultBuiltIn =
       selectedEndpoint?.defaultModel ??
       config.endpoints[0]?.defaultModel ??
-      "fable";
+      "fable"
     const thread = createThread({
       mode: "debug",
       endpointId: selectedEndpoint?.id ?? null,
       model: defaultBuiltIn,
-    });
-    setActiveThread(thread.id);
+    })
+    setActiveThread(thread.id)
     // Touch config to satisfy strict-mode lints that flag unused reads.
-    void config.endpoints;
+    void config.endpoints
   }
 
   return (
@@ -42,5 +42,5 @@ export function NewChatButton() {
       <Icon name="plus" size={12} />
       New
     </button>
-  );
+  )
 }

@@ -1,7 +1,7 @@
-import { useEffect, useRef, useState } from "react";
-import { Icon } from "./Icon";
+import { useEffect, useRef, useState } from "react"
+import { Icon } from "./Icon"
 
-export type SelectOption = { value: string; label: string };
+export type SelectOption = { value: string label: string }
 
 export function Select({
   value,
@@ -15,40 +15,42 @@ export function Select({
   menuClassName = "",
   ariaLabel,
 }: {
-  value: string;
-  options: (SelectOption | string)[];
-  onChange: (value: string) => void;
-  prefix?: string;
-  leadingIcon?: string;
-  size?: "sm" | "md";
-  align?: "left" | "right";
-  className?: string;
-  menuClassName?: string;
-  ariaLabel?: string;
+  value: string
+  options: (SelectOption | string)[]
+  onChange: (value: string) => void
+  prefix?: string
+  leadingIcon?: string
+  size?: "sm" | "md"
+  align?: "left" | "right"
+  className?: string
+  menuClassName?: string
+  ariaLabel?: string
 }) {
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const opts = options.map((o) => (typeof o === "string" ? { value: o, label: o } : o));
-  const current = opts.find((o) => o.value === value);
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const opts = options.map((o) =>
+    typeof o === "string" ? { value: o, label: o } : o,
+  )
+  const current = opts.find((o) => o.value === value)
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) return
     function onDoc(e: MouseEvent) {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") setOpen(false)
     }
-    document.addEventListener("mousedown", onDoc);
-    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onDoc)
+    document.addEventListener("keydown", onKey)
     return () => {
-      document.removeEventListener("mousedown", onDoc);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+      document.removeEventListener("mousedown", onDoc)
+      document.removeEventListener("keydown", onKey)
+    }
+  }, [open])
 
-  const h = size === "md" ? "h-8" : "h-6";
-  const text = size === "md" ? "text-[13px]" : "text-[12px]";
+  const h = size === "md" ? "h-8" : "h-6"
+  const text = size === "md" ? "text-[13px]" : "text-[12px]"
 
   return (
     <div ref={ref} className={`relative ${className}`}>
@@ -62,12 +64,24 @@ export function Select({
           open ? "border-primary text-on-surface" : ""
         }`}
       >
-        {leadingIcon && <Icon name={leadingIcon} size={13} className="shrink-0 text-outline" />}
+        {leadingIcon && (
+          <Icon
+            name={leadingIcon}
+            size={13}
+            className="shrink-0 text-outline"
+          />
+        )}
         <span className="min-w-0 flex-1 truncate text-left">
           {prefix && <span className="text-outline">{prefix} </span>}
           {current?.label ?? value}
         </span>
-        <Icon name="chevron-down" size={12} className={`shrink-0 transition-transform ${open ? "rotate-180" : ""}`} />
+        <Icon
+          name="chevron-down"
+          size={12}
+          className={`shrink-0 transition-transform ${
+            open ? "rotate-180" : ""
+          }`}
+        />
       </button>
 
       {open && (
@@ -78,27 +92,31 @@ export function Select({
           } ${menuClassName}`}
         >
           {opts.map((o) => {
-            const active = o.value === value;
+            const active = o.value === value
             return (
               <button
                 key={o.value}
                 role="option"
                 aria-selected={active}
                 onClick={() => {
-                  onChange(o.value);
-                  setOpen(false);
+                  onChange(o.value)
+                  setOpen(false)
                 }}
                 className={`flex w-full items-center gap-2 whitespace-nowrap rounded px-2 py-1.5 text-left font-sans ${text} transition-colors ${
-                  active ? "bg-surface-container-high text-on-surface" : "text-on-surface-variant hover:bg-surface-container"
+                  active
+                    ? "bg-surface-container-high text-on-surface"
+                    : "text-on-surface-variant hover:bg-surface-container"
                 }`}
               >
                 <span className="flex-1">{o.label}</span>
-                {active && <Icon name="check" size={13} className="text-primary" />}
+                {active && (
+                  <Icon name="check" size={13} className="text-primary" />
+                )}
               </button>
-            );
+            )
           })}
         </div>
       )}
     </div>
-  );
+  )
 }

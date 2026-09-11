@@ -1,9 +1,9 @@
-import React from 'react'
-import ReactDOM from 'react-dom/client'
-import App from './App'
-import { ModelsProvider } from './modelsStore'
-import { ChatStoreProvider } from './chats/ChatStoreProvider'
-import './index.css'
+import React from "react"
+import ReactDOM from "react-dom/client"
+import App from "./App"
+import { ModelsProvider } from "./modelsStore"
+import { ChatStoreProvider } from "./chats/ChatStoreProvider"
+import "./index.css"
 
 // ── Window-level contextmenu interceptor ────────────────────────────────────
 // Tauri's WebView2 shows a *native* context menu (with system "Reload",
@@ -18,18 +18,18 @@ import './index.css'
 // any click that lands on a region without its own handler (panels,
 // chrome, empty editor area, etc.).
 function installContextMenuInterceptor() {
-  if (typeof window === 'undefined') return;
+  if (typeof window === "undefined") return
   const target = window as unknown as {
-    __bonafideContextMenuInstalled?: boolean;
-  };
-  if (target.__bonafideContextMenuInstalled) return;
-  target.__bonafideContextMenuInstalled = true;
+    __bonafideContextMenuInstalled?: boolean
+  }
+  if (target.__bonafideContextMenuInstalled) return
+  target.__bonafideContextMenuInstalled = true
 
   window.addEventListener(
-    'contextmenu',
+    "contextmenu",
     (e: MouseEvent) => {
       // Always preventDefault so WebView2 never shows its native menu.
-      e.preventDefault();
+      e.preventDefault()
       // NOTE: do NOT call stopPropagation() here. The capture phase fires
       // BEFORE the target/bubble phases; calling stopPropagation() in the
       // capture phase would prevent the event from ever reaching the
@@ -46,11 +46,11 @@ function installContextMenuInterceptor() {
     // Capture phase: fire BEFORE any bubble-phase handler can
     // accidentally allow the event to reach WebView2.
     true,
-  );
+  )
 }
-installContextMenuInterceptor();
+installContextMenuInterceptor()
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ModelsProvider>
       <ChatStoreProvider>

@@ -53,7 +53,7 @@ export type Run = {
   step: number
   totalSteps: number
   metrics: Metric[]
-  env: { python: string; framework: string; gpu: string }
+  env: { python: string framework: string gpu: string }
   config: Record<string, string | number>
 }
 
@@ -65,7 +65,8 @@ export function series(seed: number, n = 32, trend = -1): number[] {
   const out: number[] = []
   let v = 1
   for (let i = 0; i < n; i++) {
-    const noise = Math.sin(seed + i * 0.9) * 0.06 + Math.cos(seed * 1.7 + i * 0.3) * 0.04
+    const noise =
+      Math.sin(seed + i * 0.9) * 0.06 + Math.cos(seed * 1.7 + i * 0.3) * 0.04
     v += (trend * 0.9) / n + noise * 0.5
     out.push(Math.max(0.02, v))
   }
@@ -86,13 +87,51 @@ export const RUNS: Run[] = [
     step: 8420,
     totalSteps: 20000,
     metrics: [
-      { key: "loss",     label: "loss",     value: 0.42,   delta: -0.07, lowerIsBetter: true,  series: series(1, 32, -1) },
-      { key: "val_loss", label: "val_loss", value: 0.31,   delta: -0.04, lowerIsBetter: true,  series: series(3, 32, -1) },
-      { key: "acc",      label: "acc",      value: 0.89,   delta:  0.02, lowerIsBetter: false, series: series(2, 32,  1) },
-      { key: "lr",       label: "lr",       value: 0.0005, delta:  0,    lowerIsBetter: true,  series: series(9, 32, -0.4) },
+      {
+        key: "loss",
+        label: "loss",
+        value: 0.42,
+        delta: -0.07,
+        lowerIsBetter: true,
+        series: series(1, 32, -1),
+      },
+      {
+        key: "val_loss",
+        label: "val_loss",
+        value: 0.31,
+        delta: -0.04,
+        lowerIsBetter: true,
+        series: series(3, 32, -1),
+      },
+      {
+        key: "acc",
+        label: "acc",
+        value: 0.89,
+        delta: 0.02,
+        lowerIsBetter: false,
+        series: series(2, 32, 1),
+      },
+      {
+        key: "lr",
+        label: "lr",
+        value: 0.0005,
+        delta: 0,
+        lowerIsBetter: true,
+        series: series(9, 32, -0.4),
+      },
     ],
-    env: { python: "3.11.4", framework: "PyTorch 2.2.1", gpu: "NVIDIA A100 80GB" },
-    config: { lr: "5e-4", batch_size: 128, optimizer: "AdamW", weight_decay: "1e-5", epochs: 50 },
+    env: {
+      python: "3.11.4",
+      framework: "PyTorch 2.2.1",
+      gpu: "NVIDIA A100 80GB",
+    },
+    config: {
+      lr: "5e-4",
+      batch_size: 128,
+      optimizer: "AdamW",
+      weight_decay: "1e-5",
+      epochs: 50,
+    },
   },
   {
     id: "r2",
@@ -107,13 +146,51 @@ export const RUNS: Run[] = [
     step: 20000,
     totalSteps: 20000,
     metrics: [
-      { key: "loss",     label: "loss",     value: 0.51,   delta:  0.09, lowerIsBetter: true,  series: series(5, 32, -0.8) },
-      { key: "val_loss", label: "val_loss", value: 0.49,   delta:  0.18, lowerIsBetter: true,  series: series(7, 32, -0.7) },
-      { key: "acc",      label: "acc",      value: 0.84,   delta: -0.03, lowerIsBetter: false, series: series(6, 32,  1) },
-      { key: "lr",       label: "lr",       value: 0.001,  delta:  0,    lowerIsBetter: true,  series: series(11, 32, -0.4) },
+      {
+        key: "loss",
+        label: "loss",
+        value: 0.51,
+        delta: 0.09,
+        lowerIsBetter: true,
+        series: series(5, 32, -0.8),
+      },
+      {
+        key: "val_loss",
+        label: "val_loss",
+        value: 0.49,
+        delta: 0.18,
+        lowerIsBetter: true,
+        series: series(7, 32, -0.7),
+      },
+      {
+        key: "acc",
+        label: "acc",
+        value: 0.84,
+        delta: -0.03,
+        lowerIsBetter: false,
+        series: series(6, 32, 1),
+      },
+      {
+        key: "lr",
+        label: "lr",
+        value: 0.001,
+        delta: 0,
+        lowerIsBetter: true,
+        series: series(11, 32, -0.4),
+      },
     ],
-    env: { python: "3.11.4", framework: "PyTorch 2.2.1", gpu: "NVIDIA A100 80GB" },
-    config: { lr: "1e-3", batch_size: 64, optimizer: "AdamW", weight_decay: "1e-4", epochs: 50 },
+    env: {
+      python: "3.11.4",
+      framework: "PyTorch 2.2.1",
+      gpu: "NVIDIA A100 80GB",
+    },
+    config: {
+      lr: "1e-3",
+      batch_size: 64,
+      optimizer: "AdamW",
+      weight_decay: "1e-4",
+      epochs: 50,
+    },
   },
   {
     id: "r3",
@@ -128,13 +205,51 @@ export const RUNS: Run[] = [
     step: 20000,
     totalSteps: 20000,
     metrics: [
-      { key: "loss",     label: "loss",     value: 0.47,   delta: -0.01, lowerIsBetter: true,  series: series(13, 32, -0.9) },
-      { key: "val_loss", label: "val_loss", value: 0.38,   delta:  0.01, lowerIsBetter: true,  series: series(15, 32, -0.85) },
-      { key: "acc",      label: "acc",      value: 0.86,   delta:  0.01, lowerIsBetter: false, series: series(14, 32,  1) },
-      { key: "lr",       label: "lr",       value: 0.0007, delta:  0,    lowerIsBetter: true,  series: series(17, 32, -0.4) },
+      {
+        key: "loss",
+        label: "loss",
+        value: 0.47,
+        delta: -0.01,
+        lowerIsBetter: true,
+        series: series(13, 32, -0.9),
+      },
+      {
+        key: "val_loss",
+        label: "val_loss",
+        value: 0.38,
+        delta: 0.01,
+        lowerIsBetter: true,
+        series: series(15, 32, -0.85),
+      },
+      {
+        key: "acc",
+        label: "acc",
+        value: 0.86,
+        delta: 0.01,
+        lowerIsBetter: false,
+        series: series(14, 32, 1),
+      },
+      {
+        key: "lr",
+        label: "lr",
+        value: 0.0007,
+        delta: 0,
+        lowerIsBetter: true,
+        series: series(17, 32, -0.4),
+      },
     ],
-    env: { python: "3.11.4", framework: "PyTorch 2.2.1", gpu: "NVIDIA A100 80GB" },
-    config: { lr: "7e-4", batch_size: 96, optimizer: "AdamW", weight_decay: "1e-4", epochs: 50 },
+    env: {
+      python: "3.11.4",
+      framework: "PyTorch 2.2.1",
+      gpu: "NVIDIA A100 80GB",
+    },
+    config: {
+      lr: "7e-4",
+      batch_size: 96,
+      optimizer: "AdamW",
+      weight_decay: "1e-4",
+      epochs: 50,
+    },
   },
   {
     id: "r4",
@@ -149,13 +264,51 @@ export const RUNS: Run[] = [
     step: 2100,
     totalSteps: 20000,
     metrics: [
-      { key: "loss",     label: "loss",     value: 0.78,   delta: -0.12, lowerIsBetter: true,  series: series(19, 32, -0.5) },
-      { key: "val_loss", label: "val_loss", value: 0.71,   delta: -0.09, lowerIsBetter: true,  series: series(21, 32, -0.5) },
-      { key: "acc",      label: "acc",      value: 0.72,   delta:  0.05, lowerIsBetter: false, series: series(20, 32,  1) },
-      { key: "lr",       label: "lr",       value: 0.0009, delta:  0,    lowerIsBetter: true,  series: series(23, 32, -0.4) },
+      {
+        key: "loss",
+        label: "loss",
+        value: 0.78,
+        delta: -0.12,
+        lowerIsBetter: true,
+        series: series(19, 32, -0.5),
+      },
+      {
+        key: "val_loss",
+        label: "val_loss",
+        value: 0.71,
+        delta: -0.09,
+        lowerIsBetter: true,
+        series: series(21, 32, -0.5),
+      },
+      {
+        key: "acc",
+        label: "acc",
+        value: 0.72,
+        delta: 0.05,
+        lowerIsBetter: false,
+        series: series(20, 32, 1),
+      },
+      {
+        key: "lr",
+        label: "lr",
+        value: 0.0009,
+        delta: 0,
+        lowerIsBetter: true,
+        series: series(23, 32, -0.4),
+      },
     ],
-    env: { python: "3.11.4", framework: "PyTorch 2.2.1", gpu: "NVIDIA A100 80GB" },
-    config: { lr: "9e-4", batch_size: 128, optimizer: "AdamW", weight_decay: "1e-5", epochs: 50 },
+    env: {
+      python: "3.11.4",
+      framework: "PyTorch 2.2.1",
+      gpu: "NVIDIA A100 80GB",
+    },
+    config: {
+      lr: "9e-4",
+      batch_size: 128,
+      optimizer: "AdamW",
+      weight_decay: "1e-5",
+      epochs: 50,
+    },
   },
   {
     id: "r5",
@@ -170,72 +323,231 @@ export const RUNS: Run[] = [
     step: 900,
     totalSteps: 20000,
     metrics: [
-      { key: "loss",     label: "loss",     value: 1.42,   delta:  0.4,  lowerIsBetter: true,  series: series(25, 32, -0.2) },
-      { key: "val_loss", label: "val_loss", value: 1.31,   delta:  0.5,  lowerIsBetter: true,  series: series(27, 32, -0.2) },
-      { key: "acc",      label: "acc",      value: 0.41,   delta: -0.1,  lowerIsBetter: false, series: series(26, 32,  0.5) },
-      { key: "lr",       label: "lr",       value: 0.003,  delta:  0,    lowerIsBetter: true,  series: series(29, 32, -0.4) },
+      {
+        key: "loss",
+        label: "loss",
+        value: 1.42,
+        delta: 0.4,
+        lowerIsBetter: true,
+        series: series(25, 32, -0.2),
+      },
+      {
+        key: "val_loss",
+        label: "val_loss",
+        value: 1.31,
+        delta: 0.5,
+        lowerIsBetter: true,
+        series: series(27, 32, -0.2),
+      },
+      {
+        key: "acc",
+        label: "acc",
+        value: 0.41,
+        delta: -0.1,
+        lowerIsBetter: false,
+        series: series(26, 32, 0.5),
+      },
+      {
+        key: "lr",
+        label: "lr",
+        value: 0.003,
+        delta: 0,
+        lowerIsBetter: true,
+        series: series(29, 32, -0.4),
+      },
     ],
-    env: { python: "3.11.4", framework: "PyTorch 2.2.1", gpu: "NVIDIA A100 80GB" },
-    config: { lr: "3e-3", batch_size: 256, optimizer: "AdamW", weight_decay: "1e-4", epochs: 50 },
+    env: {
+      python: "3.11.4",
+      framework: "PyTorch 2.2.1",
+      gpu: "NVIDIA A100 80GB",
+    },
+    config: {
+      lr: "3e-3",
+      batch_size: 256,
+      optimizer: "AdamW",
+      weight_decay: "1e-4",
+      epochs: 50,
+    },
   },
 ]
 
-export const STATE_META: Record<
-  RunState,
-  { label: string; token: "tertiary" | "primary" | "error" | "outline"; pulse: boolean; warn?: boolean }
-> = {
-  running:  { label: "Running",  token: "tertiary", pulse: true },
-  finished: { label: "Finished", token: "primary",  pulse: false },
-  failed:   { label: "Failed",   token: "error",    pulse: false },
-  crashed:  { label: "Crashed",  token: "error",    pulse: false, warn: true },
-  queued:   { label: "Queued",   token: "outline",  pulse: false },
+export const STATE_META: Record<RunState, {
+  label: string
+  token: "tertiary" | "primary" | "error" | "outline"
+  pulse: boolean
+  warn?: boolean
+}> = {
+  running: { label: "Running", token: "tertiary", pulse: true },
+  finished: { label: "Finished", token: "primary", pulse: false },
+  failed: { label: "Failed", token: "error", pulse: false },
+  crashed: { label: "Crashed", token: "error", pulse: false, warn: true },
+  queued: { label: "Queued", token: "outline", pulse: false },
 }
 
 // Inline line decos used by the editor's run-anchor / live-metric markers.
-export type Tok = { t: string; c?: "kw" | "str" | "fn" | "var" | "com" | "num" | "op" }
+export type Tok = {
+  t: string
+  c?: "kw" | "str" | "fn" | "var" | "com" | "num" | "op"
+}
 export type CodeLine = {
   n: number
   toks: Tok[]
-  deco?: { kind: "run-anchor" | "live-metric" | "metric-anchor"; runId: string; metric?: string }
+  deco?: {
+    kind: "run-anchor" | "live-metric" | "metric-anchor"
+    runId: string
+    metric?: string
+  }
   provenance?: boolean
 }
 
 export const TRAIN_PY: CodeLine[] = [
-  { n: 1,  toks: [{ t: "import", c: "kw" }, { t: " wandb" }] },
-  { n: 2,  toks: [{ t: "import", c: "kw" }, { t: " torch" }] },
-  { n: 3,  toks: [{ t: "from", c: "kw" }, { t: " model " }, { t: "import", c: "kw" }, { t: " build_model" }] },
-  { n: 4,  toks: [] },
-  { n: 5,  toks: [{ t: "def", c: "kw" }, { t: " " }, { t: "train", c: "fn" }, { t: "(cfg):", c: "op" }], provenance: true },
-  { n: 6,  toks: [{ t: "    model ", c: "var" }, { t: "= ", c: "op" }, { t: "build_model", c: "fn" }, { t: "(cfg.model)" }], provenance: true },
+  { n: 1, toks: [{ t: "import", c: "kw" }, { t: " wandb" }] },
+  { n: 2, toks: [{ t: "import", c: "kw" }, { t: " torch" }] },
+  {
+    n: 3,
+    toks: [
+      { t: "from", c: "kw" },
+      { t: " model " },
+      { t: "import", c: "kw" },
+      { t: " build_model" },
+    ],
+  },
+  { n: 4, toks: [] },
+  {
+    n: 5,
+    toks: [
+      { t: "def", c: "kw" },
+      { t: " " },
+      { t: "train", c: "fn" },
+      { t: "(cfg):", c: "op" },
+    ],
+    provenance: true,
+  },
+  {
+    n: 6,
+    toks: [
+      { t: "    model ", c: "var" },
+      { t: "= ", c: "op" },
+      { t: "build_model", c: "fn" },
+      { t: "(cfg.model)" },
+    ],
+    provenance: true,
+  },
   {
     n: 7,
-    toks: [{ t: "    wandb." }, { t: "init", c: "fn" }, { t: "(project=" }, { t: '"bonafide-train"', c: "str" }, { t: ")" }],
+    toks: [
+      { t: "    wandb." },
+      { t: "init", c: "fn" },
+      { t: "(project=" },
+      { t: '"bonafide-train"', c: "str" },
+      { t: ")" },
+    ],
     deco: { kind: "run-anchor", runId: "r1" },
     provenance: true,
   },
-  { n: 8,  toks: [{ t: "    optimizer ", c: "var" }, { t: "= ", c: "op" }, { t: "AdamW", c: "fn" }, { t: "(model." }, { t: "parameters", c: "fn" }, { t: "(), lr=" }, { t: "5e-4", c: "num" }, { t: ")" }], provenance: true },
-  { n: 9,  toks: [{ t: "    " }, { t: "# training loop", c: "com" }] },
-  { n: 10, toks: [{ t: "    for", c: "kw" }, { t: " epoch " }, { t: "in", c: "kw" }, { t: " " }, { t: "range", c: "fn" }, { t: "(cfg.epochs):" }] },
+  {
+    n: 8,
+    toks: [
+      { t: "    optimizer ", c: "var" },
+      { t: "= ", c: "op" },
+      { t: "AdamW", c: "fn" },
+      { t: "(model." },
+      { t: "parameters", c: "fn" },
+      { t: "(), lr=" },
+      { t: "5e-4", c: "num" },
+      { t: ")" },
+    ],
+    provenance: true,
+  },
+  { n: 9, toks: [{ t: "    " }, { t: "# training loop", c: "com" }] },
+  {
+    n: 10,
+    toks: [
+      { t: "    for", c: "kw" },
+      { t: " epoch " },
+      { t: "in", c: "kw" },
+      { t: " " },
+      { t: "range", c: "fn" },
+      { t: "(cfg.epochs):" },
+    ],
+  },
   {
     n: 11,
-    toks: [{ t: "        loss ", c: "var" }, { t: "= ", c: "op" }, { t: "model." }, { t: "fit", c: "fn" }, { t: "(train_loader)" }],
+    toks: [
+      { t: "        loss ", c: "var" },
+      { t: "= ", c: "op" },
+      { t: "model." },
+      { t: "fit", c: "fn" },
+      { t: "(train_loader)" },
+    ],
     deco: { kind: "live-metric", runId: "r1", metric: "loss" },
   },
-  { n: 12, toks: [{ t: "        wandb." }, { t: "log", c: "fn" }, { t: "({" }, { t: '"loss"', c: "str" }, { t: ": loss})" }] },
+  {
+    n: 12,
+    toks: [
+      { t: "        wandb." },
+      { t: "log", c: "fn" },
+      { t: "({" },
+      { t: '"loss"', c: "str" },
+      { t: ": loss})" },
+    ],
+  },
   {
     n: 13,
-    toks: [{ t: "        val_loss ", c: "var" }, { t: "= ", c: "op" }, { t: "evaluate", c: "fn" }, { t: "(model, val_loader)" }],
+    toks: [
+      { t: "        val_loss ", c: "var" },
+      { t: "= ", c: "op" },
+      { t: "evaluate", c: "fn" },
+      { t: "(model, val_loader)" },
+    ],
     deco: { kind: "metric-anchor", runId: "r1", metric: "val_loss" },
   },
-  { n: 14, toks: [{ t: "        wandb." }, { t: "log", c: "fn" }, { t: "({" }, { t: '"val_loss"', c: "str" }, { t: ": val_loss})" }] },
-  { n: 15, toks: [{ t: "        acc ", c: "var" }, { t: "= ", c: "op" }, { t: "accuracy", c: "fn" }, { t: "(model, val_loader)" }] },
-  { n: 16, toks: [{ t: "        wandb." }, { t: "log", c: "fn" }, { t: "({" }, { t: '"acc"', c: "str" }, { t: ": acc})" }] },
+  {
+    n: 14,
+    toks: [
+      { t: "        wandb." },
+      { t: "log", c: "fn" },
+      { t: "({" },
+      { t: '"val_loss"', c: "str" },
+      { t: ": val_loss})" },
+    ],
+  },
+  {
+    n: 15,
+    toks: [
+      { t: "        acc ", c: "var" },
+      { t: "= ", c: "op" },
+      { t: "accuracy", c: "fn" },
+      { t: "(model, val_loader)" },
+    ],
+  },
+  {
+    n: 16,
+    toks: [
+      { t: "        wandb." },
+      { t: "log", c: "fn" },
+      { t: "({" },
+      { t: '"acc"', c: "str" },
+      { t: ": acc})" },
+    ],
+  },
   { n: 17, toks: [] },
-  { n: 18, toks: [{ t: "    return", c: "kw" }, { t: " model", c: "var" }] },
+  {
+    n: 18,
+    toks: [
+      { t: "    return", c: "kw" },
+      { t: " model", c: "var" },
+    ],
+  },
 ]
 
 // Per-run artifact list (Inspector › Artifacts tab).
-export type Artifact = { name: string; size: string; kind: "model" | "dataset" | "plot" | "file"; action: "download" | "open" }
+export type Artifact = {
+  name: string
+  size: string
+  kind: "model" | "dataset" | "plot" | "file"
+  action: "download" | "open"
+}
 export const ARTIFACTS: Artifact[] = [
   { name: "model.ckpt", size: "412 MB", kind: "model", action: "download" },
   { name: "config.yaml", size: "2 KB", kind: "file", action: "download" },
@@ -260,15 +572,24 @@ export type Experiment = {
   bestTone: "positive" | "negative" | "neutral"
   ago: string
   leaderboard: number[]
-  topRuns: { shortHash: string; val: number; commit: string; branch: string; duration: string }[]
+  topRuns: {
+    shortHash: string
+    val: number
+    commit: string
+    branch: string
+    duration: string
+  }[]
   tags: string[]
 }
 
-export const EXPERIMENT_STATUS_META: Record<ExperimentStatus, { label: string; tone: "positive" | "negative" | "neutral" }> = {
-  active:   { label: "Active",   tone: "neutral"  },
-  won:      { label: "Won",      tone: "positive" },
-  failed:   { label: "Failed",   tone: "negative" },
-  archived: { label: "Archived", tone: "neutral"  },
+export const EXPERIMENT_STATUS_META: Record<ExperimentStatus, {
+  label: string
+  tone: "positive" | "negative" | "neutral"
+}> = {
+  active: { label: "Active", tone: "neutral" },
+  won: { label: "Won", tone: "positive" },
+  failed: { label: "Failed", tone: "negative" },
+  archived: { label: "Archived", tone: "neutral" },
 }
 
 export const EXPERIMENTS: Experiment[] = [
@@ -283,9 +604,27 @@ export const EXPERIMENTS: Experiment[] = [
     ago: "3d",
     leaderboard: series(31, 24, -1),
     topRuns: [
-      { shortHash: "bold-tnd-9",  val: 0.28, commit: "a3f9c12", branch: "main", duration: "4m12s" },
-      { shortHash: "quiet-rv-12", val: 0.31, commit: "8b2a4f0", branch: "main", duration: "6m08s" },
-      { shortHash: "swift-fl-3",  val: 0.34, commit: "8b2a4f0", branch: "main", duration: "5m44s" },
+      {
+        shortHash: "bold-tnd-9",
+        val: 0.28,
+        commit: "a3f9c12",
+        branch: "main",
+        duration: "4m12s",
+      },
+      {
+        shortHash: "quiet-rv-12",
+        val: 0.31,
+        commit: "8b2a4f0",
+        branch: "main",
+        duration: "6m08s",
+      },
+      {
+        shortHash: "swift-fl-3",
+        val: 0.34,
+        commit: "8b2a4f0",
+        branch: "main",
+        duration: "5m44s",
+      },
     ],
     tags: ["cifar", "resnet", "sweep", "lr_search"],
   },
@@ -300,8 +639,20 @@ export const EXPERIMENTS: Experiment[] = [
     ago: "1d",
     leaderboard: series(33, 7, -1),
     topRuns: [
-      { shortHash: "bold-tnd-9", val: 0.28, commit: "a3f9c12", branch: "main", duration: "4m12s" },
-      { shortHash: "bright-mt-7", val: 0.31, commit: "a3f9c12", branch: "main", duration: "4m12s" },
+      {
+        shortHash: "bold-tnd-9",
+        val: 0.28,
+        commit: "a3f9c12",
+        branch: "main",
+        duration: "4m12s",
+      },
+      {
+        shortHash: "bright-mt-7",
+        val: 0.31,
+        commit: "a3f9c12",
+        branch: "main",
+        duration: "4m12s",
+      },
     ],
     tags: ["handpicked", "baseline"],
   },
@@ -316,8 +667,20 @@ export const EXPERIMENTS: Experiment[] = [
     ago: "6d",
     leaderboard: series(37, 3, -0.4),
     topRuns: [
-      { shortHash: "lora-r8-1",  val: 0.42, commit: "c1d0e55", branch: "exp/lora", duration: "22m" },
-      { shortHash: "lora-r16-2", val: 0.47, commit: "c1d0e55", branch: "exp/lora", duration: "31m" },
+      {
+        shortHash: "lora-r8-1",
+        val: 0.42,
+        commit: "c1d0e55",
+        branch: "exp/lora",
+        duration: "22m",
+      },
+      {
+        shortHash: "lora-r16-2",
+        val: 0.47,
+        commit: "c1d0e55",
+        branch: "exp/lora",
+        duration: "31m",
+      },
     ],
     tags: ["llama", "lora", "finetune"],
   },
@@ -338,16 +701,56 @@ export const GIT_STATE = {
   ahead: 0,
   behind: 0,
   bestRun: { shortHash: "bold-tnd-9", valLoss: 0.28, runs: 24 },
-  staged: [{ status: "M", path: "src/model.py", runs: 2, best: 0.31, tone: "positive" }] as FileChange[],
-  changes: [
-    { status: "M", path: "src/train.py", runs: 3, best: 0.28, tone: "positive" },
-    { status: "M", path: "src/data.py",  runs: 1, best: null, tone: "neutral" },
+  staged: [
+    {
+      status: "M",
+      path: "src/model.py",
+      runs: 2,
+      best: 0.31,
+      tone: "positive",
+    },
   ] as FileChange[],
-  untracked: [{ status: "U", path: "configs/sweep.yaml", runs: null, best: null, tone: "neutral" }] as FileChange[],
+  changes: [
+    {
+      status: "M",
+      path: "src/train.py",
+      runs: 3,
+      best: 0.28,
+      tone: "positive",
+    },
+    { status: "M", path: "src/data.py", runs: 1, best: null, tone: "neutral" },
+  ] as FileChange[],
+  untracked: [
+    {
+      status: "U",
+      path: "configs/sweep.yaml",
+      runs: null,
+      best: null,
+      tone: "neutral",
+    },
+  ] as FileChange[],
   commits: [
-    { hash: "a3f9c12", message: "bump lr to 5e-4", runs: 2, best: 0.28, tone: "positive" as const },
-    { hash: "8b2a4f0", message: "try wider batch", runs: 1, best: 0.34, tone: "neutral" as const },
-    { hash: "8d2ee91", message: "initial commit", runs: null, best: null, tone: "neutral" as const },
+    {
+      hash: "a3f9c12",
+      message: "bump lr to 5e-4",
+      runs: 2,
+      best: 0.28,
+      tone: "positive" as const,
+    },
+    {
+      hash: "8b2a4f0",
+      message: "try wider batch",
+      runs: 1,
+      best: 0.34,
+      tone: "neutral" as const,
+    },
+    {
+      hash: "8d2ee91",
+      message: "initial commit",
+      runs: null,
+      best: null,
+      tone: "neutral" as const,
+    },
   ],
 }
 
@@ -362,29 +765,88 @@ export type WorkspaceArtifact = {
   action: "download" | "open"
 }
 
-export const ARTIFACT_KIND_META: Record<ArtifactKind, { icon: string; className: string }> = {
-  model:    { icon: "database",  className: "text-primary" },
-  dataset:  { icon: "database",  className: "text-tertiary" },
-  plot:     { icon: "image",     className: "text-secondary" },
-  config:   { icon: "file-code", className: "text-on-surface-variant" },
-  tensor:   { icon: "layers",    className: "text-primary" },
-  folder:   { icon: "folder",    className: "text-secondary" },
-  file:     { icon: "file",      className: "text-outline" },
+export const ARTIFACT_KIND_META: Record<ArtifactKind, {
+  icon: string
+  className: string
+}> = {
+  model: { icon: "database", className: "text-primary" },
+  dataset: { icon: "database", className: "text-tertiary" },
+  plot: { icon: "image", className: "text-secondary" },
+  config: { icon: "file-code", className: "text-on-surface-variant" },
+  tensor: { icon: "layers", className: "text-primary" },
+  folder: { icon: "folder", className: "text-secondary" },
+  file: { icon: "file", className: "text-outline" },
 }
 
 export const WORKSPACE_ARTIFACTS = {
   totalCount: 47,
   totalSize: "2.1 GB",
   fromRuns: [
-    { name: "model.ckpt",     run: "bold-tnd-9",  size: "412 MB", date: "2026-09-05", kind: "model",   action: "download" },
-    { name: "loss_curve.png", run: "bold-tnd-9",  size: "84 KB",  date: "2026-09-05", kind: "plot",    action: "open" },
-    { name: "config.yaml",    run: "bold-tnd-9",  size: "2 KB",   date: "2026-09-05", kind: "config",  action: "download" },
-    { name: "model.ckpt",     run: "quiet-rv-12", size: "408 MB", date: "2026-09-05", kind: "model",   action: "download" },
-    { name: "cifar10.npz",    run: "swift-fl-3",  size: "178 MB", date: "2026-09-04", kind: "dataset", action: "download" },
-    { name: "embeddings.pt",  run: "swift-fl-3",  size: "64 MB",  date: "2026-09-04", kind: "tensor",  action: "download" },
+    {
+      name: "model.ckpt",
+      run: "bold-tnd-9",
+      size: "412 MB",
+      date: "2026-09-05",
+      kind: "model",
+      action: "download",
+    },
+    {
+      name: "loss_curve.png",
+      run: "bold-tnd-9",
+      size: "84 KB",
+      date: "2026-09-05",
+      kind: "plot",
+      action: "open",
+    },
+    {
+      name: "config.yaml",
+      run: "bold-tnd-9",
+      size: "2 KB",
+      date: "2026-09-05",
+      kind: "config",
+      action: "download",
+    },
+    {
+      name: "model.ckpt",
+      run: "quiet-rv-12",
+      size: "408 MB",
+      date: "2026-09-05",
+      kind: "model",
+      action: "download",
+    },
+    {
+      name: "cifar10.npz",
+      run: "swift-fl-3",
+      size: "178 MB",
+      date: "2026-09-04",
+      kind: "dataset",
+      action: "download",
+    },
+    {
+      name: "embeddings.pt",
+      run: "swift-fl-3",
+      size: "64 MB",
+      date: "2026-09-04",
+      kind: "tensor",
+      action: "download",
+    },
   ] as WorkspaceArtifact[],
   local: [
-    { name: "latest.pt",       run: null, size: "412 MB", date: "2026-09-05", kind: "model",  action: "open" },
-    { name: "checkpoints/",    run: null, size: "—",     date: "—",         kind: "folder", action: "open" },
+    {
+      name: "latest.pt",
+      run: null,
+      size: "412 MB",
+      date: "2026-09-05",
+      kind: "model",
+      action: "open",
+    },
+    {
+      name: "checkpoints/",
+      run: null,
+      size: "—",
+      date: "—",
+      kind: "folder",
+      action: "open",
+    },
   ] as WorkspaceArtifact[],
 }

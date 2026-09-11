@@ -21,15 +21,15 @@
  * reasoning dumps or failures the user needs to read immediately).
  */
 
-import { useEffect, useRef, useState } from "react";
-import { Icon } from "../ui/Icon";
-import type { ChatMessage } from "../../chats/ChatStore";
-import { InlineContent } from "./UserMessage";
-import { ReasoningArtifact } from "./ReasoningArtifact";
+import { useEffect, useRef, useState } from "react"
+import { Icon } from "../ui/Icon"
+import type { ChatMessage } from "../../chats/ChatStore"
+import { InlineContent } from "./UserMessage"
+import { ReasoningArtifact } from "./ReasoningArtifact"
 
 /** Per-frame reveal cadence. Lower = faster; tuned for "fast" feel. */
-const TYPEWRITER_BASE_DELAY_MS = 10;
-const TYPEWRITER_PER_CHAR_DELAY_MS = 4;
+const TYPEWRITER_BASE_DELAY_MS = 10
+const TYPEWRITER_PER_CHAR_DELAY_MS = 4
 
 export function AssistantMessage({ message }: { message: ChatMessage }) {
   return (
@@ -53,7 +53,7 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
         <TypewriterText text={message.content} />
       )}
     </div>
-  );
+  )
 }
 
 /**
@@ -72,9 +72,9 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
  * immediately on demand.
  */
 function TypewriterText({ text }: { text: string }) {
-  const [revealedCount, setRevealedCount] = useState<number>(0);
-  const rafRef = useRef<number | null>(null);
-  const lastTickRef = useRef<number>(0);
+  const [revealedCount, setRevealedCount] = useState<number>(0)
+  const rafRef = useRef<number | null>(null)
+  const lastTickRef = useRef<number>(0)
 
   // Skip animation entirely for empty content and for previously-
   // revealed content (e.g. a re-render after navigation).
@@ -82,35 +82,32 @@ function TypewriterText({ text }: { text: string }) {
   // (Phase 3 streaming — not wired yet).
 
   useEffect(() => {
-    if (revealedCount >= text.length) return;
+    if (revealedCount >= text.length) return
     function snap() {
-      setRevealedCount(text.length);
+      setRevealedCount(text.length)
     }
-    document.addEventListener("mousedown", snap, { once: true });
-    document.addEventListener("keydown", snap, { once: true });
-    document.addEventListener(
-      "scroll",
-      snap,
-      { once: true, capture: true } as AddEventListenerOptions,
-    );
+    document.addEventListener("mousedown", snap, { once: true })
+    document.addEventListener("keydown", snap, { once: true })
+    document.addEventListener("scroll", snap, {
+      once: true,
+      capture: true,
+    } as AddEventListenerOptions)
     return () => {
-      document.removeEventListener("mousedown", snap);
-      document.removeEventListener("keydown", snap);
-      document.removeEventListener(
-        "scroll",
-        snap,
-        { capture: true } as EventListenerOptions,
-      );
-    };
-  }, [text, revealedCount]);
+      document.removeEventListener("mousedown", snap)
+      document.removeEventListener("keydown", snap)
+      document.removeEventListener("scroll", snap, {
+        capture: true,
+      } as EventListenerOptions)
+    }
+  }, [text, revealedCount])
 
   useEffect(() => {
     // Empty text or already revealed: nothing to animate.
-    if (text.length === 0 || revealedCount >= text.length) return;
+    if (text.length === 0 || revealedCount >= text.length) return
 
     function step(timestamp: number) {
-      if (!lastTickRef.current) lastTickRef.current = timestamp;
-      const delta = timestamp - lastTickRef.current;
+      if (!lastTickRef.current) lastTickRef.current = timestamp
+      const delta = timestamp - lastTickRef.current
       // Reveal multiple characters per frame based on elapsed time
       // — keeps the perceived speed constant on high-refresh displays
       // and avoids dropping to 1 char/frame on slow ones.
@@ -118,26 +115,26 @@ function TypewriterText({ text }: { text: string }) {
         const charsThisTick = Math.max(
           1,
           Math.floor(delta / TYPEWRITER_PER_CHAR_DELAY_MS),
-        );
-        setRevealedCount((c) => Math.min(text.length, c + charsThisTick));
-        lastTickRef.current = timestamp;
+        )
+        setRevealedCount((c) => Math.min(text.length, c + charsThisTick))
+        lastTickRef.current = timestamp
       }
-      rafRef.current = requestAnimationFrame(step);
+      rafRef.current = requestAnimationFrame(step)
     }
-    rafRef.current = requestAnimationFrame(step);
+    rafRef.current = requestAnimationFrame(step)
     return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-      lastTickRef.current = 0;
-    };
-  }, [text, revealedCount]);
+      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
+      rafRef.current = null
+      lastTickRef.current = 0
+    }
+  }, [text, revealedCount])
 
   // When the text changes mid-stream (Phase 3 / future streaming),
   // the new `text` may have grown; reveal from the previous length
   // so we don't replay characters the user already saw. Today the
   // message is delivered whole so this branch fires once on mount.
-  const isComplete = revealedCount >= text.length;
-  const visibleText = isComplete ? text : text.slice(0, revealedCount);
+  const isComplete = revealedCount >= text.length
+  const visibleText = isComplete ? text : text.slice(0, revealedCount)
 
   return (
     <div className="font-body text-[13px] leading-[20px] text-on-surface">
@@ -151,18 +148,18 @@ function TypewriterText({ text }: { text: string }) {
         />
       ) : null}
     </div>
-  );
+  )
 }
 
 function formatMessageTime(ts: number): string {
-  const d = new Date(ts);
+  const d = new Date(ts)
   return d.toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
     hourCycle: "h23",
-  });
+  })
 }
 
 function ErrorBubble({ error }: { error: string }) {
@@ -176,5 +173,5 @@ function ErrorBubble({ error }: { error: string }) {
         {error}
       </p>
     </div>
-  );
+  )
 }

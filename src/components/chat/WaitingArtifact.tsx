@@ -17,16 +17,16 @@
  * action is global to the thread.
  */
 
-import { Icon } from "../ui/Icon";
+import { Icon } from "../ui/Icon"
 
 export function WaitingArtifact({
   agentLabel,
   onCancel,
-}: {
   /** Display name of the agent/mode we're waiting on, e.g. "Debugger agent". */
-  agentLabel: string;
   /** Called when the user hits Esc or clicks the inline cancel link. */
-  onCancel?: () => void;
+}: {
+  agentLabel: string
+  onCancel?: () => void
 }) {
   return (
     <div className="flex min-w-0 max-w-full animate-fade-in flex-col items-start gap-1">
@@ -103,5 +103,5 @@ export function WaitingArtifact({
         <span>to cancel</span>
       </div>
     </div>
-  );
+  )
 }

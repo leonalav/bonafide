@@ -22,7 +22,7 @@
  * uses the same names so that converting a `ChatMessage` to an
  * API-bound message is a straight `role: m.role` copy.
  */
-export type ChatRole = "user" | "assistant" | "system";
+export type ChatRole = "user" | "assistant" | "system"
 
 // ── Request ──────────────────────────────────────────────────────────────────
 
@@ -38,22 +38,19 @@ export type ChatRole = "user" | "assistant" | "system";
  * message without attachments and an array for messages with
  * attachments.
  */
-export type ApiContentPart =
-  | { type: "text"; text: string }
-  | {
-      type: "image_url";
-      image_url: { url: string; detail?: "auto" | "low" | "high" };
-    }
-  | {
-      /**
-       * Generic file part. Some OpenAI-compatible endpoints (vLLM,
-       * OpenRouter, Anthropic-via-proxy) accept this; vanilla
-       * OpenAI rejects it. `client.ts` falls back gracefully when
-       * the provider returns 400 on `file` parts.
-       */
-      type: "file";
-      file: { filename: string; file_data: string };
-    };
+export type ApiContentPart = { type: "text" text: string } | {
+  type: "image_url"
+  image_url: { url: string detail?: "auto" | "low" | "high" }
+} | {
+  /**
+   * Generic file part. Some OpenAI-compatible endpoints (vLLM,
+   * OpenRouter, Anthropic-via-proxy) accept this; vanilla
+   * OpenAI rejects it. `client.ts` falls back gracefully when
+   * the provider returns 400 on `file` parts.
+   */
+  type: "file"
+  file: { filename: string file_data: string }
+}
 
 /**
  * One message in the conversation history sent to the model.
@@ -65,9 +62,9 @@ export type ApiContentPart =
  * modelled here yet — they land with Phase 2's tool-calling work.
  */
 export type ApiChatMessage = {
-  role: ChatRole;
-  content: string | ApiContentPart[];
-};
+  role: ChatRole
+  content: string | ApiContentPart[]
+}
 
 export type ChatRequest = {
   /**
@@ -77,16 +74,16 @@ export type ChatRequest = {
    * `Error("No chat endpoint configured…")` so the user gets a
    * visible error instead of a silent no-op.
    */
-  endpoint: import("../modelsStore").ModelEndpoint | null;
+  endpoint: import("../modelsStore").ModelEndpoint | null
   /** Model ID sent as the `model` field, e.g. "claude-3-5-sonnet-20241022". */
-  model: string;
+  model: string
   /** Conversation history to send. Only `user` and `assistant` turns are forwarded. */
-  messages: ApiChatMessage[];
+  messages: ApiChatMessage[]
   /** AbortSignal for cancel support (Stop button). */
-  signal?: AbortSignal;
+  signal?: AbortSignal
   /** Optional override for the request temperature. Defaults to 0.2 for stability. */
-  temperature?: number;
-};
+  temperature?: number
+}
 
 // ── Response ─────────────────────────────────────────────────────────────────
 
@@ -97,34 +94,34 @@ export type ChatRequest = {
  * o-series. Both shapes are accepted in `client.ts`.
  */
 export type ApiChoiceMessage = {
-  role?: "assistant";
+  role?: "assistant"
   /** The visible reply text. May be empty for tool-calling responses (Phase 2). */
-  content: string | null;
+  content: string | null
   /** Reasoning chain. Provider-dependent naming; see `client.ts`. */
-  reasoning_content?: string | null;
-  reasoning?: string | null;
-};
+  reasoning_content?: string | null
+  reasoning?: string | null
+}
 
 export type ApiChoice = {
-  index: number;
-  message: ApiChoiceMessage;
-  finish_reason?: string;
-};
+  index: number
+  message: ApiChoiceMessage
+  finish_reason?: string
+}
 
 export type ApiUsage = {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  total_tokens?: number;
-};
+  prompt_tokens?: number
+  completion_tokens?: number
+  total_tokens?: number
+}
 
 export type ApiChatResponse = {
-  id?: string;
-  object?: string;
-  created?: number;
-  model?: string;
-  choices: ApiChoice[];
-  usage?: ApiUsage;
-};
+  id?: string
+  object?: string
+  created?: number
+  model?: string
+  choices: ApiChoice[]
+  usage?: ApiUsage
+}
 
 // ── Normalised output ────────────────────────────────────────────────────────
 
@@ -136,12 +133,12 @@ export type ApiChatResponse = {
  */
 export type ChatResponse = {
   /** Visible assistant reply. Empty string is allowed (degenerate cases). */
-  content: string;
+  content: string
   /** Reasoning text, if the model returned it in any supported shape. */
-  reasoning?: string;
+  reasoning?: string
   /** Tokens used, when the provider reports them. UI may display this later. */
-  usage?: ApiUsage;
-};
+  usage?: ApiUsage
+}
 
 // ── Phase-2 stubs (not implemented in Phase 1) ───────────────────────────────
 //
@@ -150,19 +147,19 @@ export type ChatResponse = {
 // introducing a parallel request shape.
 
 export type ToolDefinition = {
-  type: "function";
+  type: "function"
   function: {
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  };
-};
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
 
 export type ToolCall = {
-  id: string;
-  type: "function";
+  id: string
+  type: "function"
   function: {
-    name: string;
-    arguments: string;
-  };
-};
+    name: string
+    arguments: string
+  }
+}

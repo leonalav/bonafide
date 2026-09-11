@@ -25,9 +25,9 @@ import {
   useMemo,
   useState,
   type ReactNode,
-} from "react";
-import { bonafide } from "../ipc/tauri";
-import type { RunSummary, RunPage, TrackerKind } from "../ipc/tauri";
+} from "react"
+import { bonafide } from "../ipc/tauri"
+import type { RunSummary, RunPage, TrackerKind } from "../ipc/tauri"
 
 export {
   type Run,
@@ -53,18 +53,18 @@ export {
   WORKSPACES,
   GIT_STATE,
   series as generateSeries,
-} from "./artifacts";
+} from "./artifacts"
 
-import { RUNS as MOCK_RUNS, type Run, type RunState } from "./artifacts";
+import { RUNS as MOCK_RUNS, type Run, type RunState } from "./artifacts"
 
 // ── useRuns hook ────────────────────────────────────────────────────────────
 
 export type UseRunsResult = {
-  runs: RunSummary[];
-  loading: boolean;
-  error: string | null;
-  refetch: () => void;
-};
+  runs: RunSummary[]
+  loading: boolean
+  error: string | null
+  refetch: () => void
+}
 
 /**
  * Fetch runs for a project from the Tauri backend.
@@ -88,19 +88,19 @@ export function useRuns(
   workspaceRoot: string | null,
   trackerKind: TrackerKind | null,
 ): UseRunsResult {
-  const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [loading, setLoading] = useState(workspaceRoot != null);
-  const [error, setError] = useState<string | null>(null);
+  const [runs, setRuns] = useState<RunSummary[]>([])
+  const [loading, setLoading] = useState(workspaceRoot != null)
+  const [error, setError] = useState<string | null>(null)
 
   const fetchRuns = useCallback(async () => {
     if (!workspaceRoot) {
-      setRuns([]);
-      setLoading(false);
-      setError(null);
-      return;
+      setRuns([])
+      setLoading(false)
+      setError(null)
+      return
     }
-    setLoading(true);
-    setError(null);
+    setLoading(true)
+    setError(null)
     try {
       const page: RunPage = await bonafide.tracker.listRuns(
         trackerKind || "wandb",
@@ -108,21 +108,21 @@ export function useRuns(
         projectName,
         50,
         undefined,
-      );
-      setRuns(page.runs);
+      )
+      setRuns(page.runs)
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      setRuns([]);
+      setError(err instanceof Error ? err.message : String(err))
+      setRuns([])
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
-  }, [projectName, workspaceRoot, trackerKind]);
+  }, [projectName, workspaceRoot, trackerKind])
 
   useEffect(() => {
-    void fetchRuns();
-  }, [fetchRuns]);
+    void fetchRuns()
+  }, [fetchRuns])
 
-  return { runs, loading, error, refetch: fetchRuns };
+  return { runs, loading, error, refetch: fetchRuns }
 }
 
 // ── RunsProvider ────────────────────────────────────────────────────────────
@@ -137,36 +137,36 @@ export function useRuns(
 type RunsContextValue = {
   /** Rich runs shape used by `ChartTab`, `ExperimentsTab`, `RunTimeline`,
    *  `App.tsx` (Inspector picker), and `Inspector` itself. */
-  runs: Run[];
+  runs: Run[]
   /** Lightweight summaries straight from the backend, useful for
    *  surfaces that only need id+name+state (sidebar count, etc.). */
-  summaries: RunSummary[];
-  loading: boolean;
-  error: string | null;
-  refetch: () => void;
+  summaries: RunSummary[]
+  loading: boolean
+  error: string | null
+  refetch: () => void
   /** True when a workspace is open but no tracker has been connected
    *  for it yet. Surfaces a "no tracker" state in panels without
    *  pretending the backend has zero runs. */
-  noTrackerConnected: boolean;
-};
+  noTrackerConnected: boolean
+}
 
-const RunsContext = createContext<RunsContextValue | null>(null);
+const RunsContext = createContext<RunsContextValue | null>(null)
 
 export type RunsProviderProps = {
   /** Project name (W&B project or MLflow experiment). Default `"bonafide-train"`. */
-  projectName?: string;
+  projectName?: string
   /** Workspace root from `useWorkspaceRoot()`. Pass `null` when no
    *  workspace is open. */
-  workspaceRoot: string | null;
+  workspaceRoot: string | null
   /** Which tracker backend to query. Pass `null` when no tracker is
    *  connected for the active workspace — `useRuns` will then default
    *  to "wandb" for the IPC call (so the renderer keeps responding)
    *  while `useRunsStatus` reports `noTrackerConnected: true` so the
    *  UI can show a "connect a tracker" hint instead of an empty
    *  runs table. */
-  trackerKind?: TrackerKind | null;
-  children: ReactNode;
-};
+  trackerKind?: TrackerKind | null
+  children: ReactNode
+}
 
 /**
  * Mount once at the App root. Calls `useRuns` so the live IPC is
@@ -178,18 +178,18 @@ export function RunsProvider({
   trackerKind = null,
   children,
 }: RunsProviderProps) {
-  const live = useRuns(projectName, workspaceRoot, trackerKind);
+  const live = useRuns(projectName, workspaceRoot, trackerKind)
 
   // A workspace is open but the user hasn't connected any tracker
   // for it yet — surface that distinctly from "tracker returned 0
   // runs" so panels can render the right empty state.
-  const noTrackerConnected = workspaceRoot != null && trackerKind == null;
+  const noTrackerConnected = workspaceRoot != null && trackerKind == null
 
   const value = useMemo<RunsContextValue>(() => {
     // Live mode: backend returned at least one row → use them.
     // The current PHASE0-TODO stub returns []; until Phase 1 the
     // fallback path keeps every panel rendering.
-    const summaries = live.runs;
+    const summaries = live.runs
     const runs: Run[] = summaries.length
       ? summaries.map((s) => ({
           // Minimal adapter. The current consumers reach into
@@ -227,7 +227,7 @@ export function RunsProvider({
               .map(([k, v]) => [k, v as string | number]),
           ),
         }))
-      : MOCK_RUNS;
+      : MOCK_RUNS
 
     return {
       runs,
@@ -236,16 +236,16 @@ export function RunsProvider({
       error: live.error,
       refetch: live.refetch,
       noTrackerConnected,
-    };
-  }, [live.runs, live.loading, live.error, live.refetch, noTrackerConnected]);
+    }
+  }, [live.runs, live.loading, live.error, live.refetch, noTrackerConnected])
 
-  return <RunsContext.Provider value={value}>{children}</RunsContext.Provider>;
+  return <RunsContext.Provider value={value}>{children}</RunsContext.Provider>
 }
 
 /** Read the rich `Run[]` from the nearest `RunsProvider`. */
 export function useRunsData(): Run[] {
-  const ctx = useContext(RunsContext);
-  return ctx?.runs ?? MOCK_RUNS;
+  const ctx = useContext(RunsContext)
+  return ctx?.runs ?? MOCK_RUNS
 }
 
 /** Normalize the backend `RunSummary.state` string to the renderer's
@@ -254,7 +254,7 @@ export function useRunsData(): Run[] {
  *  `"finished"` so the row still renders instead of crashing the
  *  adapter. */
 function normalizeRunState(raw: string): RunState {
-  const s = (raw || "").toLowerCase();
+  const s = (raw || "").toLowerCase()
   if (
     s === "running" ||
     s === "finished" ||
@@ -262,24 +262,24 @@ function normalizeRunState(raw: string): RunState {
     s === "crashed" ||
     s === "queued"
   ) {
-    return s as RunState;
+    return s as RunState
   }
-  return "finished";
+  return "finished"
 }
 
 /** Read lightweight tracker state for surfaces that just want to know
  *  whether the live fetch is in flight / errored / has no tracker. */
 export function useRunsStatus(): {
-  loading: boolean;
-  error: string | null;
-  count: number;
-  noTrackerConnected: boolean;
+  loading: boolean
+  error: string | null
+  count: number
+  noTrackerConnected: boolean
 } {
-  const ctx = useContext(RunsContext);
+  const ctx = useContext(RunsContext)
   return {
     loading: ctx?.loading ?? false,
     error: ctx?.error ?? null,
     count: ctx?.summaries.length ?? 0,
     noTrackerConnected: ctx?.noTrackerConnected ?? false,
-  };
+  }
 }

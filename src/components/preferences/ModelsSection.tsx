@@ -1,33 +1,31 @@
-import { useState } from "react";
-import { Icon } from "../ui/Icon";
-import { Button } from "../ui/primitives";
-import { Card, CardHeader, Checkbox, Field } from "../ui/controls";
+import { useState } from "react"
+import { Icon } from "../ui/Icon"
+import { Button } from "../ui/primitives"
+import { Card, CardHeader, Checkbox, Field } from "../ui/controls"
 import {
   useModelsStore,
   BUILT_IN_MODELS,
   type ModelEndpoint,
   type BuiltInModel,
-} from "../../modelsStore";
+} from "../../modelsStore"
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 function uid(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
 }
 
-type TestStatus = "idle" | "testing" | "ok" | "error";
+type TestStatus = "idle" | "testing" | "ok" | "error"
 
 function StatusDot({ status }: { status: TestStatus }) {
-  if (status === "idle") return null;
+  if (status === "idle") return null
   const color =
     status === "ok"
       ? "bg-primary"
       : status === "error"
         ? "bg-error"
-        : "bg-outline animate-pulse";
-  return (
-    <span className={`inline-block h-2 w-2 rounded-full ${color}`} />
-  );
+        : "bg-outline animate-pulse"
+  return <span className={`inline-block h-2 w-2 rounded-full ${color}`} />
 }
 
 // ─── Endpoint form row ────────────────────────────────────────────────────────
@@ -37,56 +35,56 @@ function EndpointForm({
   onSave,
   onCancel,
 }: {
-  initial?: Partial<ModelEndpoint>;
-  onSave: (ep: ModelEndpoint) => void;
-  onCancel: () => void;
+  initial?: Partial<ModelEndpoint>
+  onSave: (ep: ModelEndpoint) => void
+  onCancel: () => void
 }) {
-  const [label, setLabel] = useState(initial?.label ?? "");
-  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
-  const [apiKey, setApiKey] = useState(initial?.apiKey ?? "");
+  const [label, setLabel] = useState(initial?.label ?? "")
+  const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "")
+  const [apiKey, setApiKey] = useState(initial?.apiKey ?? "")
   const [defaultModel, setDefaultModel] = useState(
     initial?.defaultModel ?? "claude-3-5-sonnet-20241022",
-  );
+  )
 
-  const [testStatus, setTestStatus] = useState<TestStatus>("idle");
-  const [testMsg, setTestMsg] = useState("");
+  const [testStatus, setTestStatus] = useState<TestStatus>("idle")
+  const [testMsg, setTestMsg] = useState("")
 
   async function test() {
-    if (!baseUrl) return;
-    setTestStatus("testing");
-    setTestMsg("");
+    if (!baseUrl) return
+    setTestStatus("testing")
+    setTestMsg("")
     try {
       const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-      });
+      })
       if (res.ok) {
-        setTestStatus("ok");
-        setTestMsg("Connection successful.");
+        setTestStatus("ok")
+        setTestMsg("Connection successful.")
       } else {
-        setTestStatus("error");
-        setTestMsg(`HTTP ${res.status}: ${res.statusText}`);
+        setTestStatus("error")
+        setTestMsg(`HTTP ${res.status}: ${res.statusText}`)
       }
     } catch (e) {
-      setTestStatus("error");
-      setTestMsg(e instanceof Error ? e.message : "Connection failed.");
+      setTestStatus("error")
+      setTestMsg(e instanceof Error ? e.message : "Connection failed.")
     }
   }
 
   function save() {
-    if (!label || !baseUrl) return;
+    if (!label || !baseUrl) return
     onSave({
       id: initial?.id ?? uid(),
       label: label.trim(),
       baseUrl: baseUrl.trim(),
       apiKey: apiKey.trim(),
       defaultModel: defaultModel.trim(),
-    });
+    })
   }
 
-  const canSave = label.trim() && baseUrl.trim();
+  const canSave = label.trim() && baseUrl.trim()
 
   return (
     <div className="flex flex-col gap-3 rounded-lg border border-outline-variant bg-surface-container-low p-4">
@@ -188,7 +186,7 @@ function EndpointForm({
         </Field>
       </div>
     </div>
-  );
+  )
 }
 
 // ─── Endpoint list row ────────────────────────────────────────────────────────
@@ -200,13 +198,13 @@ function EndpointRow({
   onEdit,
   onDelete,
 }: {
-  ep: ModelEndpoint;
-  isSelected: boolean;
-  onSelect: () => void;
-  onEdit: () => void;
-  onDelete: () => void;
+  ep: ModelEndpoint
+  isSelected: boolean
+  onSelect: () => void
+  onEdit: () => void
+  onDelete: () => void
 }) {
-  const [hovered, setHovered] = useState(false);
+  const [hovered, setHovered] = useState(false)
   return (
     <div
       onMouseEnter={() => setHovered(true)}
@@ -263,7 +261,7 @@ function EndpointRow({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 // ─── ModelsSection ─────────────────────────────────────────────────────────────
@@ -276,24 +274,24 @@ export function ModelsSection() {
     addEndpoint,
     removeEndpoint,
     updateEndpoint,
-  } = useModelsStore();
+  } = useModelsStore()
 
-  const [showForm, setShowForm] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null)
 
   function handleSave(ep: ModelEndpoint) {
     if (editingId) {
-      updateEndpoint(ep.id, ep);
-      setEditingId(null);
+      updateEndpoint(ep.id, ep)
+      setEditingId(null)
     } else {
-      addEndpoint(ep);
+      addEndpoint(ep)
     }
-    setShowForm(false);
+    setShowForm(false)
   }
 
   function handleSelect(id: string | null) {
-    selectEndpoint(id);
+    selectEndpoint(id)
   }
 
   return (
@@ -314,7 +312,9 @@ export function ModelsSection() {
           ))}
         </div>
         <div className="my-3 h-px bg-outline-variant/60" />
-        <div className="label-caps mb-2 text-outline">Model selection behaviour</div>
+        <div className="label-caps mb-2 text-outline">
+          Model selection behaviour
+        </div>
         <Checkbox
           label="Use built-in models by default"
           description="When no custom endpoint is selected, route all agent requests to Bonafide's default endpoint."
@@ -332,8 +332,8 @@ export function ModelsSection() {
                 variant="secondary"
                 size="sm"
                 onClick={() => {
-                  setEditingId(null);
-                  setShowForm(true);
+                  setEditingId(null)
+                  setShowForm(true)
                 }}
               >
                 <Icon name="plus" size={13} />
@@ -343,17 +343,13 @@ export function ModelsSection() {
           }
         />
         <p className="mb-3 font-body text-[13px] text-on-surface-variant">
-          Add OpenAI-compatible endpoints for self-hosted or third-party model providers
-          (LM Studio, vLLM, Groq, Fireworks AI, etc.).
+          Add OpenAI-compatible endpoints for self-hosted or third-party model
+          providers (LM Studio, vLLM, Groq, Fireworks AI, etc.).
         </p>
 
         {config.endpoints.length === 0 && !showForm && (
           <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-outline-variant py-8 text-center">
-            <Icon
-              name="cpu"
-              size={28}
-              className="text-outline-variant"
-            />
+            <Icon name="cpu" size={28} className="text-outline-variant" />
             <p className="font-body text-[13px] text-on-surface-variant">
               No custom endpoints configured.
             </p>
@@ -361,8 +357,8 @@ export function ModelsSection() {
               variant="secondary"
               size="sm"
               onClick={() => {
-                setEditingId(null);
-                setShowForm(true);
+                setEditingId(null)
+                setShowForm(true)
               }}
             >
               <Icon name="plus" size={13} />
@@ -379,27 +375,27 @@ export function ModelsSection() {
                 initial={ep}
                 onSave={handleSave}
                 onCancel={() => {
-                  setEditingId(null);
-                  setShowForm(false);
+                  setEditingId(null)
+                  setShowForm(false)
                 }}
               />
-            );
+            )
           }
           return (
             <EndpointRow
               key={ep.id}
               ep={ep}
               isSelected={config.selectedEndpointId === ep.id}
-              onSelect={() => handleSelect(
-                config.selectedEndpointId === ep.id ? null : ep.id,
-              )}
+              onSelect={() =>
+                handleSelect(config.selectedEndpointId === ep.id ? null : ep.id)
+              }
               onEdit={() => {
-                setEditingId(ep.id);
-                setShowForm(true);
+                setEditingId(ep.id)
+                setShowForm(true)
               }}
               onDelete={() => setDeleteConfirm(ep.id)}
             />
-          );
+          )
         })}
 
         {showForm && !editingId && (
@@ -407,8 +403,8 @@ export function ModelsSection() {
             <EndpointForm
               onSave={handleSave}
               onCancel={() => {
-                setShowForm(false);
-                setEditingId(null);
+                setShowForm(false)
+                setEditingId(null)
               }}
             />
           </div>
@@ -418,8 +414,8 @@ export function ModelsSection() {
           <>
             <div className="my-3 h-px bg-outline-variant/60" />
             <p className="font-body text-[12px] text-outline">
-              Selected endpoint is used for all agent requests. Deselect to
-              fall back to the built-in default.
+              Selected endpoint is used for all agent requests. Deselect to fall
+              back to the built-in default.
             </p>
           </>
         )}
@@ -429,11 +425,11 @@ export function ModelsSection() {
       <Card>
         <CardHeader title="Request format" />
         <p className="mb-3 font-body text-[13px] text-on-surface-variant">
-          Bonafide sends chat completions requests to the configured endpoint using
-          the OpenAI Chat Completions API shape:
+          Bonafide sends chat completions requests to the configured endpoint
+          using the OpenAI Chat Completions API shape:
         </p>
         <pre className="overflow-x-auto rounded border border-outline-variant bg-surface-container-low p-3 font-mono text-[12px] leading-5 text-on-surface-variant">
-{`POST {base_url}/chat/completions
+          {`POST {base_url}/chat/completions
 Authorization: Bearer {api_key}
 Content-Type: application/json
 
@@ -447,7 +443,11 @@ Content-Type: application/json
 }`}
         </pre>
         <div className="mt-3 flex gap-2">
-          <Checkbox label="Stream responses (SSE)" description="Not yet supported — responses are always buffered." defaultChecked />
+          <Checkbox
+            label="Stream responses (SSE)"
+            description="Not yet supported — responses are always buffered."
+            defaultChecked
+          />
         </div>
       </Card>
 
@@ -478,8 +478,8 @@ Content-Type: application/json
               <Button
                 variant="danger"
                 onClick={() => {
-                  removeEndpoint(deleteConfirm);
-                  setDeleteConfirm(null);
+                  removeEndpoint(deleteConfirm)
+                  setDeleteConfirm(null)
                 }}
               >
                 Delete
@@ -489,7 +489,7 @@ Content-Type: application/json
         </div>
       )}
     </div>
-  );
+  )
 }
 
 // ─── Built-in model row (inside preferences panel) ─────────────────────────────
@@ -498,8 +498,8 @@ function BuiltInModelRow({
   model,
   active,
 }: {
-  model: BuiltInModel;
-  active: boolean;
+  model: BuiltInModel
+  active: boolean
 }) {
   return (
     <div
@@ -521,11 +521,13 @@ function BuiltInModelRow({
         <span className="font-body text-[13px] font-medium text-on-surface">
           {model.name}
         </span>
-        <span className="font-sans text-[11px] text-outline">{model.badge}</span>
+        <span className="font-sans text-[11px] text-outline">
+          {model.badge}
+        </span>
         <span className="mt-0.5 font-body text-[12px] text-outline">
           {model.description}
         </span>
       </div>
     </div>
-  );
+  )
 }

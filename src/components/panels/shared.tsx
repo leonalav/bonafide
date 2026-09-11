@@ -1,14 +1,20 @@
-import type { ReactNode } from "react";
-import { Icon } from "../ui/Icon";
+import type { ReactNode } from "react"
+import { Icon } from "../ui/Icon"
 
 // Shared 36px panel header — label-caps title, right-aligned icon actions.
-export function PanelHeader({ title, right }: { title: string; right?: ReactNode }) {
+export function PanelHeader({
+  title,
+  right,
+}: {
+  title: string
+  right?: ReactNode
+}) {
   return (
     <div className="flex h-9 shrink-0 items-center justify-between border-b border-outline-variant px-3">
       <span className="label-caps text-on-surface-variant">{title}</span>
       <div className="flex items-center gap-2 text-outline">{right}</div>
     </div>
-  );
+  )
 }
 
 export function PanelSearch({ placeholder }: { placeholder: string }) {
@@ -20,11 +26,19 @@ export function PanelSearch({ placeholder }: { placeholder: string }) {
         placeholder={placeholder}
       />
     </div>
-  );
+  )
 }
 
 // Small pill-style select stand-in used across filter rows.
-export function FilterSelect({ label, icon = "chevron-down", onClick }: { label: string; icon?: string; onClick?: () => void }) {
+export function FilterSelect({
+  label,
+  icon = "chevron-down",
+  onClick,
+}: {
+  label: string
+  icon?: string
+  onClick?: () => void
+}) {
   return (
     <button
       onClick={onClick}
@@ -33,5 +47,5 @@ export function FilterSelect({ label, icon = "chevron-down", onClick }: { label:
       {label}
       <Icon name={icon} size={11} />
     </button>
-  );
+  )
 }

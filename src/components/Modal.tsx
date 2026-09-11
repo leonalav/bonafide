@@ -8,55 +8,78 @@
  * Visual: backdrop-blur-xl scrim + glassmorphism panel (same as ContextMenu).
  */
 
-import { useEffect, useRef } from "react";
-import { createPortal } from "react-dom";
-import type { ModalState } from "../ide/store.tsx";
-import { Button } from "./ui/primitives";
+import { useEffect, useRef } from "react"
+
+import { createPortal } from "react-dom"
+
+import type { ModalState } from "../ide/store.tsx"
+
+import { Button } from "./ui/primitives"
 
 // ── Component ──────────────────────────────────────────────────────────────
 
 export function Modal({
   modal,
+
   onConfirmDelete,
+
   onCancelDelete,
+
   onCloseDirtyCancel,
+
   onCloseDirtyDontSave,
+
   onCloseDirtySave,
+
   onClose,
 }: {
-  modal: ModalState;
-  onConfirmDelete: () => void;
-  onCancelDelete: () => void;
-  onCloseDirtyCancel: () => void;
-  onCloseDirtyDontSave: () => void;
-  onCloseDirtySave: () => void;
-  onClose: () => void;
+  modal: ModalState
+
+  onConfirmDelete: () => void
+
+  onCancelDelete: () => void
+
+  onCloseDirtyCancel: () => void
+
+  onCloseDirtyDontSave: () => void
+
+  onCloseDirtySave: () => void
+
+  onClose: () => void
 }) {
-  const panelRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null)
 
   // Escape to cancel, focus first button
+
   useEffect(() => {
-    if (!modal) return;
-    const currentModal = modal;
+    if (!modal) return
+
+    const currentModal = modal
+
     const firstBtn = panelRef.current?.querySelector<HTMLButtonElement>(
       "button:not([disabled])",
-    );
-    firstBtn?.focus();
+    )
+
+    firstBtn?.focus()
 
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
-        e.preventDefault();
-        if (currentModal.kind === "delete") onCancelDelete();
-        else onCloseDirtyCancel();
+        e.preventDefault()
+
+        if (currentModal.kind === "delete") onCancelDelete()
+        else onCloseDirtyCancel()
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [modal, onCancelDelete, onCloseDirtyCancel]);
 
-  if (!modal) return null;
+    window.addEventListener("keydown", onKey)
+
+    return () => window.removeEventListener("keydown", onKey)
+  }, [modal, onCancelDelete, onCloseDirtyCancel])
+
+  if (!modal) return null
 
   // Delete variant
+
   if (modal.kind === "delete") {
     return createPortal(
       <div
@@ -65,7 +88,7 @@ export function Modal({
         aria-labelledby="modal-title"
         className="fixed inset-0 z-[9990] flex items-center justify-center bg-black/40 px-4"
         onClick={(e) => {
-          if (e.target === e.currentTarget) onCancelDelete();
+          if (e.target === e.currentTarget) onCancelDelete()
         }}
       >
         <div
@@ -83,7 +106,9 @@ export function Modal({
           </h2>
           <p className="px-4 py-3 font-body text-[14px] leading-[20px] text-on-surface-variant">
             {modal.isFolder
-              ? `This will permanently delete the folder and ${modal.descendantCount} item${modal.descendantCount === 1 ? "" : "s"} inside.`
+              ? `This will permanently delete the folder and ${modal.descendantCount} item${
+                  modal.descendantCount === 1 ? "" : "s"
+                } inside.`
               : "This will permanently delete the file. This action cannot be undone."}
           </p>
           <div className="flex justify-end gap-2 px-4 pb-4">
@@ -100,11 +125,13 @@ export function Modal({
           </div>
         </div>
       </div>,
+
       document.body,
-    );
+    )
   }
 
   // closeDirty variant
+
   return createPortal(
     <div
       role="dialog"
@@ -112,7 +139,7 @@ export function Modal({
       aria-labelledby="modal-title"
       className="fixed inset-0 z-[9990] flex items-center justify-center bg-black/40 px-4"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onCloseDirtyCancel();
+        if (e.target === e.currentTarget) onCloseDirtyCancel()
       }}
     >
       <div
@@ -142,6 +169,7 @@ export function Modal({
         </div>
       </div>
     </div>,
+
     document.body,
-  );
+  )
 }

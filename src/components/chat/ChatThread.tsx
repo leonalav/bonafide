@@ -24,14 +24,14 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
-} from "react";
-import type { ChatMessage } from "../../chats/ChatStore";
-import { UserMessage } from "./UserMessage";
-import { AssistantMessage } from "./AssistantMessage";
-import { SystemMessage } from "./SystemMessage";
-import { WaitingArtifact } from "./WaitingArtifact";
+} from "react"
+import type { ChatMessage } from "../../chats/ChatStore"
+import { UserMessage } from "./UserMessage"
+import { AssistantMessage } from "./AssistantMessage"
+import { SystemMessage } from "./SystemMessage"
+import { WaitingArtifact } from "./WaitingArtifact"
 
-const STICK_TO_BOTTOM_PX = 80;
+const STICK_TO_BOTTOM_PX = 80
 
 export type ChatThreadHandle = {
   /**
@@ -39,90 +39,80 @@ export type ChatThreadHandle = {
    * the top of the visible area. Used by the user-message Return
    * affordance to rewind the thread.
    */
-  scrollToMessage: (id: string) => void;
-};
+  scrollToMessage: (id: string) => void
+}
 
-export const ChatThread = forwardRef<
-  ChatThreadHandle,
-  {
-    messages: ChatMessage[];
-    sending: boolean;
-    /** Display name for the agent we're waiting on (e.g. "Debugger agent"). */
-    agentLabel: string;
-    /** Called when the user clicks the inline cancel pill on the Waiting card. */
-    onCancel?: () => void;
-    /** Rewind the thread to just before this message and re-run it. */
-    onReturn?: (message: ChatMessage) => void;
-    /**
-     * Commit a new value for an inline-edited bubble. The parent is
-     * expected to truncate everything after the message and re-run the
-     * completion request — the bubble itself does NOT persist.
-     */
-    onCommitMessage?: (message: ChatMessage, newContent: string) => void;
-  }
->(function ChatThread(
-  {
-    messages,
-    sending,
-    agentLabel,
-    onCancel,
-    onReturn,
-    onCommitMessage,
-  },
+export const ChatThread = forwardRef<ChatThreadHandle, {
+  messages: ChatMessage[]
+  sending: boolean
+  /** Display name for the agent we're waiting on (e.g. "Debugger agent"). */
+  agentLabel: string
+  /** Called when the user clicks the inline cancel pill on the Waiting card. */
+  onCancel?: () => void
+  /** Rewind the thread to just before this message and re-run it. */
+  onReturn?: (message: ChatMessage) => void
+  /**
+   * Commit a new value for an inline-edited bubble. The parent is
+   * expected to truncate everything after the message and re-run the
+   * completion request — the bubble itself does NOT persist.
+   */
+  onCommitMessage?: (message: ChatMessage, newContent: string) => void
+}>(function ChatThread(
+  { messages, sending, agentLabel, onCancel, onReturn, onCommitMessage },
   ref,
 ) {
-  const scrollRef = useRef<HTMLDivElement | null>(null);
-  const stickToBottom = useRef(true);
-  const lastMessageCount = useRef(messages.length);
+  const scrollRef = useRef<HTMLDivElement | null>(null)
+  const stickToBottom = useRef(true)
+  const lastMessageCount = useRef(messages.length)
   // Track per-message DOM nodes so the Return action can scroll to a
   // specific id without re-querying the DOM each render.
-  const messageNodes = useRef(new Map<string, HTMLDivElement>());
+  const messageNodes = useRef(new Map<string, HTMLDivElement>())
 
   // Expose the scroll-to-message imperative API to the parent.
   useImperativeHandle(
     ref,
     () => ({
       scrollToMessage: (id: string) => {
-        const el = messageNodes.current.get(id);
-        const scroller = scrollRef.current;
-        if (!el || !scroller) return;
+        const el = messageNodes.current.get(id)
+        const scroller = scrollRef.current
+        if (!el || !scroller) return
         // Compute the offset relative to the scroll container, not the
         // viewport, so the message lands at the top of the visible
         // area regardless of header / composer height.
-        const top = el.offsetTop;
-        scroller.scrollTo({ top, behavior: "smooth" });
+        const top = el.offsetTop
+        scroller.scrollTo({ top, behavior: "smooth" })
       },
     }),
     [],
-  );
+  )
 
   // Detect whether the user has scrolled away from the bottom. We
   // listen for scrolls and update `stickToBottom`. New messages
   // honour the flag in the autoscroll effect below.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
+    const el = scrollRef.current
+    if (!el) return
     function onScroll() {
-      if (!el) return;
+      if (!el) return
       const distanceFromBottom =
-        el.scrollHeight - el.scrollTop - el.clientHeight;
-      stickToBottom.current = distanceFromBottom < STICK_TO_BOTTOM_PX;
+        el.scrollHeight - el.scrollTop - el.clientHeight
+      stickToBottom.current = distanceFromBottom < STICK_TO_BOTTOM_PX
     }
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
-  }, []);
+    el.addEventListener("scroll", onScroll, { passive: true })
+    return () => el.removeEventListener("scroll", onScroll)
+  }, [])
 
   // Autoscroll when a new message arrives and we're still at the bottom.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    if (messages.length === lastMessageCount.current) return;
-    lastMessageCount.current = messages.length;
+    const el = scrollRef.current
+    if (!el) return
+    if (messages.length === lastMessageCount.current) return
+    lastMessageCount.current = messages.length
     if (stickToBottom.current) {
       // Scroll instantly to keep the user anchored to the latest message.
-      el.scrollTop = el.scrollHeight;
+      el.scrollTop = el.scrollHeight
     }
-  }, [messages.length]);
+  }, [messages.length])
 
   // When `sending` flips on/off we *always* scroll to bottom — the
   // user explicitly kicked off the request, so re-anchor is expected.
@@ -131,11 +121,11 @@ export const ChatThread = forwardRef<
   // system message arriving on the same frame) don't yank the
   // viewport off-target.
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const offset = el.scrollHeight - el.scrollTop - el.clientHeight;
-    el.scrollTop = el.scrollHeight - offset;
-  }, [sending]);
+    const el = scrollRef.current
+    if (!el) return
+    const offset = el.scrollHeight - el.scrollTop - el.clientHeight
+    el.scrollTop = el.scrollHeight - offset
+  }, [sending])
 
   // Group consecutive same-author messages? Phase 1 keeps each turn
   // as its own bubble. Visual grouping would clash with the right-
@@ -148,8 +138,8 @@ export const ChatThread = forwardRef<
             <div
               key={m.id}
               ref={(el) => {
-                if (el) messageNodes.current.set(m.id, el);
-                else messageNodes.current.delete(m.id);
+                if (el) messageNodes.current.set(m.id, el)
+                else messageNodes.current.delete(m.id)
               }}
               // min-w-0 + max-w-full: same contract as the other
               // message wrappers — keeps the row from pushing the
@@ -174,15 +164,15 @@ export const ChatThread = forwardRef<
                   // anchored to a stable layout; the mutation in (2)
                   // happens before the user can perceive the
                   // animation end.
-                  const node = messageNodes.current.get(m.id);
-                  const scroller = scrollRef.current;
+                  const node = messageNodes.current.get(m.id)
+                  const scroller = scrollRef.current
                   if (node && scroller) {
                     scroller.scrollTo({
                       top: node.offsetTop,
                       behavior: "smooth",
-                    });
+                    })
                   }
-                  onReturn?.(m);
+                  onReturn?.(m)
                 }}
                 onCommit={
                   onCommitMessage
@@ -196,19 +186,19 @@ export const ChatThread = forwardRef<
                   // showing a toast for a non-critical affordance.
                   void navigator.clipboard
                     .writeText(m.content)
-                    .catch(() => undefined);
+                    .catch(() => undefined)
                 }}
               />
             </div>
-          );
+          )
         }
         if (m.role === "assistant")
           return (
             <div
               key={m.id}
               ref={(el) => {
-                if (el) messageNodes.current.set(m.id, el);
-                else messageNodes.current.delete(m.id);
+                if (el) messageNodes.current.set(m.id, el)
+                else messageNodes.current.delete(m.id)
               }}
               // min-w-0 + max-w-full lets this row shrink to fit the
               // column even when the assistant bubble has long content.
@@ -216,22 +206,22 @@ export const ChatThread = forwardRef<
             >
               <AssistantMessage key={m.id} message={m} />
             </div>
-          );
+          )
         return (
           <div
             key={m.id}
             ref={(el) => {
-              if (el) messageNodes.current.set(m.id, el);
-              else messageNodes.current.delete(m.id);
+              if (el) messageNodes.current.set(m.id, el)
+              else messageNodes.current.delete(m.id)
             }}
             className="min-w-0 max-w-full"
           >
             <SystemMessage message={m} />
           </div>
-        );
+        )
       }),
     [messages, onReturn, onCommitMessage],
-  );
+  )
 
   return (
     <div
@@ -248,5 +238,5 @@ export const ChatThread = forwardRef<
         <WaitingArtifact agentLabel={agentLabel} onCancel={onCancel} />
       ) : null}
     </div>
-  );
-});
+  )
+})

@@ -1,27 +1,55 @@
-import { useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { Icon } from "../ui/Icon";
+import { useEffect, useRef, useState } from "react"
+import { createPortal } from "react-dom"
+import { Icon } from "../ui/Icon"
 import {
   useModelsStore,
   BUILT_IN_MODELS,
   type ModelFamily,
-} from "../../modelsStore";
-import type { ModeId } from "../../chats/types";
-import type { Attachment } from "../../chats/ChatStore";
+} from "../../modelsStore"
+import type { ModeId } from "../../chats/types"
+import type { Attachment } from "../../chats/ChatStore"
 
 const MODES: {
-  id: ModeId;
-  icon: string;
-  label: string;
-  desc: string;
-  status?: "deferred" | "design";
+  id: ModeId
+  icon: string
+  label: string
+  desc: string
+  status?: "deferred" | "design"
 }[] = [
-  { id: "debug", icon: "search", label: "Debug", desc: "Investigate run divergences and trace root causes" },
-  { id: "scaffold", icon: "box", label: "Scaffold", desc: "Generate project structure and boilerplate code" },
-  { id: "plan", icon: "line-chart", label: "Plan", desc: "Draft experiment timelines and resource estimates", status: "deferred" },
-  { id: "research", icon: "package", label: "Research", desc: "Cross-reference papers and gather evidence", status: "deferred" },
-  { id: "multitask", icon: "layers", label: "Multitask", desc: "Coordinate multiple agents across a shared goal", status: "design" },
-];
+  {
+    id: "debug",
+    icon: "search",
+    label: "Debug",
+    desc: "Investigate run divergences and trace root causes",
+  },
+  {
+    id: "scaffold",
+    icon: "box",
+    label: "Scaffold",
+    desc: "Generate project structure and boilerplate code",
+  },
+  {
+    id: "plan",
+    icon: "line-chart",
+    label: "Plan",
+    desc: "Draft experiment timelines and resource estimates",
+    status: "deferred",
+  },
+  {
+    id: "research",
+    icon: "package",
+    label: "Research",
+    desc: "Cross-reference papers and gather evidence",
+    status: "deferred",
+  },
+  {
+    id: "multitask",
+    icon: "layers",
+    label: "Multitask",
+    desc: "Coordinate multiple agents across a shared goal",
+    status: "design",
+  },
+]
 
 const HINTS: Record<ModeId, string> = {
   debug: "▸ investigating… Type a follow-up.",
@@ -29,26 +57,28 @@ const HINTS: Record<ModeId, string> = {
   plan: "▸ planning… (this role ships in v1.1)",
   research: "▸ researching… (this role ships in v1.1)",
   multitask: "▸ multitask… (in design)",
-};
+}
 
 // ─── Click-outside backdrop ────────────────────────────────────────────────────
 function Backdrop({ onClose }: { onClose: () => void }) {
   // Use onClick (not onMouseDown) so the button's onClick fires first.
-  return <div className="fixed inset-0 z-[60] cursor-default" onClick={onClose} />;
+  return (
+    <div className="fixed inset-0 z-[60] cursor-default" onClick={onClose} />
+  )
 }
 
 // ─── Viewport-aware positioning ────────────────────────────────────────────────
 
-const MARGIN = 6; // px between anchor and popover edge
-const MENU_HEIGHT_ESTIMATE = 240; // px — used to decide direction before render
-const VIEWPORT_EDGE_PAD = 8; // px — keep popover off the viewport edges
+const MARGIN = 6 // px between anchor and popover edge
+const MENU_HEIGHT_ESTIMATE = 240 // px — used to decide direction before render
+const VIEWPORT_EDGE_PAD = 8 // px — keep popover off the viewport edges
 
 function computePosition(
   anchor: DOMRect,
   menuWidth: number,
-): { top: number; left: number; flip: boolean; width: number } {
-  const spaceBelow = window.innerHeight - anchor.bottom;
-  const flip = spaceBelow < MARGIN + MENU_HEIGHT_ESTIMATE;
+): { top: number left: number flip: boolean width: number } {
+  const spaceBelow = window.innerHeight - anchor.bottom
+  const flip = spaceBelow < MARGIN + MENU_HEIGHT_ESTIMATE
   // Clamp horizontal bounds so the popover never escapes the viewport.
   // Prefer anchoring flush-left with the button, then shift left if it
   // would overflow the right edge. If even the button's left edge is
@@ -56,18 +86,18 @@ function computePosition(
   const maxLeft = Math.max(
     VIEWPORT_EDGE_PAD,
     window.innerWidth - VIEWPORT_EDGE_PAD - menuWidth,
-  );
-  const left = Math.min(Math.max(VIEWPORT_EDGE_PAD, anchor.left), maxLeft);
+  )
+  const left = Math.min(Math.max(VIEWPORT_EDGE_PAD, anchor.left), maxLeft)
   const width = Math.min(
     menuWidth,
     window.innerWidth - VIEWPORT_EDGE_PAD - VIEWPORT_EDGE_PAD,
-  );
+  )
   return {
     top: flip ? anchor.top - MARGIN : anchor.bottom + MARGIN,
     left,
     width,
     flip,
-  };
+  }
 }
 
 // ─── Positioned popover (rendered via portal so it escapes overflow ancestors)
@@ -77,16 +107,18 @@ function Popover({
   onClose,
   children,
 }: {
-  anchor: DOMRect | null;
-  width?: number;
-  onClose: () => void;
-  children: React.ReactNode;
+  anchor: DOMRect | null
+  width?: number
+  onClose: () => void
+  children: React.ReactNode
 }) {
-  if (!anchor) return null;
-  const { top, left, width: resolvedWidth, flip } = computePosition(
-    anchor,
-    width,
-  );
+  if (!anchor) return null
+  const {
+    top,
+    left,
+    width: resolvedWidth,
+    flip,
+  } = computePosition(anchor, width)
   return createPortal(
     <>
       <Backdrop onClose={onClose} />
@@ -104,7 +136,7 @@ function Popover({
       </div>
     </>,
     document.body,
-  );
+  )
 }
 
 // ─── Mode row (used inside the dropdown) ───────────────────────────────────────
@@ -113,11 +145,11 @@ function ModeRow({
   active,
   onClick,
 }: {
-  m: (typeof MODES)[number];
-  active: boolean;
-  onClick: () => void;
+  m: typeof MODES[number]
+  active: boolean
+  onClick: () => void
 }) {
-  const muted = m.status === "deferred";
+  const muted = m.status === "deferred"
   return (
     <button
       onClick={onClick}
@@ -150,9 +182,11 @@ function ModeRow({
           </span>
         )}
       </span>
-      {active && <Icon name="check" size={11} className="shrink-0 text-primary" />}
+      {active && (
+        <Icon name="check" size={11} className="shrink-0 text-primary" />
+      )}
     </button>
-  );
+  )
 }
 
 // ─── Model row (used inside the model dropdown) ───────────────────────────────
@@ -161,9 +195,9 @@ function ModelRow({
   active,
   onClick,
 }: {
-  m: { id: string; name: string; badge: string };
-  active: boolean;
-  onClick: () => void;
+  m: { id: string name: string badge: string }
+  active: boolean
+  onClick: () => void
 }) {
   return (
     <button
@@ -189,7 +223,7 @@ function ModelRow({
         </span>
       </span>
     </button>
-  );
+  )
 }
 
 // ─── Composer ─────────────────────────────────────────────────────────────────
@@ -203,16 +237,12 @@ export function Composer({
   builtinId: controlledBuiltinId,
   onModeChange,
   onBuiltinChange,
-}: {
-  onSubmit?: (text: string, attachments: Attachment[]) => void;
   /** Called when the user presses Esc or the inline cancel while sending. */
-  onCancel?: () => void;
   /**
    * When true, the send button swaps to a Stop button and the textarea
    * becomes read-only. The parent owns the in-flight state — the
    * Composer just renders the affordance and invokes onCancel.
    */
-  sending?: boolean;
   /**
    * When the value changes, the composer's textarea is reset to the
    * new value AND any staged attachments are cleared. Used by the
@@ -224,44 +254,50 @@ export function Composer({
    * Pass `null` to clear without setting text (the parent uses this to
    * indicate "no edit in progress").
    */
-  seedText?: string | null;
   /**
    * Monotonically-increasing key. Bumping this value triggers the
    * seedText effect regardless of whether the text actually changed
    * — needed for Return-to-composer where the parent re-seeds the
    * same message twice in a row.
    */
-  resetKey?: number;
   /** Controlled mode — when provided, the Composer is controlled and calls
    *  onModeChange instead of managing mode internally. */
-  mode?: "debug" | "scaffold" | "plan" | "research" | "multitask";
   /** Controlled built-in model — used when mode is controlled. */
-  builtinId?: ModelFamily;
   /** Called whenever the mode picker changes. */
-  onModeChange?: (mode: ModeId) => void;
   /** Called whenever the built-in model picker changes. REVIEW(opus) F-4
    *  [final]: previously this was a silent no-op in controlled mode. */
-  onBuiltinChange?: (id: ModelFamily) => void;
+}: {
+  onSubmit?: (text: string, attachments: Attachment[]) => void
+  onCancel?: () => void
+  sending?: boolean
+  seedText?: string | null
+  resetKey?: number
+  mode?: "debug" | "scaffold" | "plan" | "research" | "multitask"
+  builtinId?: ModelFamily
+  onModeChange?: (mode: ModeId) => void
+  onBuiltinChange?: (id: ModelFamily) => void
 }) {
-  const [loop, setLoop] = useState(true);
-  const [text, setText] = useState("");
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [menu, setMenu] = useState<"mode" | "model" | null>(null);
+  const [loop, setLoop] = useState(true)
+  const [text, setText] = useState("")
+  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [menu, setMenu] = useState<"mode" | "model" | null>(null)
 
   // Controlled mode: parent owns the state, we just call onModeChange.
   // Uncontrolled mode: own state internally.
-  const [internalMode, setInternalMode] = useState<"debug" | "scaffold" | "plan" | "research" | "multitask">("debug");
-  const mode = controlledMode ?? internalMode;
+  const [internalMode, setInternalMode] =
+    useState<"debug" | "scaffold" | "plan" | "research" | "multitask">("debug")
+  const mode = controlledMode ?? internalMode
 
   // Controlled built-in model.
-  const [internalBuiltinId, setInternalBuiltinId] = useState<ModelFamily>("fable");
-  const builtinId = controlledBuiltinId ?? internalBuiltinId;
+  const [internalBuiltinId, setInternalBuiltinId] =
+    useState<ModelFamily>("fable")
+  const builtinId = controlledBuiltinId ?? internalBuiltinId
 
   function changeMode(id: ModeId) {
     if (controlledMode !== undefined) {
-      onModeChange?.(id);
+      onModeChange?.(id)
     } else {
-      setInternalMode(id);
+      setInternalMode(id)
     }
   }
 
@@ -270,24 +306,24 @@ export function Composer({
       // REVIEW(opus) F-4 [final]: in controlled mode, hook through to
       // the parent via onBuiltinChange so the thread store can pick up
       // the user's selection.
-      onBuiltinChange?.(id);
+      onBuiltinChange?.(id)
     } else {
-      setInternalBuiltinId(id);
+      setInternalBuiltinId(id)
     }
   }
 
   // Keyboard: Escape cancels the in-flight request.
   useEffect(() => {
-    if (!onCancel) return;
+    if (!onCancel) return
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
-        e.preventDefault();
-        onCancel?.();
+        e.preventDefault()
+        onCancel?.()
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onCancel]);
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [onCancel])
 
   // When `seedText` (or `resetKey`) changes, replace the local
   // textarea content AND clear any staged attachments. The parent
@@ -295,54 +331,54 @@ export function Composer({
   // immediately tweak and resubmit without dragging leftover
   // attachments from the prior send.
   useEffect(() => {
-    if (seedText === undefined) return;
-    setText(seedText ?? "");
-    setAttachments([]);
-  }, [seedText, resetKey]);
+    if (seedText === undefined) return
+    setText(seedText ?? "")
+    setAttachments([])
+  }, [seedText, resetKey])
 
-  const modeBtnRef = useRef<HTMLButtonElement | null>(null);
-  const modelBtnRef = useRef<HTMLButtonElement | null>(null);
-  const [modeAnchor, setModeAnchor] = useState<DOMRect | null>(null);
-  const [modelAnchor, setModelAnchor] = useState<DOMRect | null>(null);
+  const modeBtnRef = useRef<HTMLButtonElement | null>(null)
+  const modelBtnRef = useRef<HTMLButtonElement | null>(null)
+  const [modeAnchor, setModeAnchor] = useState<DOMRect | null>(null)
+  const [modelAnchor, setModelAnchor] = useState<DOMRect | null>(null)
 
-  const { config, selectedEndpoint, selectEndpoint } = useModelsStore();
+  const { config, selectedEndpoint, selectEndpoint } = useModelsStore()
 
   // Recompute anchor when window resizes / scrolls so the menu stays pinned.
   useEffect(() => {
-    if (!menu) return;
+    if (!menu) return
     function refresh() {
       if (menu === "mode") {
-        setModeAnchor(modeBtnRef.current?.getBoundingClientRect() ?? null);
+        setModeAnchor(modeBtnRef.current?.getBoundingClientRect() ?? null)
       } else {
-        setModelAnchor(modelBtnRef.current?.getBoundingClientRect() ?? null);
+        setModelAnchor(modelBtnRef.current?.getBoundingClientRect() ?? null)
       }
     }
-    window.addEventListener("resize", refresh);
-    window.addEventListener("scroll", refresh, true);
+    window.addEventListener("resize", refresh)
+    window.addEventListener("scroll", refresh, true)
     return () => {
-      window.removeEventListener("resize", refresh);
-      window.removeEventListener("scroll", refresh, true);
-    };
-  }, [menu]);
+      window.removeEventListener("resize", refresh)
+      window.removeEventListener("scroll", refresh, true)
+    }
+  }, [menu])
 
-  const activeMode = MODES.find((m) => m.id === mode)!;
+  const activeMode = MODES.find((m) => m.id === mode)!
 
   // Label + badge shown in the model picker button.
   const modelButtonLabel = selectedEndpoint
     ? selectedEndpoint.label
-    : BUILT_IN_MODELS.find((m) => m.id === builtinId)?.name ?? "Model";
+    : (BUILT_IN_MODELS.find((m) => m.id === builtinId)?.name ?? "Model")
   const modelButtonBadge = selectedEndpoint
     ? selectedEndpoint.defaultModel
-    : BUILT_IN_MODELS.find((m) => m.id === builtinId)?.badge ?? "";
+    : (BUILT_IN_MODELS.find((m) => m.id === builtinId)?.badge ?? "")
 
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const imageInputRef = useRef<HTMLInputElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
 
   // Maximum attachment size — picked so a 5MB image / a couple of
   // PDFs don't bloat localStorage beyond sane limits. Larger files
   // are silently rejected; the user can drop a comment in the
   // composer explaining the rejection.
-  const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
+  const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 
   /**
    * Read one or more `File` objects into base64 data URLs and
@@ -355,19 +391,22 @@ export function Composer({
    * any one file exceeds the size cap — partial uploads are more
    * confusing than helpful.
    */
-  async function ingestFiles(files: FileList | File[], asKind: "image" | "file") {
-    const list = Array.from(files);
-    const oversized = list.find((f) => f.size > MAX_ATTACHMENT_BYTES);
+  async function ingestFiles(
+    files: FileList | File[],
+    asKind: "image" | "file",
+  ) {
+    const list = Array.from(files)
+    const oversized = list.find((f) => f.size > MAX_ATTACHMENT_BYTES)
     if (oversized) {
       // For Phase 1 we just drop oversized files silently rather
       // than wiring a toast — the size cap is a soft guard, not a
       // product feature, and the composer textarea itself remains
       // usable. A toast would feel noisy for every accidental paste.
-      return;
+      return
     }
-    const results: Attachment[] = [];
+    const results: Attachment[] = []
     for (const f of list) {
-      const dataUrl = await readFileAsDataUrl(f);
+      const dataUrl = await readFileAsDataUrl(f)
       results.push({
         id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
         kind: asKind,
@@ -375,25 +414,25 @@ export function Composer({
         mime: f.type || "application/octet-stream",
         size: f.size,
         dataUrl,
-      });
+      })
     }
-    setAttachments((prev) => [...prev, ...results]);
+    setAttachments((prev) => [...prev, ...results])
   }
 
   function removeAttachment(id: string) {
-    setAttachments((prev) => prev.filter((a) => a.id !== id));
+    setAttachments((prev) => prev.filter((a) => a.id !== id))
   }
 
   function submit() {
-    if (!text.trim() && attachments.length === 0) return;
-    const trimmed = text;
+    if (!text.trim() && attachments.length === 0) return
+    const trimmed = text
     // Snapshot attachments before clearing — setText + setAttachments
     // are async and the parent may already re-render with empty
     // composer state by the time onSubmit fires.
-    const snapshot = attachments.slice();
-    onSubmit?.(trimmed, snapshot);
-    setText("");
-    setAttachments([]);
+    const snapshot = attachments.slice()
+    onSubmit?.(trimmed, snapshot)
+    setText("")
+    setAttachments([])
   }
 
   return (
@@ -406,9 +445,11 @@ export function Composer({
             ref={modeBtnRef}
             onClick={() => {
               if (menu !== "mode") {
-                setModeAnchor(modeBtnRef.current?.getBoundingClientRect() ?? null);
+                setModeAnchor(
+                  modeBtnRef.current?.getBoundingClientRect() ?? null,
+                )
               }
-              setMenu(menu === "mode" ? null : "mode");
+              setMenu(menu === "mode" ? null : "mode")
             }}
             className="flex h-6 items-center gap-1.5 rounded border border-outline-variant px-2 font-sans text-[12px] text-on-surface hover:bg-surface-container"
           >
@@ -422,16 +463,22 @@ export function Composer({
           </button>
 
           {menu === "mode" && (
-            <Popover anchor={modeAnchor} width={200} onClose={() => setMenu(null)}>
-              <div className="label-caps px-1.5 pb-0.5 pt-0.5 text-outline">Active</div>
+            <Popover
+              anchor={modeAnchor}
+              width={200}
+              onClose={() => setMenu(null)}
+            >
+              <div className="label-caps px-1.5 pb-0.5 pt-0.5 text-outline">
+                Active
+              </div>
               {MODES.filter((m) => !m.status).map((m) => (
                 <ModeRow
                   key={m.id}
                   m={m}
                   active={mode === m.id}
                   onClick={() => {
-                    changeMode(m.id);
-                    setMenu(null);
+                    changeMode(m.id)
+                    setMenu(null)
                   }}
                 />
               ))}
@@ -445,8 +492,8 @@ export function Composer({
                   m={m}
                   active={false}
                   onClick={() => {
-                    changeMode(m.id);
-                    setMenu(null);
+                    changeMode(m.id)
+                    setMenu(null)
                   }}
                 />
               ))}
@@ -470,31 +517,45 @@ export function Composer({
             ref={modelBtnRef}
             onClick={() => {
               if (menu !== "model") {
-                setModelAnchor(modelBtnRef.current?.getBoundingClientRect() ?? null);
+                setModelAnchor(
+                  modelBtnRef.current?.getBoundingClientRect() ?? null,
+                )
               }
-              setMenu(menu === "model" ? null : "model");
+              setMenu(menu === "model" ? null : "model")
             }}
             className="flex h-6 min-w-0 flex-none items-center gap-1 rounded border border-outline-variant px-2 font-sans text-[12px] text-on-surface-variant hover:border-outline hover:bg-surface-container hover:text-on-surface"
           >
             <span className="truncate">{modelButtonLabel}</span>
-            <span className="shrink-0 truncate text-outline">{modelButtonBadge}</span>
-            <Icon name="chevron-down" size={11} className="shrink-0 text-outline" />
+            <span className="shrink-0 truncate text-outline">
+              {modelButtonBadge}
+            </span>
+            <Icon
+              name="chevron-down"
+              size={11}
+              className="shrink-0 text-outline"
+            />
           </button>
 
           {menu === "model" && (
-            <Popover anchor={modelAnchor} width={260} onClose={() => setMenu(null)}>
+            <Popover
+              anchor={modelAnchor}
+              width={260}
+              onClose={() => setMenu(null)}
+            >
               {/* Custom endpoint (if configured) */}
               {config.endpoints.length > 0 && (
                 <>
-                  <div className="label-caps px-1.5 pb-0.5 pt-0.5 text-outline">Custom endpoint</div>
+                  <div className="label-caps px-1.5 pb-0.5 pt-0.5 text-outline">
+                    Custom endpoint
+                  </div>
                   {config.endpoints.map((ep) => (
                     <button
                       key={ep.id}
                       onClick={() => {
                         selectEndpoint(
                           config.selectedEndpointId === ep.id ? null : ep.id,
-                        );
-                        setMenu(null);
+                        )
+                        setMenu(null)
                       }}
                       className={`relative flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-surface-container-high ${
                         config.selectedEndpointId === ep.id
@@ -543,13 +604,11 @@ export function Composer({
                 <ModelRow
                   key={m.id}
                   m={m}
-                  active={
-                    selectedEndpoint === null && builtinId === m.id
-                  }
+                  active={selectedEndpoint === null && builtinId === m.id}
                   onClick={() => {
-                    changeBuiltinId(m.id as ModelFamily);
-                    selectEndpoint(null);
-                    setMenu(null);
+                    changeBuiltinId(m.id as ModelFamily)
+                    selectEndpoint(null)
+                    setMenu(null)
                   }}
                 />
               ))}
@@ -558,14 +617,14 @@ export function Composer({
               <a
                 href="#"
                 onClick={(e) => {
-                  e.preventDefault();
-                  setMenu(null);
+                  e.preventDefault()
+                  setMenu(null)
                   // Open Preferences to Models section.
                   window.dispatchEvent(
                     new CustomEvent("bonafide:open-prefs", {
                       detail: "models",
                     }),
-                  );
+                  )
                 }}
                 className="flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left font-body text-[12px] text-primary hover:bg-surface-container-high"
               >
@@ -624,15 +683,15 @@ export function Composer({
             // standard for chat composers (Slack, Cursor, ChatGPT,
             // VS Code Copilot all use this convention).
             if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
-              e.preventDefault();
-              submit();
-              return;
+              e.preventDefault()
+              submit()
+              return
             }
             if (e.key === "Enter" && (e.shiftKey || e.altKey)) {
               // Insert a newline by letting the default behaviour
               // run. React's controlled <textarea> will pick the
               // \n up on the next onChange tick.
-              return;
+              return
             }
           }}
           rows={2}
@@ -653,9 +712,9 @@ export function Composer({
           multiple
           className="hidden"
           onChange={(e) => {
-            const files = e.target.files;
-            if (files) void ingestFiles(files, "image");
-            e.target.value = "";
+            const files = e.target.files
+            if (files) void ingestFiles(files, "image")
+            e.target.value = ""
           }}
         />
         <input
@@ -664,9 +723,9 @@ export function Composer({
           multiple
           className="hidden"
           onChange={(e) => {
-            const files = e.target.files;
-            if (files) void ingestFiles(files, "file");
-            e.target.value = "";
+            const files = e.target.files
+            if (files) void ingestFiles(files, "file")
+            e.target.value = ""
           }}
         />
 
@@ -698,8 +757,8 @@ export function Composer({
               title="Paste from clipboard"
               onClick={async () => {
                 try {
-                  const v = await navigator.clipboard.readText();
-                  if (v) setText((t) => (t ? `${t}\n${v}` : v));
+                  const v = await navigator.clipboard.readText()
+                  if (v) setText((t) => (t ? `${t}\n${v}` : v))
                 } catch {
                   /* clipboard read can be blocked; silently ignore */
                 }
@@ -733,7 +792,7 @@ export function Composer({
         </div>
       </div>
     </div>
-  );
+  )
 }
 
 // ─── File / image helpers ─────────────────────────────────────────────────────
@@ -741,12 +800,12 @@ export function Composer({
 /** Read a `File` as a base64 data URL. Used by the attachment pipeline. */
 function readFileAsDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
+    const reader = new FileReader()
     reader.onerror = () =>
-      reject(reader.error ?? new Error("FileReader failed"));
-    reader.onload = () => resolve(String(reader.result));
-    reader.readAsDataURL(file);
-  });
+      reject(reader.error ?? new Error("FileReader failed"))
+    reader.onload = () => resolve(String(reader.result))
+    reader.readAsDataURL(file)
+  })
 }
 
 /** Compact preview of a staged attachment, shown above the textarea. */
@@ -754,10 +813,10 @@ function ComposerAttachmentChip({
   attachment,
   onRemove,
 }: {
-  attachment: Attachment;
-  onRemove: () => void;
+  attachment: Attachment
+  onRemove: () => void
 }) {
-  const isImage = attachment.kind === "image";
+  const isImage = attachment.kind === "image"
   if (isImage) {
     return (
       <div
@@ -778,14 +837,18 @@ function ComposerAttachmentChip({
           <Icon name="circle-x" size={9} />
         </button>
       </div>
-    );
+    )
   }
   return (
     <div
       className="group/att relative flex max-w-[180px] items-center gap-1.5 rounded border border-outline-variant/60 bg-surface-container-low px-2 py-1"
       title={attachment.name}
     >
-      <Icon name="file" size={12} className="shrink-0 text-on-surface-variant" />
+      <Icon
+        name="file"
+        size={12}
+        className="shrink-0 text-on-surface-variant"
+      />
       <span className="truncate font-body text-[11px] text-on-surface">
         {attachment.name}
       </span>
@@ -798,7 +861,7 @@ function ComposerAttachmentChip({
         <Icon name="circle-x" size={9} />
       </button>
     </div>
-  );
+  )
 }
 
 // ─── QuickSuggestions ─────────────────────────────────────────────────────────
@@ -806,13 +869,15 @@ export function QuickSuggestions({
   items,
   onPick,
 }: {
-  items: string[];
-  onPick: (t: string) => void;
+  items: string[]
+  onPick: (t: string) => void
 }) {
-  if (!items.length) return null;
+  if (!items.length) return null
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="label-caps text-on-surface-variant">Quick suggestions</span>
+      <span className="label-caps text-on-surface-variant">
+        Quick suggestions
+      </span>
       <div className="flex flex-wrap gap-1.5">
         {items.map((s) => (
           <button
@@ -825,5 +890,5 @@ export function QuickSuggestions({
         ))}
       </div>
     </div>
-  );
+  )
 }

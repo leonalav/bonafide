@@ -9,7 +9,7 @@
  * for context.
  */
 
-import type { ChatMessage } from "../../chats/ChatStore";
+import type { ChatMessage } from "../../chats/ChatStore"
 
 export function SystemMessage({ message }: { message: ChatMessage }) {
   return (
@@ -21,5 +21,5 @@ export function SystemMessage({ message }: { message: ChatMessage }) {
         {message.content}
       </div>
     </div>
-  );
+  )
 }

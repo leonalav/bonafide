@@ -1,109 +1,184 @@
-import { useEffect, useRef, useState } from "react";
-import { Icon } from "./ui/Icon";
-import { ContextMenu, type MenuItem } from "./ContextMenu";
-import { bonafide, isTauri } from "../ipc/tauri";
-import { useDispatch, usePanel } from "../ide/hooks";
-import type { IdeAction, PanelTab } from "../ide/store";
+import { useEffect, useRef, useState } from "react"
+
+import { Icon } from "./ui/Icon"
+
+import { ContextMenu, type MenuItem } from "./ContextMenu"
+
+import { bonafide, isTauri } from "../ipc/tauri"
+
+import { useDispatch, usePanel } from "../ide/hooks"
+
+import type { IdeAction, PanelTab } from "../ide/store"
 
 // ── Context menu helpers ──────────────────────────────────────────────────
+
 // All take dispatch directly; no callbacks needed.
 
 function panelTabItems(
   dispatch: (a: IdeAction) => void,
+
   currentTab: PanelTab,
+
   panelOpen: boolean,
 ): MenuItem[] {
-  const tabs: { id: PanelTab; label: string; shortcut?: string }[] = [
+  const tabs: { id: PanelTab label: string shortcut?: string }[] = [
     { id: "problems", label: "Problems", shortcut: "Ctrl+Shift+M" },
+
     { id: "output", label: "Output", shortcut: "Ctrl+Shift+U" },
+
     { id: "terminal", label: "Terminal", shortcut: "Ctrl+`" },
+
     { id: "debug", label: "Debug Console" },
+
     { id: "ports", label: "Ports" },
-  ];
+  ]
+
   return [
     {
       kind: "action",
+
       label: panelOpen ? "Close Panel" : "Toggle Panel",
+
       icon: panelOpen ? "chevrons-down" : "chevrons-up",
+
       shortcut: "Ctrl+J",
+
       onSelect: () => dispatch({ type: "TOGGLE_PANEL" }),
     },
+
     { kind: "separator" },
+
     ...tabs.map((t) => ({
       kind: "action" as const,
+
       label: `Show: ${t.label}`,
+
       icon: "panel-bottom",
+
       shortcut: t.shortcut,
+
       disabled: currentTab === t.id && panelOpen,
+
       onSelect: () => dispatch({ type: "SET_PANEL_TAB", tab: t.id }),
     })),
-  ];
+  ]
 }
 
 function windowMinimizeItems(): MenuItem[] {
   return [
-    { kind: "action", label: "Minimize", icon: "minus", onSelect: () => bonafide.window.minimize() },
-    { kind: "separator" },
     {
       kind: "action",
+      label: "Minimize",
+      icon: "minus",
+      onSelect: () => bonafide.window.minimize(),
+    },
+
+    { kind: "separator" },
+
+    {
+      kind: "action",
+
       label: "Maximize / Restore",
+
       icon: "maximize-2",
+
       onSelect: () => bonafide.window.toggleMaximize(),
     },
+
     { kind: "separator" },
+
     {
       kind: "action",
+
       label: "Close Window",
+
       icon: "x",
+
       shortcut: "Alt+F4",
+
       danger: true,
+
       onSelect: () => bonafide.window.close(),
     },
-  ];
+  ]
 }
 
 function windowMaximizeItems(): MenuItem[] {
   return [
     {
       kind: "action",
+
       label: "Maximize / Restore",
+
       icon: "maximize-2",
+
       onSelect: () => bonafide.window.toggleMaximize(),
     },
+
     { kind: "separator" },
-    { kind: "action", label: "Minimize", icon: "minus", onSelect: () => bonafide.window.minimize() },
-    { kind: "separator" },
+
     {
       kind: "action",
+      label: "Minimize",
+      icon: "minus",
+      onSelect: () => bonafide.window.minimize(),
+    },
+
+    { kind: "separator" },
+
+    {
+      kind: "action",
+
       label: "Close Window",
+
       icon: "x",
+
       shortcut: "Alt+F4",
+
       danger: true,
+
       onSelect: () => bonafide.window.close(),
     },
-  ];
+  ]
 }
 
 function windowCloseItems(): MenuItem[] {
   return [
     {
       kind: "action",
+
       label: "Close Window",
+
       icon: "x",
+
       shortcut: "Alt+F4",
+
       danger: true,
+
       onSelect: () => bonafide.window.close(),
     },
+
     { kind: "separator" },
-    { kind: "action", label: "Minimize", icon: "minus", onSelect: () => bonafide.window.minimize() },
-    { kind: "separator" },
+
     {
       kind: "action",
+      label: "Minimize",
+      icon: "minus",
+      onSelect: () => bonafide.window.minimize(),
+    },
+
+    { kind: "separator" },
+
+    {
+      kind: "action",
+
       label: "Maximize / Restore",
+
       icon: "maximize-2",
+
       onSelect: () => bonafide.window.toggleMaximize(),
     },
-  ];
+  ]
 }
 
 // ── TitleBar ─────────────────────────────────────────────────────────────
@@ -121,75 +196,119 @@ function windowCloseItems(): MenuItem[] {
  * Tauri note: in browser/dev preview, window controls are inert — the circles
  * render but clicks are no-ops.
  */
-export function TitleBar() {
-  const desktop = isTauri();
-  const isMac = desktop && window.navigator.platform.toLowerCase().includes("mac");
 
-  const [isMaximized, setIsMaximized] = useState(false);
-  const dispatch = useDispatch();
-  const panel = usePanel();
+export function TitleBar() {
+  const desktop = isTauri()
+
+  const isMac =
+    desktop && window.navigator.platform.toLowerCase().includes("mac")
+
+  const [isMaximized, setIsMaximized] = useState(false)
+
+  const dispatch = useDispatch()
+
+  const panel = usePanel()
 
   // Context menu state — single shared anchor, one menu at a time
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
-  const closeCtxMenu = () => setCtxMenu(null);
+
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number
+    y: number
+    items: MenuItem[]
+  } | null>(null)
+
+  const closeCtxMenu = () => setCtxMenu(null)
 
   // Track maximized state via resize events from the OS
+
   useEffect(() => {
-    if (!desktop) return;
-    let cancelled = false;
+    if (!desktop) return
+
+    let cancelled = false
+
     void bonafide.window.isMaximized().then((v) => {
-      if (!cancelled) setIsMaximized(v);
-    });
+      if (!cancelled) setIsMaximized(v)
+    })
+
     const unsub = bonafide.window.onMaximizeChanged((m) => {
-      setIsMaximized(m);
-    });
+      setIsMaximized(m)
+    })
+
     return () => {
-      cancelled = true;
-      void unsub();
-    };
-  }, [desktop]);
+      cancelled = true
+
+      void unsub()
+    }
+  }, [desktop])
 
   // ── Keyboard shortcuts ─────────────────────────────────────────────────
+
   function onKeyDown(e: React.KeyboardEvent) {
-    const cmd = e.ctrlKey || e.metaKey;
-    if (!cmd) return;
+    const cmd = e.ctrlKey || e.metaKey
+
+    if (!cmd) return
+
     switch (e.key.toLowerCase()) {
       case "j":
-        e.preventDefault();
-        dispatch({ type: "TOGGLE_PANEL" });
-        break;
+        e.preventDefault()
+
+        dispatch({ type: "TOGGLE_PANEL" })
+
+        break
+
       case "p":
-        if (e.shiftKey) { e.preventDefault(); dispatch({ type: "SET_PANEL_TAB", tab: "problems" }); }
-        break;
+        if (e.shiftKey) {
+          e.preventDefault()
+          dispatch({ type: "SET_PANEL_TAB", tab: "problems" })
+        }
+
+        break
+
       case "u":
-        if (e.shiftKey) { e.preventDefault(); dispatch({ type: "SET_PANEL_TAB", tab: "output" }); }
-        break;
+        if (e.shiftKey) {
+          e.preventDefault()
+          dispatch({ type: "SET_PANEL_TAB", tab: "output" })
+        }
+
+        break
+
       case "`":
-        e.preventDefault();
-        dispatch({ type: "SET_PANEL_TAB", tab: "terminal" });
-        break;
+        e.preventDefault()
+
+        dispatch({ type: "SET_PANEL_TAB", tab: "terminal" })
+
+        break
     }
   }
 
   // ── Context menu openers ─────────────────────────────────────────────
+
   function openPanelCtx(e: React.MouseEvent) {
-    e.preventDefault();
-    setCtxMenu({ x: e.clientX, y: e.clientY, items: panelTabItems(dispatch, panel.tab, panel.open) });
+    e.preventDefault()
+
+    setCtxMenu({
+      x: e.clientX,
+      y: e.clientY,
+      items: panelTabItems(dispatch, panel.tab, panel.open),
+    })
   }
 
   function openMinCtx(e: React.MouseEvent) {
-    e.preventDefault();
-    setCtxMenu({ x: e.clientX, y: e.clientY, items: windowMinimizeItems() });
+    e.preventDefault()
+
+    setCtxMenu({ x: e.clientX, y: e.clientY, items: windowMinimizeItems() })
   }
 
   function openMaxCtx(e: React.MouseEvent) {
-    e.preventDefault();
-    setCtxMenu({ x: e.clientX, y: e.clientY, items: windowMaximizeItems() });
+    e.preventDefault()
+
+    setCtxMenu({ x: e.clientX, y: e.clientY, items: windowMaximizeItems() })
   }
 
   function openCloseCtx(e: React.MouseEvent) {
-    e.preventDefault();
-    setCtxMenu({ x: e.clientX, y: e.clientY, items: windowCloseItems() });
+    e.preventDefault()
+
+    setCtxMenu({ x: e.clientX, y: e.clientY, items: windowCloseItems() })
   }
 
   return (
@@ -198,6 +317,7 @@ export function TitleBar() {
         onKeyDown={onKeyDown}
         onClick={closeCtxMenu}
         // drag region — the whole bar is draggable; child buttons opt out
+
         className="flex h-8 shrink-0 select-none items-center border-b border-outline-variant bg-surface-container-lowest pl-3 pr-2"
         style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
       >
@@ -210,7 +330,9 @@ export function TitleBar() {
           <span className="font-sans text-[13px] font-semibold tracking-tight text-on-surface">
             Bonafide
           </span>
-          <span className="font-sans text-[12px] text-outline">— bonafide-train</span>
+          <span className="font-sans text-[12px] text-outline">
+            — bonafide-train
+          </span>
         </div>
 
         {/* ── Action buttons + window controls ─────────────────────────── */}
@@ -286,5 +408,5 @@ export function TitleBar() {
         />
       )}
     </>
-  );
+  )
 }

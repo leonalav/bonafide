@@ -1,9 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
-import { Icon } from "./ui/Icon";
-import type { DockId } from "./UtilityDock";
-import { ExperimentsView } from "./panels/ExperimentsView";
-import { SourceControlView } from "./panels/SourceControlView";
-import { ArtifactsView } from "./panels/ArtifactsView";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent,
+} from "react"
+import { Icon } from "./ui/Icon"
+import type { DockId } from "./UtilityDock"
+import { ExperimentsView } from "./panels/ExperimentsView"
+import { SourceControlView } from "./panels/SourceControlView"
+import { ArtifactsView } from "./panels/ArtifactsView"
 import {
   useActiveTab,
   useCollapsed,
@@ -13,8 +20,8 @@ import {
   useFocusedNodeId,
   useIdeStore,
   useTabs,
-} from "../ide/hooks";
-import type { FileNode } from "../ide/fileTree";
+} from "../ide/hooks"
+import type { FileNode } from "../ide/fileTree"
 import {
   buildTreeIndex,
   walkVisibleIndexed,
@@ -22,78 +29,82 @@ import {
   extToLangId,
   moveFocusIndexed,
   countDescendantsIndexed,
-} from "../ide/fileTree";
-import { ContextMenu, type MenuItem } from "./ContextMenu";
-import { getTreeMenu } from "../ide/menus";
-import { preloadContent, _dbgPreload } from "../ide/preloadCache";
+} from "../ide/fileTree"
+import { ContextMenu, type MenuItem } from "./ContextMenu"
+import { getTreeMenu } from "../ide/menus"
+import { preloadContent, _dbgPreload } from "../ide/preloadCache"
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 function fileIconForNode(node: FileNode): string {
-  if (node.kind === "folder") return "folder";
-  const lang = node.fileType ?? extToLangId(node.name);
-  if (lang === "python") return "python";
-  if (lang === "markdown") return "file-code";
-  if (lang === "json" || lang === "yaml" || lang === "toml") return "file-code";
-  if (lang === "typescript" || lang === "tsx") return "file-code";
-  if (lang === "css") return "file-code";
-  if (lang === "shell") return "terminal";
-  return "file";
+  if (node.kind === "folder") return "folder"
+  const lang = node.fileType ?? extToLangId(node.name)
+  if (lang === "python") return "python"
+  if (lang === "markdown") return "file-code"
+  if (lang === "json" || lang === "yaml" || lang === "toml") return "file-code"
+  if (lang === "typescript" || lang === "tsx") return "file-code"
+  if (lang === "css") return "file-code"
+  if (lang === "shell") return "terminal"
+  return "file"
 }
 
 function nodeIconColor(node: FileNode): string {
-  if (node.kind === "folder") return "text-secondary";
-  const lang = node.fileType ?? extToLangId(node.name);
-  if (lang === "python") return "text-tertiary";
-  if (lang === "json" || lang === "typescript" || lang === "tsx") return "text-primary";
-  return "text-outline";
+  if (node.kind === "folder") return "text-secondary"
+  const lang = node.fileType ?? extToLangId(node.name)
+  if (lang === "python") return "text-tertiary"
+  if (lang === "json" || lang === "typescript" || lang === "tsx")
+    return "text-primary"
+  return "text-outline"
 }
 
 // ── Generic header ────────────────────────────────────────────────────────
 
-function Header({ title, right }: { title: string; right?: React.ReactNode }) {
+function Header({ title, right }: { title: string right?: React.ReactNode }) {
   return (
     <div className="flex h-9 shrink-0 items-center justify-between border-b border-outline-variant px-3">
       <span className="label-caps text-on-surface-variant">{title}</span>
       <div className="flex items-center gap-2 text-outline">{right}</div>
     </div>
-  );
+  )
 }
 
 // ── Explorer view ──────────────────────────────────────────────────────────
 
-type InlineMode =
-  | { kind: "new-file"; parentId: string | null }
-  | { kind: "new-folder"; parentId: string | null }
-  | { kind: "rename"; nodeId: string }
-  | null;
+type InlineMode = { kind: "new-file" parentId: string | null } | {
+  kind: "new-folder"
+  parentId: string | null
+} | { kind: "rename" nodeId: string } | null
 
-function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
-  activeTabId: string | null;
-  workspaceRoot: string | null;
-  onOpenFolder: () => void;
+function ExplorerView({
+  activeTabId,
+  workspaceRoot,
+  onOpenFolder,
+}: {
+  activeTabId: string | null
+  workspaceRoot: string | null
+  onOpenFolder: () => void
 }) {
-  const tree = useFileTree();
-  const collapsed = useCollapsed();
-  const focusedNodeId = useFocusedNodeId();
-  const dispatch = useDispatch();
-  const store = useIdeStore();
-  const ctxMenu = useContextMenuState();
+  const tree = useFileTree()
+  const collapsed = useCollapsed()
+  const focusedNodeId = useFocusedNodeId()
+  const dispatch = useDispatch()
+  const store = useIdeStore()
+  const ctxMenu = useContextMenuState()
   // tabs is read here just to derive the active fileId (one-shot per
   // render). We don't actually use `tabs` for anything else.
-  const tabs = useTabs();
+  const tabs = useTabs()
   const activeFileId = useMemo(() => {
-    if (!activeTabId) return null;
-    const tab = tabs.find((t) => t.id === activeTabId);
-    return tab ? tab.fileId : null;
-  }, [tabs, activeTabId]);
+    if (!activeTabId) return null
+    const tab = tabs.find((t) => t.id === activeTabId)
+    return tab ? tab.fileId : null
+  }, [tabs, activeTabId])
 
-  const [inlineMode, setInlineMode] = useState<InlineMode>(null);
-  const [inlineValue, setInlineValue] = useState("");
-  const [inlineError, setInlineError] = useState<string | null>(null);
-  const [spin, setSpin] = useState(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const treeContainerRef = useRef<HTMLDivElement | null>(null);
+  const [inlineMode, setInlineMode] = useState<InlineMode>(null)
+  const [inlineValue, setInlineValue] = useState("")
+  const [inlineError, setInlineError] = useState<string | null>(null)
+  const [spin, setSpin] = useState(false)
+  const inputRef = useRef<HTMLInputElement | null>(null)
+  const treeContainerRef = useRef<HTMLDivElement | null>(null)
 
   // ── Performance: memoize the parent → children index and visible list ──
   //
@@ -118,98 +129,103 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
     // node's `(id, parentId, kind, name, expanded)`. Cheap enough that
     // re-computing it on every render is fine (~ microseconds), and it
     // ignores `content` so typing doesn't trigger a tree rebuild.
-    let h = tree.length;
+    let h = tree.length
     for (const n of tree) {
-      h = (h * 31 + (n.kind === "folder" ? 1 : 0) + n.name.length) | 0;
-      h = (h * 31 + (n.parentId?.length ?? 0)) | 0;
-      h = (h * 31 + (n.expanded ? 1 : 0)) | 0;
+      h = (h * 31 + (n.kind === "folder" ? 1 : 0) + n.name.length) | 0
+      h = (h * 31 + (n.parentId?.length ?? 0)) | 0
+      h = (h * 31 + (n.expanded ? 1 : 0)) | 0
     }
-    return h;
-  }, [tree]);
+    return h
+  }, [tree])
 
   const treeIndex = useMemo(
     () => buildTreeIndex(tree),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [treeStructureKey],
-  );
+  )
 
   const visible = useMemo(() => {
-    const out: { node: FileNode; depth: number }[] = [];
-    for (const entry of walkVisibleIndexed(treeIndex.childrenByParent, collapsed)) {
-      out.push(entry);
+    const out: { node: FileNode depth: number }[] = []
+    for (const entry of walkVisibleIndexed(
+      treeIndex.childrenByParent,
+      collapsed,
+    )) {
+      out.push(entry)
     }
-    return out;
-  }, [treeIndex, collapsed]);
+    return out
+  }, [treeIndex, collapsed])
 
   // Derive "all collapsed" directly from the memoized visible list rather
   // than via a `useEffect` + `setState` round-trip. The previous version
   // walked the tree a *second* time inside `useEffect`, then triggered an
   // extra render with `setAllCollapsed(...)`. Now it's free.
   const allCollapsed = useMemo(() => {
-    const folders = visible.filter((v) => v.node.kind === "folder");
-    if (folders.length === 0) return false;
-    return folders.every((v) => !v.node.expanded || collapsed[v.node.id]);
-  }, [visible, collapsed]);
+    const folders = visible.filter((v) => v.node.kind === "folder")
+    if (folders.length === 0) return false
+    return folders.every((v) => !v.node.expanded || collapsed[v.node.id])
+  }, [visible, collapsed])
 
   // Auto-focus inline input when it appears
   useEffect(() => {
     if (inlineMode && inputRef.current) {
-      inputRef.current.focus();
-      inputRef.current.select();
+      inputRef.current.focus()
+      inputRef.current.select()
     }
-  }, [inlineMode]);
+  }, [inlineMode])
 
   // ── Custom event listeners: ide:new-file, ide:new-folder ─────────────────
   // Fired by the context menu (menus.tsx) to trigger inline-input mode.
   useEffect(() => {
     function onNewFile(e: Event) {
-      const { parentId } = (e as CustomEvent<{ parentId: string | null }>).detail;
-      setInlineMode({ kind: "new-file", parentId });
-      setInlineValue("");
-      setInlineError(null);
+      const { parentId } = (e as CustomEvent<{ parentId: string | null }>)
+        .detail
+      setInlineMode({ kind: "new-file", parentId })
+      setInlineValue("")
+      setInlineError(null)
     }
     function onNewFolder(e: Event) {
-      const { parentId } = (e as CustomEvent<{ parentId: string | null }>).detail;
-      setInlineMode({ kind: "new-folder", parentId });
-      setInlineValue("");
-      setInlineError(null);
+      const { parentId } = (e as CustomEvent<{ parentId: string | null }>)
+        .detail
+      setInlineMode({ kind: "new-folder", parentId })
+      setInlineValue("")
+      setInlineError(null)
     }
     // Fired by the context menu's Rename entry to enter rename mode for a node.
     function onTreeRename(e: Event) {
-      const { nodeId } = (e as CustomEvent<{ nodeId: string }>).detail;
-      const node = treeIndex.byId.get(nodeId);
-      if (!node) return;
-      setInlineMode({ kind: "rename", nodeId: node.id });
-      setInlineValue(node.name);
-      setInlineError(null);
+      const { nodeId } = (e as CustomEvent<{ nodeId: string }>).detail
+      const node = treeIndex.byId.get(nodeId)
+      if (!node) return
+      setInlineMode({ kind: "rename", nodeId: node.id })
+      setInlineValue(node.name)
+      setInlineError(null)
     }
-    window.addEventListener("ide:new-file", onNewFile);
-    window.addEventListener("ide:new-folder", onNewFolder);
-    window.addEventListener("ide:tree-rename", onTreeRename);
+    window.addEventListener("ide:new-file", onNewFile)
+    window.addEventListener("ide:new-folder", onNewFolder)
+    window.addEventListener("ide:tree-rename", onTreeRename)
     return () => {
-      window.removeEventListener("ide:new-file", onNewFile);
-      window.removeEventListener("ide:new-folder", onNewFolder);
-      window.removeEventListener("ide:tree-rename", onTreeRename);
-    };
-  }, [treeIndex]);
+      window.removeEventListener("ide:new-file", onNewFile)
+      window.removeEventListener("ide:new-folder", onNewFolder)
+      window.removeEventListener("ide:tree-rename", onTreeRename)
+    }
+  }, [treeIndex])
 
   // ── F2 / Delete keyboard shortcuts ──────────────────────────────────
   useEffect(() => {
     function onKey(e: globalThis.KeyboardEvent) {
       // F2 → rename focused node
       if (e.key === "F2" && focusedNodeId) {
-        e.preventDefault();
-        const node = treeIndex.byId.get(focusedNodeId);
+        e.preventDefault()
+        const node = treeIndex.byId.get(focusedNodeId)
         if (node) {
-          setInlineMode({ kind: "rename", nodeId: node.id });
-          setInlineValue(node.name);
-          setInlineError(null);
+          setInlineMode({ kind: "rename", nodeId: node.id })
+          setInlineValue(node.name)
+          setInlineError(null)
         }
       }
       // Delete → open delete modal for focused node
       if (e.key === "Delete" && focusedNodeId) {
-        e.preventDefault();
-        const node = treeIndex.byId.get(focusedNodeId);
+        e.preventDefault()
+        const node = treeIndex.byId.get(focusedNodeId)
         if (node) {
           dispatch({
             type: "OPEN_MODAL",
@@ -223,101 +239,101 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
                   ? countDescendantsIndexed(treeIndex.childrenByParent, node.id)
                   : 0,
             },
-          });
+          })
         }
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [focusedNodeId, treeIndex, dispatch, visible]);
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [focusedNodeId, treeIndex, dispatch, visible])
 
   function startNewFile(parentId: string | null) {
-    setInlineMode({ kind: "new-file", parentId });
-    setInlineValue("");
-    setInlineError(null);
+    setInlineMode({ kind: "new-file", parentId })
+    setInlineValue("")
+    setInlineError(null)
   }
 
   function startNewFolder(parentId: string | null) {
-    setInlineMode({ kind: "new-folder", parentId });
-    setInlineValue("");
-    setInlineError(null);
+    setInlineMode({ kind: "new-folder", parentId })
+    setInlineValue("")
+    setInlineError(null)
   }
 
   function startRename(nodeId: string, currentName: string) {
-    setInlineMode({ kind: "rename", nodeId });
-    setInlineValue(currentName);
-    setInlineError(null);
+    setInlineMode({ kind: "rename", nodeId })
+    setInlineValue(currentName)
+    setInlineError(null)
   }
 
   function commitInline() {
-    if (!inlineMode) return;
-    const name = inlineValue.trim();
+    if (!inlineMode) return
+    const name = inlineValue.trim()
     if (!name) {
-      setInlineMode(null);
-      return;
+      setInlineMode(null)
+      return
     }
 
     if (inlineMode.kind === "new-file") {
       if (nameExists(tree, inlineMode.parentId, name)) {
-        setInlineError("File exists");
-        setTimeout(() => setInlineError(null), 600);
-        return;
+        setInlineError("File exists")
+        setTimeout(() => setInlineError(null), 600)
+        return
       }
-      dispatch({ type: "ADD_FILE", parentId: inlineMode.parentId, name });
-      setInlineMode(null);
+      dispatch({ type: "ADD_FILE", parentId: inlineMode.parentId, name })
+      setInlineMode(null)
     } else if (inlineMode.kind === "new-folder") {
       if (nameExists(tree, inlineMode.parentId, name)) {
-        setInlineError("Folder exists");
-        setTimeout(() => setInlineError(null), 600);
-        return;
+        setInlineError("Folder exists")
+        setTimeout(() => setInlineError(null), 600)
+        return
       }
-      dispatch({ type: "ADD_FOLDER", parentId: inlineMode.parentId, name });
-      setInlineMode(null);
+      dispatch({ type: "ADD_FOLDER", parentId: inlineMode.parentId, name })
+      setInlineMode(null)
     } else if (inlineMode.kind === "rename") {
-      dispatch({ type: "RENAME", nodeId: inlineMode.nodeId, name });
+      dispatch({ type: "RENAME", nodeId: inlineMode.nodeId, name })
       // Errors are surfaced via the reducer's toast; just close the input.
-      setInlineMode(null);
+      setInlineMode(null)
     }
   }
 
   function cancelInline() {
-    setInlineMode(null);
-    setInlineValue("");
-    setInlineError(null);
+    setInlineMode(null)
+    setInlineValue("")
+    setInlineError(null)
   }
 
   function onInlineKeyDown(e: KeyboardEvent<HTMLInputElement>) {
     if (e.key === "Enter") {
-      e.preventDefault();
-      commitInline();
+      e.preventDefault()
+      commitInline()
     } else if (e.key === "Escape") {
-      e.preventDefault();
-      cancelInline();
+      e.preventDefault()
+      cancelInline()
     }
   }
 
   function refresh() {
-    setSpin(true);
-    window.setTimeout(() => setSpin(false), 700);
+    setSpin(true)
+    window.setTimeout(() => setSpin(false), 700)
     // Reload the current workspace by re-reading the directory.
     if (workspaceRoot) {
-      onOpenFolder();
+      onOpenFolder()
     }
   }
 
   function toggleAll() {
     if (allCollapsed) {
-      dispatch({ type: "EXPAND_ALL" });
+      dispatch({ type: "EXPAND_ALL" })
     } else {
-      dispatch({ type: "COLLAPSE_ALL" });
+      dispatch({ type: "COLLAPSE_ALL" })
     }
   }
 
   function onTreeClick(e: React.MouseEvent, node: FileNode) {
-    e.stopPropagation();
-    dispatch({ type: "FOCUS_NODE", nodeId: node.id });
+    e.stopPropagation()
+    dispatch({ type: "FOCUS_NODE", nodeId: node.id })
     if (node.kind === "folder") {
-      dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id });
+      dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id })
     } else {
       // ── Pre-warm the file content BEFORE the editor mounts ───────────
       // By firing the disk read here (in the click task, before
@@ -331,67 +347,82 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
       // problem, but the cache still saves one round-trip on every
       // cold file open, so we keep it.
       if (workspaceRoot) {
-        const absPath = `${workspaceRoot}/${node.id}`;
-        _dbgPreload("Sidebar.onTreeClick", "preload_dispatch", { absPath, fileId: node.id });
-        preloadContent(absPath);
+        const absPath = `${workspaceRoot}/${node.id}`
+        _dbgPreload("Sidebar.onTreeClick", "preload_dispatch", {
+          absPath,
+          fileId: node.id,
+        })
+        preloadContent(absPath)
       }
-      dispatch({ type: "OPEN_FILE", fileId: node.id });
+      dispatch({ type: "OPEN_FILE", fileId: node.id })
     }
   }
 
   function onTreeContextMenu(e: React.MouseEvent, node: FileNode) {
-    e.preventDefault();
-    e.stopPropagation();
-    dispatch({ type: "FOCUS_NODE", nodeId: node.id });
+    e.preventDefault()
+    e.stopPropagation()
+    dispatch({ type: "FOCUS_NODE", nodeId: node.id })
     dispatch({
       type: "OPEN_CONTEXT_MENU",
-      payload: { surface: "tree", targetId: node.id, x: e.clientX, y: e.clientY },
-    });
+      payload: {
+        surface: "tree",
+        targetId: node.id,
+        x: e.clientX,
+        y: e.clientY,
+      },
+    })
   }
 
   function onTreeKeyDown(e: React.KeyboardEvent) {
     if (e.key === "ArrowDown") {
-      e.preventDefault();
+      e.preventDefault()
       const next = moveFocusIndexed(
         treeIndex.childrenByParent,
         focusedNodeId,
         1,
         collapsed,
-      );
-      if (next) dispatch({ type: "FOCUS_NODE", nodeId: next });
+      )
+      if (next) dispatch({ type: "FOCUS_NODE", nodeId: next })
     } else if (e.key === "ArrowUp") {
-      e.preventDefault();
+      e.preventDefault()
       const next = moveFocusIndexed(
         treeIndex.childrenByParent,
         focusedNodeId,
         -1,
         collapsed,
-      );
-      if (next) dispatch({ type: "FOCUS_NODE", nodeId: next });
+      )
+      if (next) dispatch({ type: "FOCUS_NODE", nodeId: next })
     } else if (e.key === "Enter") {
-      e.preventDefault();
-      if (!focusedNodeId) return;
-      const node = treeIndex.byId.get(focusedNodeId);
-      if (!node) return;
+      e.preventDefault()
+      if (!focusedNodeId) return
+      const node = treeIndex.byId.get(focusedNodeId)
+      if (!node) return
       if (node.kind === "folder") {
-        dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id });
+        dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id })
       } else {
-        dispatch({ type: "OPEN_FILE", fileId: node.id });
+        dispatch({ type: "OPEN_FILE", fileId: node.id })
       }
     } else if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      if (!focusedNodeId) return;
-      const node = treeIndex.byId.get(focusedNodeId);
-      if (node?.kind === "folder" && (node.expanded ?? true) && !collapsed[node.id]) {
-        dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id });
+      e.preventDefault()
+      if (!focusedNodeId) return
+      const node = treeIndex.byId.get(focusedNodeId)
+      if (
+        node?.kind === "folder" &&
+        (node.expanded ?? true) &&
+        !collapsed[node.id]
+      ) {
+        dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id })
       }
     } else if (e.key === "ArrowRight") {
-      e.preventDefault();
-      if (!focusedNodeId) return;
-      const node = treeIndex.byId.get(focusedNodeId);
-      if (!node) return;
-      if (node.kind === "folder" && (!(node.expanded ?? true) || collapsed[node.id])) {
-        dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id });
+      e.preventDefault()
+      if (!focusedNodeId) return
+      const node = treeIndex.byId.get(focusedNodeId)
+      if (!node) return
+      if (
+        node.kind === "folder" &&
+        (!(node.expanded ?? true) || collapsed[node.id])
+      ) {
+        dispatch({ type: "TOGGLE_COLLAPSE", nodeId: node.id })
       }
     }
   }
@@ -434,7 +465,10 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
               aria-label={allCollapsed ? "Expand All" : "Collapse All"}
               className="flex h-6 w-6 items-center justify-center rounded text-outline transition-colors hover:bg-surface-container hover:text-on-surface"
             >
-              <Icon name={allCollapsed ? "chevrons-right" : "collapse"} size={14} />
+              <Icon
+                name={allCollapsed ? "chevrons-right" : "collapse"}
+                size={14}
+              />
             </button>
           </>
         }
@@ -447,7 +481,8 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
       >
         {/* Inline input row — rendered at root */}
         {inlineMode &&
-          (inlineMode.kind === "new-file" || inlineMode.kind === "new-folder") &&
+          (inlineMode.kind === "new-file" ||
+            inlineMode.kind === "new-folder") &&
           inlineMode.parentId === null && (
             <InlineInputRow
               inputRef={inputRef}
@@ -455,23 +490,26 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
               onChange={setInlineValue}
               onKeyDown={onInlineKeyDown}
               onBlur={commitInline}
-              icon={inlineMode.kind === "new-folder" ? "folder-plus" : "file-plus"}
+              icon={
+                inlineMode.kind === "new-folder" ? "folder-plus" : "file-plus"
+              }
               error={inlineError}
               depth={0}
             />
           )}
 
         {visible.map(({ node, depth }) => {
-          const isFolder = node.kind === "folder";
-          const open = isFolder && (node.expanded ?? true) && !collapsed[node.id];
-          const isFocused = focusedNodeId === node.id;
+          const isFolder = node.kind === "folder"
+          const open =
+            isFolder && (node.expanded ?? true) && !collapsed[node.id]
+          const isFocused = focusedNodeId === node.id
           // isActive: this file row corresponds to the currently active tab.
           // We compute the active fileId *once* outside the loop instead of
           // running `tree.find` + `tabs.find` for every visible row. The
           // old version was O(visible × tree) — quadratic — and ran on
           // every render, which was the dominant cost on large trees.
           const isActive =
-            !isFolder && activeTabId !== null && activeFileId === node.id;
+            !isFolder && activeTabId !== null && activeFileId === node.id
 
           // Render inline rename input if this is the renaming node
           if (inlineMode?.kind === "rename" && inlineMode.nodeId === node.id) {
@@ -487,12 +525,13 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
                 error={inlineError}
                 depth={depth}
               />
-            );
+            )
           }
 
           // Render inline "new file/folder" input if this is the parent and it's at root
           if (
-            (inlineMode?.kind === "new-file" || inlineMode?.kind === "new-folder") &&
+            (inlineMode?.kind === "new-file" ||
+              inlineMode?.kind === "new-folder") &&
             (inlineMode as { parentId?: string | null })?.parentId === node.id
           ) {
             return (
@@ -514,13 +553,15 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
                   onKeyDown={onInlineKeyDown}
                   onBlur={commitInline}
                   icon={
-                    inlineMode.kind === "new-folder" ? "folder-plus" : "file-plus"
+                    inlineMode.kind === "new-folder"
+                      ? "folder-plus"
+                      : "file-plus"
                   }
                   error={inlineError}
                   depth={depth + 1}
                 />
               </div>
-            );
+            )
           }
 
           return (
@@ -534,7 +575,7 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
               onClick={onTreeClick}
               onContextMenu={onTreeContextMenu}
             />
-          );
+          )
         })}
 
         {tree.length === 0 && (
@@ -545,21 +586,22 @@ function ExplorerView({ activeTabId, workspaceRoot, onOpenFolder }: {
       </div>
 
       {/* Tree context menu */}
-      {ctxMenu?.surface === "tree" && (() => {
-        const node = treeIndex.byId.get(ctxMenu.targetId);
-        if (!node) return null;
-        const items: MenuItem[] = getTreeMenu(store, node);
-        return (
-          <ContextMenu
-            x={ctxMenu.x}
-            y={ctxMenu.y}
-            items={items}
-            onClose={() => dispatch({ type: "CLOSE_CONTEXT_MENU" })}
-          />
-        );
-      })()}
+      {ctxMenu?.surface === "tree" &&
+        (() => {
+          const node = treeIndex.byId.get(ctxMenu.targetId)
+          if (!node) return null
+          const items: MenuItem[] = getTreeMenu(store, node)
+          return (
+            <ContextMenu
+              x={ctxMenu.x}
+              y={ctxMenu.y}
+              items={items}
+              onClose={() => dispatch({ type: "CLOSE_CONTEXT_MENU" })}
+            />
+          )
+        })()}
     </>
-  );
+  )
 }
 
 // ── Tree row ───────────────────────────────────────────────────────────────
@@ -573,15 +615,15 @@ function TreeRow({
   onClick,
   onContextMenu,
 }: {
-  node: FileNode;
-  depth: number;
-  open: boolean;
-  isFocused: boolean;
-  isActive: boolean;
-  onClick: (e: React.MouseEvent, n: FileNode) => void;
-  onContextMenu: (e: React.MouseEvent, n: FileNode) => void;
+  node: FileNode
+  depth: number
+  open: boolean
+  isFocused: boolean
+  isActive: boolean
+  onClick: (e: React.MouseEvent, n: FileNode) => void
+  onContextMenu: (e: React.MouseEvent, n: FileNode) => void
 }) {
-  const isFolder = node.kind === "folder";
+  const isFolder = node.kind === "folder"
   return (
     <button
       onClick={(e) => onClick(e, node)}
@@ -590,12 +632,14 @@ function TreeRow({
         isActive
           ? "bg-surface-container-high text-on-surface"
           : isFocused
-          ? "bg-surface-container text-on-surface"
-          : "text-on-surface-variant hover:bg-surface-container"
+            ? "bg-surface-container text-on-surface"
+            : "text-on-surface-variant hover:bg-surface-container"
       }`}
       style={{ paddingLeft: 8 + depth * 12 }}
     >
-      {isActive && <span className="absolute left-0 top-0 h-full w-0.5 bg-primary" />}
+      {isActive && (
+        <span className="absolute left-0 top-0 h-full w-0.5 bg-primary" />
+      )}
       {isFolder ? (
         <Icon
           name={open ? "chevron-down" : "chevron-right"}
@@ -612,7 +656,7 @@ function TreeRow({
       />
       <span className="flex-1 truncate font-body text-[13px]">{node.name}</span>
     </button>
-  );
+  )
 }
 
 // ── Inline input row (for new file/folder and rename) ──────────────────────
@@ -627,16 +671,16 @@ function InlineInputRow({
   error,
   depth,
 }: {
-  inputRef: React.RefObject<HTMLInputElement | null>;
-  value: string;
-  onChange: (v: string) => void;
-  onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void;
-  onBlur: () => void;
-  icon: string;
-  error: string | null;
-  depth: number;
+  inputRef: React.RefObject<HTMLInputElement | null>
+  value: string
+  onChange: (v: string) => void
+  onKeyDown: (e: KeyboardEvent<HTMLInputElement>) => void
+  onBlur: () => void
+  icon: string
+  error: string | null
+  depth: number
 }) {
-  const style: CSSProperties = { paddingLeft: 8 + depth * 12 };
+  const style: CSSProperties = { paddingLeft: 8 + depth * 12 }
   return (
     <div
       className="relative flex h-6 w-full items-center gap-2 pr-2"
@@ -667,7 +711,7 @@ function InlineInputRow({
         </span>
       )}
     </div>
-  );
+  )
 }
 
 // ── Runs view ──────────────────────────────────────────────────────────────
@@ -680,9 +724,12 @@ function RunsView({ onOpenFolder }: { onOpenFolder: () => void }) {
       <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
         <Icon name="flask-conical" size={28} className="text-outline-variant" />
         <div>
-          <p className="font-sans text-[13px] font-medium text-on-surface">No runs yet</p>
+          <p className="font-sans text-[13px] font-medium text-on-surface">
+            No runs yet
+          </p>
           <p className="mt-1 font-body text-[12px] text-on-surface-variant">
-            Run tracking will appear here once you connect a backend (W&amp;B, MLflow, etc.).
+            Run tracking will appear here once you connect a backend (W&amp;B,
+            MLflow, etc.).
           </p>
         </div>
         <button
@@ -693,7 +740,7 @@ function RunsView({ onOpenFolder }: { onOpenFolder: () => void }) {
         </button>
       </div>
     </>
-  );
+  )
 }
 
 // ── Sidebar root ──────────────────────────────────────────────────────────
@@ -706,7 +753,7 @@ const TITLES: Partial<Record<DockId, string>> = {
   extensions: "Extensions",
   account: "Account",
   settings: "Settings",
-};
+}
 
 export function Sidebar({
   view,
@@ -715,13 +762,13 @@ export function Sidebar({
   onOpenFolder,
   width = 240,
 }: {
-  view: DockId;
-  workspaceRoot: string | null;
-  workspaceName: string | null;
-  onOpenFolder: () => void;
-  width?: number;
+  view: DockId
+  workspaceRoot: string | null
+  workspaceName: string | null
+  onOpenFolder: () => void
+  width?: number
 }) {
-  const activeTab = useActiveTab();
+  const activeTab = useActiveTab()
 
   return (
     <aside
@@ -754,5 +801,5 @@ export function Sidebar({
         </>
       )}
     </aside>
-  );
+  )
 }

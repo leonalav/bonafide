@@ -6,12 +6,14 @@
  * Pointer-events: container is none, toasts are auto.
  */
 
-import { createPortal } from "react-dom";
-import { useToasts } from "../ide/hooks";
-import { Toast } from "./Toast";
+import { createPortal } from "react-dom"
+
+import { useToasts } from "../ide/hooks"
+
+import { Toast } from "./Toast"
 
 export function ToastHost() {
-  const toasts = useToasts();
+  const toasts = useToasts()
 
   return createPortal(
     <div
@@ -22,6 +24,7 @@ export function ToastHost() {
         <Toast key={t.id} toast={t} />
       ))}
     </div>,
+
     document.body,
-  );
+  )
 }

@@ -11,38 +11,38 @@
  * `role="option"` with `aria-selected`.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Icon } from "../ui/Icon";
-import type { ChatThread } from "../../chats/ChatStore";
-import { useChatsStore } from "../../chats/ChatStoreProvider";
-import { Popover } from "./Popover";
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Icon } from "../ui/Icon"
+import type { ChatThread } from "../../chats/ChatStore"
+import { useChatsStore } from "../../chats/ChatStoreProvider"
+import { Popover } from "./Popover"
 
 // ── Time grouping helpers ────────────────────────────────────────────────────
 
-type Group = { label: string; threads: ChatThread[] };
+type Group = { label: string threads: ChatThread[] }
 
 function startOfDay(ts: number): number {
-  const d = new Date(ts);
-  d.setHours(0, 0, 0, 0);
-  return d.getTime();
+  const d = new Date(ts)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
 }
 
 function groupThreads(threads: ChatThread[]): Group[] {
-  const now = Date.now();
-  const todayStart = startOfDay(now);
-  const yesterdayStart = todayStart - 86_400_000;
-  const weekStart = todayStart - 7 * 86_400_000;
+  const now = Date.now()
+  const todayStart = startOfDay(now)
+  const yesterdayStart = todayStart - 86_400_000
+  const weekStart = todayStart - 7 * 86_400_000
 
-  const buckets: { label: string; min: number; items: ChatThread[] }[] = [
+  const buckets: { label: string min: number items: ChatThread[] }[] = [
     { label: "Today", min: todayStart, items: [] },
     { label: "Yesterday", min: yesterdayStart, items: [] },
     { label: "Earlier this week", min: weekStart, items: [] },
     { label: "Older", min: 0, items: [] },
-  ];
+  ]
 
-  const sorted = [...threads].sort((a, b) => b.updatedAt - a.updatedAt);
+  const sorted = [...threads].sort((a, b) => b.updatedAt - a.updatedAt)
   for (const t of sorted) {
-    const ts = t.updatedAt;
+    const ts = t.updatedAt
     const bucket =
       ts >= todayStart
         ? buckets[0]!
@@ -50,40 +50,40 @@ function groupThreads(threads: ChatThread[]): Group[] {
           ? buckets[1]!
           : ts >= weekStart
             ? buckets[2]!
-            : buckets[3]!;
-    bucket.items.push(t);
+            : buckets[3]!
+    bucket.items.push(t)
   }
 
   return buckets
     .filter((b) => b.items.length > 0)
-    .map((b) => ({ label: b.label, threads: b.items }));
+    .map((b) => ({ label: b.label, threads: b.items }))
 }
 
 function previewFor(thread: ChatThread): string {
   for (let i = thread.messages.length - 1; i >= 0; i -= 1) {
-    const m = thread.messages[i]!;
-    const text = m.content.trim().split(/\r?\n/)[0] ?? "";
+    const m = thread.messages[i]!
+    const text = m.content.trim().split(/\r?\n/)[0] ?? ""
     if (text) {
-      return text.length > 80 ? `${text.slice(0, 80)}…` : text;
+      return text.length > 80 ? `${text.slice(0, 80)}…` : text
     }
   }
-  return "Empty thread";
+  return "Empty thread"
 }
 
 function relativeTime(ts: number): string {
-  const diff = Date.now() - ts;
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return "just now";
-  const min = Math.floor(sec / 60);
-  if (min < 60) return `${min}m ago`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr}h ago`;
-  const days = Math.floor(hr / 24);
-  if (days < 7) return `${days}d ago`;
+  const diff = Date.now() - ts
+  const sec = Math.floor(diff / 1000)
+  if (sec < 60) return "just now"
+  const min = Math.floor(sec / 60)
+  if (min < 60) return `${min}m ago`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr}h ago`
+  const days = Math.floor(hr / 24)
+  if (days < 7) return `${days}d ago`
   return new Date(ts).toLocaleDateString([], {
     month: "short",
     day: "numeric",
-  });
+  })
 }
 
 // ── ThreadList ───────────────────────────────────────────────────────────────
@@ -92,18 +92,14 @@ export function ThreadList({
   anchor,
   onClose,
 }: {
-  anchor: DOMRect | null;
-  onClose: () => void;
+  anchor: DOMRect | null
+  onClose: () => void
 }) {
-  const {
-    threads,
-    activeThread,
-    setActiveThread,
-    deleteThread,
-  } = useChatsStore();
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const confirmTimerRef = useRef<number | null>(null);
+  const { threads, activeThread, setActiveThread, deleteThread } =
+    useChatsStore()
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const confirmTimerRef = useRef<number | null>(null)
 
   // REVIEW(opus) F-16 [final medium]: cancel any pending confirmation
   // timeout when the popover closes / unmounts so we don't fire
@@ -111,13 +107,13 @@ export function ThreadList({
   useEffect(() => {
     return () => {
       if (confirmTimerRef.current !== null) {
-        window.clearTimeout(confirmTimerRef.current);
-        confirmTimerRef.current = null;
+        window.clearTimeout(confirmTimerRef.current)
+        confirmTimerRef.current = null
       }
-    };
-  }, []);
+    }
+  }, [])
 
-  const groups = useMemo(() => groupThreads(threads), [threads]);
+  const groups = useMemo(() => groupThreads(threads), [threads])
 
   return (
     <Popover anchor={anchor} width={360} height={420} onClose={onClose}>
@@ -168,8 +164,8 @@ export function ThreadList({
                 </div>
 
                 {g.threads.map((t) => {
-                  const isActive = activeThread?.id === t.id;
-                  const isConfirming = confirmDelete === t.id;
+                  const isActive = activeThread?.id === t.id
+                  const isConfirming = confirmDelete === t.id
                   return (
                     <div
                       key={t.id}
@@ -188,8 +184,8 @@ export function ThreadList({
                       <button
                         ref={isActive ? triggerRef : null}
                         onClick={() => {
-                          setActiveThread(t.id);
-                          onClose();
+                          setActiveThread(t.id)
+                          onClose()
                         }}
                         className="flex min-w-0 flex-1 flex-col gap-0.5 text-left"
                       >
@@ -214,36 +210,36 @@ export function ThreadList({
                       {/* Delete button */}
                       <button
                         onClick={(e) => {
-                          e.stopPropagation();
+                          e.stopPropagation()
                           if (isConfirming) {
-                            deleteThread(t.id);
-                            setConfirmDelete(null);
+                            deleteThread(t.id)
+                            setConfirmDelete(null)
                             if (confirmTimerRef.current !== null) {
-                              window.clearTimeout(confirmTimerRef.current);
-                              confirmTimerRef.current = null;
+                              window.clearTimeout(confirmTimerRef.current)
+                              confirmTimerRef.current = null
                             }
                           } else {
-                            setConfirmDelete(t.id);
+                            setConfirmDelete(t.id)
                             // REVIEW(opus) FINDING 12 [low]: the for-loop
                             // uses `let` (block-scoped), so `t.id` is correct
                             // per iteration. Do not refactor to .forEach/.map
                             // without wrapping in an IIFE.
-                            const capturedId = t.id;
+                            const capturedId = t.id
                             // Clear any prior timer before starting a new one.
                             if (confirmTimerRef.current !== null)
-                              window.clearTimeout(confirmTimerRef.current);
+                              window.clearTimeout(confirmTimerRef.current)
                             confirmTimerRef.current = window.setTimeout(() => {
                               setConfirmDelete((c) =>
                                 c === capturedId ? null : c,
-                              );
-                              confirmTimerRef.current = null;
-                            }, 3000);
+                              )
+                              confirmTimerRef.current = null
+                            }, 3000)
                           }
                         }}
-                        title={isConfirming ? "Click again to confirm" : "Delete"}
-                        aria-label={
-                          isConfirming ? "Confirm delete" : "Delete"
+                        title={
+                          isConfirming ? "Click again to confirm" : "Delete"
                         }
+                        aria-label={isConfirming ? "Confirm delete" : "Delete"}
                         className={`flex h-6 w-6 shrink-0 items-center justify-center rounded transition-colors ${
                           isConfirming
                             ? "bg-error/15 text-error"
@@ -256,7 +252,7 @@ export function ThreadList({
                         />
                       </button>
                     </div>
-                  );
+                  )
                 })}
               </section>
             ))
@@ -264,5 +260,5 @@ export function ThreadList({
         </div>
       </div>
     </Popover>
-  );
+  )
 }

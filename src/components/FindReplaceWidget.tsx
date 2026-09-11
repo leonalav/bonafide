@@ -49,8 +49,16 @@ import {
   type ChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
 } from "react"
-import { EditorView, Decoration, ViewPlugin, type DecorationSet } from "@codemirror/view"
+
+import {
+  EditorView,
+  Decoration,
+  ViewPlugin,
+  type DecorationSet,
+} from "@codemirror/view"
+
 import { StateField, StateEffect } from "@codemirror/state"
+
 import {
   SearchQuery,
   setSearchQuery,
@@ -59,31 +67,48 @@ import {
   replaceNext,
   replaceAll,
 } from "@codemirror/search"
+
 import { Icon } from "./ui/Icon"
 
 // ── Match-decoration plugin ──────────────────────────────────────────────
+
 //
+
 // CodeMirror's built-in search extension already decorates matches via
+
 // the `search` config — but it only activates after `openSearchPanel`
+
 // has been called at least once. Since we replace that panel with our
+
 // own React widget, we install a separate decoration extension that
+
 // mirrors the built-in visuals: an underline + tinted background for
+
 // every match, plus a stronger (bordered) tint for the current match.
+
 //
+
 // The match ranges are pushed into the editor as a StateEffect; a
+
 // StateField stores the latest set, and a separate ViewPlugin turns
+
 // that into a `DecorationSet`. Splitting the data path this way lets
+
 // the React widget stay declarative — every effect (typing in the find
+
 // input, toggling options) just dispatches a single effect with the new
+
 // ranges.
 
 const setSearchMatches = StateEffect.define<{
-  ranges: { from: number; to: number }[]
+  ranges: { from: number to: number }[]
+
   active: number
 } | null>()
 
 interface SearchMatchState {
-  ranges: { from: number; to: number }[]
+  ranges: { from: number to: number }[]
+
   active: number
 }
 
@@ -91,54 +116,78 @@ const searchMatchField = StateField.define<SearchMatchState>({
   create() {
     return { ranges: [], active: -1 }
   },
+
   update(value, tr) {
     for (const e of tr.effects) {
       if (e.is(setSearchMatches)) {
         return e.value ?? { ranges: [], active: -1 }
       }
     }
+
     // Doc changes or cursor moves: re-resolve the active match index so
+
     // the highlight follows the caret. The widget re-pushes the full
+
     // ranges array when the query string changes, so we only need to
+
     // update `active` here.
+
     if (tr.docChanged || tr.selection) {
       if (value.ranges.length === 0) return value
+
       const pos = tr.state.selection.main.head
+
       let nextActive = value.active
+
       for (let i = 0; i < value.ranges.length; i++) {
         const r = value.ranges[i]
+
         if (pos <= r.to) {
           nextActive = i
+
           break
         }
+
         if (i === value.ranges.length - 1) {
           nextActive = -1
         }
       }
+
       return { ...value, active: nextActive }
     }
+
     return value
   },
 })
 
 function buildMatchDecorations(state: SearchMatchState): DecorationSet {
   if (state.ranges.length === 0) return Decoration.none
-  const decos: { from: number; to: number; deco: Decoration }[] = []
+
+  const decos: { from: number to: number deco: Decoration }[] = []
+
   for (let i = 0; i < state.ranges.length; i++) {
     const r = state.ranges[i]
+
     if (r.from === r.to) continue
+
     const isActive = i === state.active
+
     decos.push({
       from: r.from,
+
       to: r.to,
+
       deco: Decoration.mark({
         class: isActive ? "cm-find-active" : "cm-find-match",
+
         attributes: isActive ? { "data-active": "true" } : {},
       }),
     })
   }
+
   return Decoration.set(
     decos.map((d) => d.deco.range(d.from, d.to)),
+
     true,
   )
 }
@@ -146,90 +195,124 @@ function buildMatchDecorations(state: SearchMatchState): DecorationSet {
 const searchMatchDecorations = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet
+
     constructor(view: EditorView) {
       const state = view.state.field(searchMatchField, false) ?? {
         ranges: [],
+
         active: -1,
       }
+
       this.decorations = buildMatchDecorations(state)
     }
+
     update(update: import("@codemirror/view").ViewUpdate) {
       const cur = update.state.field(searchMatchField, false) ?? {
         ranges: [],
+
         active: -1,
       }
+
       const prev = update.startState.field(searchMatchField, false) ?? {
         ranges: [],
+
         active: -1,
       }
-      if (
-        update.docChanged ||
-        update.selectionSet ||
-        prev !== cur
-      ) {
+
+      if (update.docChanged || update.selectionSet || prev !== cur) {
         this.decorations = buildMatchDecorations(cur)
       }
     }
   },
+
   {
     decorations: (v) => v.decorations,
   },
 )
 
 // The full extension set: state field + view plugin. Imported by the
+
 // editor and merged with the rest of its extensions.
+
 export const findReplaceExtensions = [
   searchMatchField,
+
   searchMatchDecorations,
 ]
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 // VS Code displays `99+` once the match count exceeds the cap. We use
+
 // the same limit (999) to keep the UI legible for very long files.
+
 const MATCHES_LIMIT = 999
 
 function computeMatches(
   view: EditorView,
+
   query: SearchQuery,
-): { from: number; to: number }[] {
+): { from: number to: number }[] {
   if (!query.valid) return []
+
   // The cursor iterator exposes `value` and `done` properties on the
+
   // *iterator instance* (not on the `IteratorResult` returned by
+
   // `next()`). We must call `next()` at least once before reading
+
   // `cursor.value` — the docs are explicit about this. Loop by calling
+
   // `next()` and inspecting the iterator's own `value` after each step.
+
   const cursor = query.getCursor(view.state) as {
     next: () => unknown
-    value: { from: number; to: number }
+
+    value: { from: number to: number }
+
     done: boolean
   }
+
   cursor.next()
-  const ranges: { from: number; to: number }[] = []
+
+  const ranges: { from: number to: number }[] = []
+
   let count = 0
+
   while (!cursor.done && count < MATCHES_LIMIT) {
     if (cursor.value.from === cursor.value.to) {
       // Empty match — still need to advance the iterator by calling
+
       // `next()` to avoid an infinite loop.
+
       cursor.next()
+
       continue
     }
+
     ranges.push({ from: cursor.value.from, to: cursor.value.to })
+
     cursor.next()
+
     count++
   }
+
   return ranges
 }
 
 function activeMatchIndex(
-  ranges: { from: number; to: number }[],
+  ranges: { from: number to: number }[],
+
   pos: number,
 ): number {
   if (ranges.length === 0) return -1
+
   for (let i = 0; i < ranges.length; i++) {
     const r = ranges[i]
+
     if (pos <= r.to) return i
   }
+
   return -1
 }
 
@@ -237,15 +320,23 @@ function activeMatchIndex(
 
 function RoundIconButton({
   label,
+
   onClick,
+
   disabled,
+
   active,
+
   children,
 }: {
   label: string
+
   onClick: () => void
+
   disabled?: boolean
+
   active?: boolean
+
   children: React.ReactNode
 }) {
   return (
@@ -256,6 +347,7 @@ function RoundIconButton({
       title={label}
       onClick={(e) => {
         e.preventDefault()
+
         if (!disabled) onClick()
       }}
       onMouseDown={(e) => e.preventDefault()}
@@ -270,13 +362,19 @@ function RoundIconButton({
 
 function ToggleButton({
   label,
+
   onClick,
+
   active,
+
   icon,
 }: {
   label: string
+
   onClick: () => void
+
   active: boolean
+
   icon: "case-sensitive" | "whole-word" | "regex"
 }) {
   return (
@@ -286,6 +384,7 @@ function ToggleButton({
       title={label}
       onClick={(e) => {
         e.preventDefault()
+
         onClick()
       }}
       onMouseDown={(e) => e.preventDefault()}
@@ -304,56 +403,89 @@ function ToggleButton({
 
 export function FindReplaceWidget({
   view,
-}: {
+
   /** CodeMirror editor view — required so the widget can drive
    *  search, replace, and decoration dispatch directly. */
+}: {
   view: EditorView | null
 }) {
   // ── Local UI state ──────────────────────────────────────────────────────
+
   const [visible, setVisible] = useState(false)
+
   const [replaceVisible, setReplaceVisible] = useState(false)
+
   const [query, setQuery] = useState("")
+
   const [replaceText, setReplaceText] = useState("")
+
   const [caseSensitive, setCaseSensitive] = useState(false)
+
   const [wholeWord, setWholeWord] = useState(false)
+
   const [isRegex, setIsRegex] = useState(false)
-  const [matchRanges, setMatchRanges] = useState<
-    { from: number; to: number }[]
-  >([])
+
+  const [matchRanges, setMatchRanges] = useState<{ from: number to: number }[]>(
+    [],
+  )
+
   const [activeIndex, setActiveIndex] = useState(-1)
+
   const [regexError, setRegexError] = useState<string | null>(null)
 
   // ── Refs ───────────────────────────────────────────────────────────────
+
   const findInputRef = useRef<HTMLInputElement | null>(null)
+
   const replaceInputRef = useRef<HTMLInputElement | null>(null)
+
   // Track the last query we pushed to CodeMirror so we don't re-push on
+
   // every keystroke when nothing changed (CodeMirror recomputes its own
+
   // cursor on each push, which can be expensive for large files).
+
   const lastPushedQueryRef = useRef<string>("")
 
   // ── Subscribe to open/close events ──────────────────────────────────────
+
   useEffect(() => {
     function onOpen(e: Event) {
-      const detail = (e as CustomEvent).detail as
-        | { mode?: "find" | "replace"; query?: string }
-        | undefined
+      const detail = (e as CustomEvent).detail as {
+        mode?: "find" | "replace"
+        query?: string
+      } | undefined
+
       if (detail?.mode === "replace") {
         setReplaceVisible(true)
       }
+
       // Seed from the current selection when no explicit query was
+
       // passed and we don't already have text in the input. Note: in
+
       // CodeMirror 6, `view.state.selection.main` is an `EditorSelection`
+
       // object (with `from` / `to` numeric fields), NOT a string. Calling
+
       // `String(...)` on it produced "[object Object]" in the input —
+
       // the canonical way to read the selected text is to slice the
+
       // editor's document between the main selection's `from` and `to`
+
       // positions. We additionally coerce the result through `String(...)`
+
       // as a belt-and-suspenders guard against any future API change
+
       // that returns a non-string here.
+
       let selectionText = ""
+
       if (view) {
         try {
           const main = view.state.selection.main
+
           if (main && typeof main.from === "number" && main.from !== main.to) {
             selectionText = String(view.state.sliceDoc(main.from, main.to))
           }
@@ -361,50 +493,70 @@ export function FindReplaceWidget({
           selectionText = ""
         }
       }
-      const detailQuery =
-        typeof detail?.query === "string" ? detail.query : ""
+
+      const detailQuery = typeof detail?.query === "string" ? detail.query : ""
+
       const seed = String(detailQuery || selectionText || "")
+
       if (seed) {
         setQuery((q) => (q ? q : seed))
       }
+
       setVisible(true)
     }
+
     function onClose() {
       setVisible(false)
     }
+
     window.addEventListener("ide:open-find", onOpen)
+
     window.addEventListener("ide:close-find", onClose)
+
     return () => {
       window.removeEventListener("ide:open-find", onOpen)
+
       window.removeEventListener("ide:close-find", onClose)
     }
   }, [view])
 
   // ── Build & dispatch a SearchQuery whenever the inputs change ───────────
+
   const currentQuery = useMemo(() => {
     if (!query) return null
+
     return new SearchQuery({
       search: query,
+
       caseSensitive,
+
       wholeWord,
+
       regexp: isRegex,
     })
   }, [query, caseSensitive, wholeWord, isRegex])
 
   useEffect(() => {
     if (!view) return
+
     if (!visible) return
 
     // Validate regex queries up-front so we can show the error inline.
+
     if (isRegex && query.length > 0) {
       try {
         new RegExp(query, caseSensitive ? "g" : "gi")
+
         setRegexError(null)
       } catch (e) {
         setRegexError((e as Error).message)
+
         setMatchRanges([])
+
         setActiveIndex(-1)
+
         view.dispatch({ effects: setSearchMatches.of(null) })
+
         return
       }
     } else {
@@ -413,20 +565,31 @@ export function FindReplaceWidget({
 
     if (!currentQuery || !currentQuery.valid) {
       setMatchRanges([])
+
       setActiveIndex(-1)
+
       view.dispatch({ effects: setSearchMatches.of(null) })
+
       return
     }
 
     const ranges = computeMatches(view, currentQuery)
+
     setMatchRanges(ranges)
+
     const idx = activeMatchIndex(ranges, view.state.selection.main.head)
+
     setActiveIndex(idx)
 
     // Push the query into the editor so findNext/replaceNext work.
-    const signature = `${query}|${caseSensitive ? 1 : 0}|${wholeWord ? 1 : 0}|${isRegex ? 1 : 0}`
+
+    const signature = `${query}|${caseSensitive ? 1 : 0}|${wholeWord ? 1 : 0}|${
+      isRegex ? 1 : 0
+    }`
+
     if (lastPushedQueryRef.current !== signature) {
       lastPushedQueryRef.current = signature
+
       view.dispatch({ effects: setSearchQuery.of(currentQuery) })
     }
 
@@ -436,121 +599,187 @@ export function FindReplaceWidget({
   }, [view, visible, currentQuery, isRegex, caseSensitive, query])
 
   // ── Focus the find input when we open ──────────────────────────────────
+
   useLayoutEffect(() => {
     if (visible && findInputRef.current) {
       findInputRef.current.focus()
+
       findInputRef.current.select()
     }
   }, [visible])
 
   // ── Handlers ───────────────────────────────────────────────────────────
+
   const close = useCallback(() => {
     if (view) {
       view.dispatch({ effects: setSearchMatches.of(null) })
+
       view.focus()
     }
+
     setVisible(false)
+
     setReplaceVisible(false)
   }, [view])
 
   const syncActiveHighlight = useCallback(() => {
     if (!view) return
+
     const pos = view.state.selection.main.head
+
     setActiveIndex((cur) => {
       const next = activeMatchIndex(matchRanges, pos)
+
       if (next === cur) return cur
+
       view.dispatch({
         effects: setSearchMatches.of({ ranges: matchRanges, active: next }),
       })
+
       return next
     })
   }, [view, matchRanges])
 
   const goNext = useCallback(() => {
     if (!view || !currentQuery || !currentQuery.valid) return
+
     view.dispatch({ effects: setSearchQuery.of(currentQuery) })
+
     findNext(view)
+
     // After the command runs the cursor has moved; sync the highlight.
+
     requestAnimationFrame(syncActiveHighlight)
   }, [view, currentQuery, syncActiveHighlight])
 
   const goPrev = useCallback(() => {
     if (!view || !currentQuery || !currentQuery.valid) return
+
     view.dispatch({ effects: setSearchQuery.of(currentQuery) })
+
     findPrevious(view)
+
     requestAnimationFrame(syncActiveHighlight)
   }, [view, currentQuery, syncActiveHighlight])
 
   const doReplace = useCallback(() => {
     if (!view || !currentQuery || !currentQuery.valid) return
+
     view.dispatch({
       effects: setSearchQuery.of(
         new SearchQuery({
           search: query,
+
           caseSensitive,
+
           wholeWord,
+
           regexp: isRegex,
+
           replace: replaceText,
         }),
       ),
     })
+
     replaceNext(view)
+
     // Recount matches after the replacement (the document changed).
+
     setTimeout(() => {
       if (!view || !currentQuery.valid) return
+
       const ranges = computeMatches(view, currentQuery)
+
       setMatchRanges(ranges)
+
       const pos = view.state.selection.main.head
+
       const idx = activeMatchIndex(ranges, pos)
+
       setActiveIndex(idx)
+
       view.dispatch({
         effects: setSearchMatches.of({ ranges, active: idx }),
       })
     }, 0)
-  }, [view, currentQuery, query, caseSensitive, wholeWord, isRegex, replaceText])
+  }, [
+    view,
+    currentQuery,
+    query,
+    caseSensitive,
+    wholeWord,
+    isRegex,
+    replaceText,
+  ])
 
   const doReplaceAll = useCallback(() => {
     if (!view || !currentQuery || !currentQuery.valid) return
+
     view.dispatch({
       effects: setSearchQuery.of(
         new SearchQuery({
           search: query,
+
           caseSensitive,
+
           wholeWord,
+
           regexp: isRegex,
+
           replace: replaceText,
         }),
       ),
     })
+
     replaceAll(view)
+
     setTimeout(() => {
       if (!view || !currentQuery.valid) return
+
       const ranges = computeMatches(view, currentQuery)
+
       setMatchRanges(ranges)
+
       const idx = ranges.length > 0 ? 0 : -1
+
       setActiveIndex(idx)
+
       view.dispatch({
         effects: setSearchMatches.of({ ranges, active: idx }),
       })
     }, 0)
-  }, [view, currentQuery, query, caseSensitive, wholeWord, isRegex, replaceText])
+  }, [
+    view,
+    currentQuery,
+    query,
+    caseSensitive,
+    wholeWord,
+    isRegex,
+    replaceText,
+  ])
 
   // ── Keyboard handlers ──────────────────────────────────────────────────
+
   const onFindKey = useCallback(
     (e: ReactKeyboardEvent<HTMLInputElement>) => {
       if (e.key === "Enter") {
         e.preventDefault()
+
         if (e.shiftKey) goPrev()
         else goNext()
       } else if (e.key === "Escape") {
         e.preventDefault()
+
         close()
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "h") {
         e.preventDefault()
+
         setReplaceVisible(true)
+
         replaceInputRef.current?.focus()
       }
     },
+
     [goNext, goPrev, close],
   )
 
@@ -558,34 +787,46 @@ export function FindReplaceWidget({
     (e: ReactKeyboardEvent<HTMLInputElement>) => {
       if (e.key === "Enter") {
         e.preventDefault()
+
         doReplace()
       } else if (e.key === "Escape") {
         e.preventDefault()
+
         close()
       }
     },
+
     [doReplace, close],
   )
 
   // ── Global Escape closes the widget even when focus is in the editor ────
+
   useEffect(() => {
     if (!visible) return
+
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
         e.preventDefault()
+
         close()
       }
     }
+
     window.addEventListener("keydown", onKey, true)
+
     return () => window.removeEventListener("keydown", onKey, true)
   }, [visible, close])
 
   if (!visible) return null
 
   // ── Derived UI state ───────────────────────────────────────────────────
+
   const totalCount = matchRanges.length
+
   const showCount = query.length > 0 && !regexError
+
   const limitHit = totalCount >= MATCHES_LIMIT
+
   const countLabel = !showCount
     ? ""
     : totalCount === 0
@@ -593,22 +834,37 @@ export function FindReplaceWidget({
       : `${activeIndex >= 0 ? activeIndex + 1 : "?"} of ${
           limitHit ? `${MATCHES_LIMIT}+` : totalCount
         }`
+
   const noResults = showCount && totalCount === 0
 
   // Two-row layout where each row uses a 3-cell flex structure:
+
   //   [chevron | input | controls]
+
   //   - Chevron cell is fixed width (20px) and identical on both rows,
+
   //     so the toggle lines up vertically.
+
   //   - Input cell is `flex: 1` with `min-width: 0` so it fills the
+
   //     available width and the two inputs (Find vs Replace) are
+
   //     guaranteed to occupy the same horizontal band on both rows.
+
   //   - Controls cell is `flex-none` so the row-specific controls
+
   //     (toggles + count + nav on the find row; replace buttons on
+
   //     the replace row) take only the space they need. The two rows
+
   //     have different control sets, so we don't force-align their
+
   //     right edges — only the input column needs to match.
+
   const rowClass = "flex items-center gap-1 px-2 py-1.5"
+
   const chevronCellClass = "flex h-6 w-5 shrink-0 items-center justify-center"
+
   const inputCellClass = "flex h-7 min-w-0 flex-1 items-center"
 
   return (
@@ -629,6 +885,7 @@ export function FindReplaceWidget({
               title={replaceVisible ? "Hide Replace" : "Toggle Replace"}
               onClick={(e) => {
                 e.preventDefault()
+
                 setReplaceVisible((v) => !v)
               }}
               onMouseDown={(e) => e.preventDefault()}
@@ -739,14 +996,14 @@ export function FindReplaceWidget({
             cell is intentionally empty (no toggle on the replace
             row), and the controls cell hosts the Replace/All buttons. */}
         {replaceVisible && (
-          <div
-            className={`${rowClass} border-t border-outline-variant/30`}
-          >
+          <div className={`${rowClass} border-t border-outline-variant/30`}>
             {/* Chevron cell — empty placeholder so columns line up */}
             <div className={chevronCellClass} aria-hidden="true" />
 
             {/* Replace input cell — guaranteed same width as find input */}
-            <div className={`${inputCellClass} rounded border border-outline/30 bg-surface-container-low/40 px-2 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/30`}>
+            <div
+              className={`${inputCellClass} rounded border border-outline/30 bg-surface-container-low/40 px-2 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/30`}
+            >
               <input
                 ref={replaceInputRef}
                 type="text"
@@ -773,6 +1030,7 @@ export function FindReplaceWidget({
                 title="Replace (Enter)"
                 onClick={(e) => {
                   e.preventDefault()
+
                   doReplace()
                 }}
                 onMouseDown={(e) => e.preventDefault()}
@@ -793,6 +1051,7 @@ export function FindReplaceWidget({
                 title="Replace All (Ctrl+Alt+Enter)"
                 onClick={(e) => {
                   e.preventDefault()
+
                   doReplaceAll()
                 }}
                 onMouseDown={(e) => e.preventDefault()}

@@ -1,40 +1,40 @@
-import { useState, useRef, useCallback } from "react";
-import { Icon } from "../ui/Icon";
+import { useState, useRef, useCallback } from "react"
+import { Icon } from "../ui/Icon"
 
 type DebugEntry = {
-  id: string;
-  ts: Date;
-  kind: "input" | "output" | "error" | "system";
-  text: string;
-};
+  id: string
+  ts: Date
+  kind: "input" | "output" | "error" | "system"
+  text: string
+}
 
 export function PanelDebugConsoleTab() {
-  const [entries, setEntries] = useState<DebugEntry[]>([]);
-  const [input, setInput] = useState("");
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const [entries, setEntries] = useState<DebugEntry[]>([])
+  const [input, setInput] = useState("")
+  const bottomRef = useRef<HTMLDivElement>(null)
 
   const scrollToBottom = useCallback(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" })
+  }, [])
 
   useState(() => {
     // Auto-scroll when entries change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    if (entries.length > 0) scrollToBottom();
-  });
+    if (entries.length > 0) scrollToBottom()
+  })
 
   const handleSubmit = useCallback(
     (e: React.FormEvent) => {
-      e.preventDefault();
-      const cmd = input.trim();
-      if (!cmd) return;
+      e.preventDefault()
+      const cmd = input.trim()
+      if (!cmd) return
 
-      const id = `dce_${Date.now()}`;
+      const id = `dce_${Date.now()}`
       setEntries((prev) => [
         ...prev,
         { id: `${id}_in`, ts: new Date(), kind: "input", text: cmd },
-      ]);
-      setInput("");
+      ])
+      setInput("")
 
       // TODO: Wire up DAP (Debug Adapter Protocol) client.
       // For now, echo a stub response.
@@ -47,11 +47,11 @@ export function PanelDebugConsoleTab() {
             kind: "system",
             text: `[debugpy not connected] Start a debug session to use the Debug Console.`,
           },
-        ]);
-      }, 200);
+        ])
+      }, 200)
     },
     [input, scrollToBottom],
-  );
+  )
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -63,7 +63,8 @@ export function PanelDebugConsoleTab() {
               <Icon name="bug" size={24} className="mx-auto mb-2" />
               <p>Debug Console</p>
               <p className="mt-1 text-[12px]">
-                Start a debug session to evaluate expressions and inspect variables.
+                Start a debug session to evaluate expressions and inspect
+                variables.
               </p>
             </div>
           </div>
@@ -82,7 +83,11 @@ export function PanelDebugConsoleTab() {
               }`}
             >
               <span className="shrink-0 text-outline-variant">
-                {e.ts.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                {e.ts.toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                  second: "2-digit",
+                })}
               </span>
               {e.kind === "input" ? (
                 <span>&gt; {e.text}</span>
@@ -100,7 +105,9 @@ export function PanelDebugConsoleTab() {
         onSubmit={handleSubmit}
         className="flex shrink-0 items-center gap-2 border-t border-outline-variant/40 bg-surface-container-low px-3 py-2"
       >
-        <span className="shrink-0 font-mono text-[12px] text-green-400">&gt;</span>
+        <span className="shrink-0 font-mono text-[12px] text-green-400">
+          &gt;
+        </span>
         <input
           type="text"
           value={input}
@@ -117,5 +124,5 @@ export function PanelDebugConsoleTab() {
         </button>
       </form>
     </div>
-  );
+  )
 }

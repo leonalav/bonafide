@@ -1,29 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Icon } from "./ui/Icon";
-import { useDispatch, usePanel, usePanelHeight, usePanelTab } from "../ide/hooks";
-import { HorizontalResizeHandle } from "./ui/HorizontalResizeHandle";
-import { ProblemsTab } from "./panel/PanelProblemsTab";
-import { PanelOutputTab } from "./panel/PanelOutputTab";
-import { PanelTerminalTab } from "./panel/PanelTerminalTab";
-import { PanelDebugConsoleTab } from "./panel/PanelDebugConsoleTab";
-import { PortsTab } from "./panel/PanelPortsTab";
+import { useCallback, useEffect, useRef, useState } from "react"
+import { Icon } from "./ui/Icon"
+import {
+  useDispatch,
+  usePanel,
+  usePanelHeight,
+  usePanelTab,
+} from "../ide/hooks"
+import { HorizontalResizeHandle } from "./ui/HorizontalResizeHandle"
+import { ProblemsTab } from "./panel/PanelProblemsTab"
+import { PanelOutputTab } from "./panel/PanelOutputTab"
+import { PanelTerminalTab } from "./panel/PanelTerminalTab"
+import { PanelDebugConsoleTab } from "./panel/PanelDebugConsoleTab"
+import { PortsTab } from "./panel/PanelPortsTab"
 
 // ── Panel tab registry ───────────────────────────────────────────────────────
 
-type PanelTabId = "problems" | "output" | "terminal" | "debug" | "ports";
+type PanelTabId = "problems" | "output" | "terminal" | "debug" | "ports"
 
-const TABS: { id: PanelTabId; label: string; icon: string }[] = [
+const TABS: { id: PanelTabId label: string icon: string }[] = [
   { id: "problems", label: "Problems", icon: "alert-triangle" },
   { id: "output", label: "Output", icon: "terminal" },
   { id: "terminal", label: "Terminal", icon: "terminal" },
   { id: "debug", label: "Debug Console", icon: "bug" },
   { id: "ports", label: "Ports", icon: "network" },
-];
+]
 
 // ── Tab strip ───────────────────────────────────────────────────────────────
 
 function PanelTabStrip({ active }: { active: PanelTabId }) {
-  const dispatch = useDispatch();
+  const dispatch = useDispatch()
 
   return (
     <div className="flex h-8 shrink-0 items-stretch border-b border-outline-variant bg-surface-container-low">
@@ -36,7 +41,9 @@ function PanelTabStrip({ active }: { active: PanelTabId }) {
               ? "border-b-2 border-b-primary bg-surface-container-lowest text-on-surface"
               : "text-on-surface-variant hover:bg-surface-container-high hover:text-on-surface"
           }`}
-          style={active === tab.id ? { borderBottomColor: "var(--primary)" } : {}}
+          style={
+            active === tab.id ? { borderBottomColor: "var(--primary)" } : {}
+          }
         >
           <Icon name={tab.icon} size={12} className="shrink-0" />
           <span>{tab.label}</span>
@@ -52,33 +59,33 @@ function PanelTabStrip({ active }: { active: PanelTabId }) {
         <Icon name="x" size={13} />
       </button>
     </div>
-  );
+  )
 }
 
 // ── Panel ───────────────────────────────────────────────────────────────────
 
 export function Panel() {
-  const dispatch = useDispatch();
-  const panel = usePanel();
-  const height = usePanelHeight();
-  const activeTab = usePanelTab();
+  const dispatch = useDispatch()
+  const panel = usePanel()
+  const height = usePanelHeight()
+  const activeTab = usePanelTab()
 
-  if (!panel.open) return null;
+  if (!panel.open) return null
 
   const content = () => {
     switch (activeTab) {
       case "problems":
-        return <ProblemsTab />;
+        return <ProblemsTab />
       case "output":
-        return <PanelOutputTab />;
+        return <PanelOutputTab />
       case "terminal":
-        return <PanelTerminalTab />;
+        return <PanelTerminalTab />
       case "debug":
-        return <PanelDebugConsoleTab />;
+        return <PanelDebugConsoleTab />
       case "ports":
-        return <PortsTab />;
+        return <PortsTab />
     }
-  };
+  }
 
   return (
     <div
@@ -93,9 +100,7 @@ export function Panel() {
         ariaLabel="Resize panel"
       />
       <PanelTabStrip active={activeTab} />
-      <div className="min-h-0 flex-1 overflow-hidden">
-        {content()}
-      </div>
+      <div className="min-h-0 flex-1 overflow-hidden">{content()}</div>
     </div>
-  );
+  )
 }

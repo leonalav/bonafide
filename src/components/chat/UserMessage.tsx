@@ -16,23 +16,23 @@
  * and adding an import for two lines of formatting code is noise.
  */
 
-import { useState } from "react";
-import { Icon } from "../ui/Icon";
-import type { ChatMessage } from "../../chats/ChatStore";
+import { useState } from "react"
+import { Icon } from "../ui/Icon"
+import type { ChatMessage } from "../../chats/ChatStore"
 
 export function formatTime(ts: number): string {
   // REVIEW(opus) FINDING 10 [medium]: `hour12: false` alone isn't
   // honoured on every platform. We add `hourCycle: 'h23'` which is
   // the canonical 24-hour specifier across modern browsers and
   // node runtimes.
-  const d = new Date(ts);
+  const d = new Date(ts)
   return d.toLocaleTimeString([], {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
     hour12: false,
     hourCycle: "h23",
-  });
+  })
 }
 
 /**
@@ -46,12 +46,12 @@ export function formatTime(ts: number): string {
  * for chat-style exchanges.
  */
 export function InlineContent({ text }: { text: string }) {
-  const lines = text.split(/(\n)/);
+  const lines = text.split(/(\n)/)
   return (
     <>
       {lines.map((line, i) => {
-        if (line === "\n") return <br key={i} />;
-        const chunks = line.split(/(`[^`]+`)/g);
+        if (line === "\n") return <br key={i} />
+        const chunks = line.split(/(`[^`]+`)/g)
         return chunks.map((c, j) => {
           if (c.startsWith("`") && c.endsWith("`") && c.length >= 2) {
             return (
@@ -61,17 +61,17 @@ export function InlineContent({ text }: { text: string }) {
               >
                 {c.slice(1, -1)}
               </code>
-            );
+            )
           }
           return (
             <span key={`${i}-${j}`} className="break-words">
               {c}
             </span>
-          );
-        });
+          )
+        })
       })}
     </>
-  );
+  )
 }
 
 export function UserMessage({
@@ -80,8 +80,6 @@ export function UserMessage({
   onEdit,
   onCommit,
   onCopy,
-}: {
-  message: ChatMessage;
   /**
    * Called when the user clicks the undo/Revert affordance. The
    * parent rewinds the thread state to *just before* this message
@@ -90,14 +88,12 @@ export function UserMessage({
    * itself is not deleted; its place in history becomes the
    * branch point.
    */
-  onReturn?: () => void;
   /**
    * Called when the user clicks the pen icon. The parent uses this as
    * a "user is about to inline-edit" signal — currently informational
    * only, but kept so future affordances (e.g. a "comparing edits"
    * toast) can hook in.
    */
-  onEdit?: () => void;
   /**
    * Called when the user presses Save in the inline-edit textarea.
    * The parent truncates everything after this message, writes the
@@ -105,12 +101,16 @@ export function UserMessage({
    * fresh completion request. This component does NOT persist the
    * edit itself — the source of truth is the chat store.
    */
-  onCommit?: (newContent: string) => void;
   /**
    * Called when the user clicks the copy affordance. The parent
    * typically just calls `navigator.clipboard.writeText(content)`.
    */
-  onCopy?: () => void;
+}: {
+  message: ChatMessage
+  onReturn?: () => void
+  onEdit?: () => void
+  onCommit?: (newContent: string) => void
+  onCopy?: () => void
 }) {
   // The action row hosts Copy / Revert / Edit. Copy and Revert gate
   // on their respective callback being provided; the pen icon
@@ -119,43 +119,43 @@ export function UserMessage({
   // row renders when ANY affordance is wired, or when `onCommit` is
   // wired (which the inline-edit Save button needs to actually
   // persist the edit).
-  const hasActions = Boolean(onReturn || onCopy || onCommit || onEdit);
+  const hasActions = Boolean(onReturn || onCopy || onCommit || onEdit)
   // Local state for inline edit. When the user clicks the pen, the
   // bubble switches to a textarea prefilled with the original text.
   // Enter saves, Esc cancels, clicking outside also saves.
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(message.content);
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState(message.content)
 
   function startEdit() {
-    setDraft(message.content);
-    setEditing(true);
-    onEdit?.();
+    setDraft(message.content)
+    setEditing(true)
+    onEdit?.()
   }
 
   function commit() {
     // No-op when the user hasn't changed the text or the field is
     // empty — a no-op click shouldn't fire the parent's truncation +
     // resend machinery.
-    if (!editing) return;
-    const trimmed = draft.trim();
-    setEditing(false);
+    if (!editing) return
+    const trimmed = draft.trim()
+    setEditing(false)
     if (!trimmed || trimmed === message.content) {
       // Restore the original draft so the next pen-click re-opens
       // with the same content.
-      setDraft(message.content);
-      return;
+      setDraft(message.content)
+      return
     }
     // Hand the new content to the parent. The parent truncates the
     // thread after this message and resubmits.
-    onCommit?.(trimmed);
+    onCommit?.(trimmed)
   }
 
   function cancel() {
-    setDraft(message.content);
-    setEditing(false);
+    setDraft(message.content)
+    setEditing(false)
   }
   const dirty =
-    editing && draft.trim() !== message.content && draft.trim().length > 0;
+    editing && draft.trim() !== message.content && draft.trim().length > 0
 
   return (
     // Per `agent-example-sessions.html` lines 670-700: user turns
@@ -187,18 +187,15 @@ export function UserMessage({
               onBlur={commit}
               onKeyDown={(e) => {
                 if (e.key === "Escape") {
-                  e.preventDefault();
-                  cancel();
+                  e.preventDefault()
+                  cancel()
                 }
                 if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-                  e.preventDefault();
-                  commit();
+                  e.preventDefault()
+                  commit()
                 }
               }}
-              rows={Math.max(
-                1,
-                Math.min(8, draft.split(/\n/).length || 1),
-              )}
+              rows={Math.max(1, Math.min(8, draft.split(/\n/).length || 1))}
               className="w-full resize-none bg-transparent font-body text-[13px] leading-[20px] text-on-surface focus:outline-none"
             />
             <div className="flex items-center justify-between gap-2 border-t border-outline-variant/60 pt-1 font-sans text-[10px] text-outline">
@@ -209,8 +206,8 @@ export function UserMessage({
                   onMouseDown={(e) => {
                     // Use mousedown so we beat the textarea's onBlur
                     // (which would otherwise commit first).
-                    e.preventDefault();
-                    cancel();
+                    e.preventDefault()
+                    cancel()
                   }}
                   className="rounded px-1.5 py-0.5 hover:bg-surface-container-high"
                 >
@@ -219,8 +216,8 @@ export function UserMessage({
                 <button
                   type="button"
                   onMouseDown={(e) => {
-                    e.preventDefault();
-                    commit();
+                    e.preventDefault()
+                    commit()
                   }}
                   className="rounded bg-primary px-1.5 py-0.5 text-on-primary hover:brightness-110 disabled:opacity-40"
                   disabled={!dirty}
@@ -303,7 +300,7 @@ export function UserMessage({
         ) : null}
       </div>
     </div>
-  );
+  )
 }
 
 /**
@@ -315,9 +312,13 @@ export function UserMessage({
  * reasonable max dimension so a 5MB screenshot can't push the
  * row wider than the chat surface.
  */
-function AttachmentChip({ attachment }: { attachment: import("../../chats/ChatStore").Attachment }) {
-  const isImage = attachment.kind === "image";
-  const sizeLabel = formatBytes(attachment.size);
+function AttachmentChip({
+  attachment,
+}: {
+  attachment: import("../../chats/ChatStore").Attachment
+}) {
+  const isImage = attachment.kind === "image"
+  const sizeLabel = formatBytes(attachment.size)
   if (isImage) {
     return (
       <a
@@ -333,14 +334,18 @@ function AttachmentChip({ attachment }: { attachment: import("../../chats/ChatSt
           className="h-full w-full object-cover"
         />
       </a>
-    );
+    )
   }
   return (
     <div
       className="flex max-w-[180px] items-center gap-1.5 rounded border border-outline-variant/60 bg-surface-container-low px-2 py-1"
       title={`${attachment.name} · ${sizeLabel}`}
     >
-      <Icon name="file" size={12} className="shrink-0 text-on-surface-variant" />
+      <Icon
+        name="file"
+        size={12}
+        className="shrink-0 text-on-surface-variant"
+      />
       <div className="flex min-w-0 flex-col">
         <span className="truncate font-body text-[11px] text-on-surface">
           {attachment.name}
@@ -348,11 +353,11 @@ function AttachmentChip({ attachment }: { attachment: import("../../chats/ChatSt
         <span className="font-sans text-[10px] text-outline">{sizeLabel}</span>
       </div>
     </div>
-  );
+  )
 }
 
 function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }

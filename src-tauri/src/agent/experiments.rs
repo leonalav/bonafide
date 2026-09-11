@@ -1,33 +1,143 @@
-//! Experiment persistence layer (Phase 2: hypothesis-driven records).
+//! Experiment storage — SQLite schema + CRUD for the experiment-tracking subsystem.
 //!
-//! An *Experiment* is a renderable unit of work the user commits to:
-//! one row per `title + hypothesis + goal metric + budgets` tuple, with
-//! many linked tracking runs in `experiment_runs`. This is the storage
-//! half of that picture -- the orchestrator keeps the rich in-memory
-//! Experiment type, but the renderer only ever reads the serialized
-//! shape modeled here.
-//!
-//! All write paths upsert by `id` so a `proposed -> active -> completed`
-//! transition is just an `update_experiment` that re-saves the same row
-//! with a new `status` + bumped `updated_at`. Reads return rows sorted
-//! newest-first so the Experiments tab surfaces actively-running items
-//! ahead of older closed ones.
-//!
-//! ## Workspace scoping
-//! Every command that takes a `workspace_hash` parameter enforces that
-//! the experiment or run belongs to that workspace. This prevents a
-//! renderer with workspace A open from reading, writing, or deleting
-//! data that lives in workspace B.
+//! Each experiment represents one hypothesis + goal + budget triple. Runs live
+//! in `experiment_runs` (a child of `experiments`). The workspace DB is opened
+//! via `graph::storage::open_workspace_db` so migrations run automatically.
 
-use rusqlite::{params, Connection, OptionalExtension, Result};
+use rusqlite::{params, Connection, Result};
 use serde::{Deserialize, Serialize};
 
-/// Persisted shape of an Experiment row.
+use crate::graph::storage::current_timestamp;
+
+// ── Domain types ───────────────────────────────────────────────────────────────
+
+/// Goal condition operator applied to `goal_metric`.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalCondition {
+    Lt,  // metric < target
+    Gt,  // metric > target
+    Eq,  // metric == target
+}
+
+impl GoalCondition {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "lt" => GoalCondition::Lt,
+            "gt" => GoalCondition::Gt,
+            "eq" => GoalCondition::Eq,
+            _ => GoalCondition::Lt,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GoalCondition::Lt => "lt",
+            GoalCondition::Gt => "gt",
+            GoalCondition::Eq => "eq",
+        }
+    }
+}
+
+/// Direction of a goal metric — lower is better or higher is better.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalDirection {
+    Minimize,
+    Maximize,
+}
+
+impl GoalDirection {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "minimize" => GoalDirection::Minimize,
+            "maximize" => GoalDirection::Maximize,
+            _ => GoalDirection::Maximize,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GoalDirection::Minimize => "minimize",
+            GoalDirection::Maximize => "maximize",
+        }
+    }
+}
+
+/// Experiment lifecycle state.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExperimentStatus {
+    Proposed,
+    Running,
+    Completed,
+    Failed,
+    Abandoned,
+}
+
+impl ExperimentStatus {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "proposed" => ExperimentStatus::Proposed,
+            "running" => ExperimentStatus::Running,
+            "completed" => ExperimentStatus::Completed,
+            "failed" => ExperimentStatus::Failed,
+            "abandoned" => ExperimentStatus::Abandoned,
+            _ => ExperimentStatus::Proposed,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ExperimentStatus::Proposed => "proposed",
+            ExperimentStatus::Running => "running",
+            ExperimentStatus::Completed => "completed",
+            ExperimentStatus::Failed => "failed",
+            ExperimentStatus::Abandoned => "abandoned",
+        }
+    }
+}
+
+/// Run-level status.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunStatus {
+    Queued,
+    Running,
+    Success,
+    Failed,
+}
+
+impl RunStatus {
+    pub fn from_str(s: &str) -> Self {
+        match s {
+            "queued" => RunStatus::Queued,
+            "running" => RunStatus::Running,
+            "success" => RunStatus::Success,
+            "failed" => RunStatus::Failed,
+            _ => RunStatus::Queued,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RunStatus::Queued => "queued",
+            RunStatus::Running => "running",
+            RunStatus::Success => "success",
+            RunStatus::Failed => "failed",
+        }
+    }
+}
+
+/// Persisted experiment row. Mirrors the TS `Experiment` type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentRow {
     pub id: String,
-    pub workspace_hash: String,
     pub title: String,
     pub hypothesis: String,
     pub goal_metric: String,
@@ -41,209 +151,219 @@ pub struct ExperimentRow {
     pub updated_at: i64,
 }
 
-/// Persisted shape of an ExperimentRun attachment row.
-/// `config_overrides` and `metrics_summary` are serialised JSON strings.
-/// Callers MUST `JSON.parse` these strings before using as objects.
+/// Persisted experiment run row.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentRunRow {
     pub id: String,
     pub experiment_id: String,
     pub run_id: String,
-    /// Serialised JSON string. Callers: `JSON.parse(row.config_overrides)`.
     pub config_overrides: String,
-    /// Serialised JSON string. Callers: `JSON.parse(row.metrics_summary)`.
-    pub metrics_summary: String,
     pub status: String,
+    pub metrics_summary: String,
     pub created_at: i64,
 }
 
-/// Insert (or replace) an experiment row.
-/// NOTE: callers MUST ensure `row.workspace_hash` is set to the canonical
-/// workspace hash before calling. The Tauri command layer enforces this.
+// ── Migration helpers ─────────────────────────────────────────────────────────
+
+/// Experiments tables are created by `graph::storage::run_migrations`.
+/// This module exposes only CRUD — no migration logic here.
+
+// ── Experiment CRUD ────────────────────────────────────────────────────────────
+
+/// Insert a new experiment. Returns the inserted row.
 pub fn create_experiment(conn: &Connection, row: &ExperimentRow) -> Result<()> {
     conn.execute(
-        r"
+        r#"
         INSERT INTO experiments (
-            id, workspace_hash, title, hypothesis, goal_metric, goal_direction,
-            goal_target, goal_condition, status, budget_dollars, budget_gpu_hours,
-            created_at, updated_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-        ON CONFLICT(id) DO UPDATE SET
-            workspace_hash   = excluded.workspace_hash,
-            title            = excluded.title,
-            hypothesis       = excluded.hypothesis,
-            goal_metric      = excluded.goal_metric,
-            goal_direction   = excluded.goal_direction,
-            goal_target      = excluded.goal_target,
-            goal_condition   = excluded.goal_condition,
-            status           = excluded.status,
-            budget_dollars   = excluded.budget_dollars,
-            budget_gpu_hours = excluded.budget_gpu_hours,
-            updated_at       = excluded.updated_at
-        ",
+            id, title, hypothesis, goal_metric, goal_direction, goal_target,
+            goal_condition, status, budget_dollars, budget_gpu_hours, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+        "#,
         params![
-            row.id, row.workspace_hash, row.title, row.hypothesis,
-            row.goal_metric, row.goal_direction, row.goal_target,
-            row.goal_condition, row.status, row.budget_dollars,
-            row.budget_gpu_hours, row.created_at, row.updated_at,
+            row.id,
+            row.title,
+            row.hypothesis,
+            row.goal_metric,
+            row.goal_direction,
+            row.goal_target,
+            row.goal_condition,
+            row.status,
+            row.budget_dollars,
+            row.budget_gpu_hours,
+            row.created_at,
+            row.updated_at,
         ],
     )?;
     Ok(())
 }
 
-/// Fetch one experiment by id, scoped to workspace_hash.
-/// Returns `Ok(None)` when no row matches.
-pub fn get_experiment(
-    conn: &Connection,
-    id: &str,
-    workspace_hash: &str,
-) -> Result<Option<ExperimentRow>> {
+/// List all experiments for a workspace, newest-first.
+pub fn list_experiments(conn: &Connection) -> Result<Vec<ExperimentRow>> {
     let mut stmt = conn.prepare(
-        "SELECT id, workspace_hash, title, hypothesis, goal_metric, goal_direction,
-                goal_target, goal_condition, status, budget_dollars, budget_gpu_hours,
+        "SELECT id, title, hypothesis, goal_metric, goal_direction, goal_target,
+                goal_condition, status, budget_dollars, budget_gpu_hours,
                 created_at, updated_at
            FROM experiments
-          WHERE id = ?1 AND workspace_hash = ?2",
-    )?;
-    let mut rows = stmt.query(params![id, workspace_hash])?;
-    if let Some(row) = rows.next()? {
-        Ok(Some(row_to_experiment(row)?))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Fetch every experiment for workspace_hash, sorted newest-first.
-pub fn list_experiments(
-    conn: &Connection,
-    workspace_hash: &str,
-) -> Result<Vec<ExperimentRow>> {
-    let mut stmt = conn.prepare(
-        "SELECT id, workspace_hash, title, hypothesis, goal_metric, goal_direction,
-                goal_target, goal_condition, status, budget_dollars, budget_gpu_hours,
-                created_at, updated_at
-           FROM experiments
-          WHERE workspace_hash = ?1
           ORDER BY updated_at DESC",
     )?;
-    let rows = stmt.query_map(params![workspace_hash], |row| row_to_experiment(row))?;
+    let rows = stmt.query_map([], |row| {
+        Ok(ExperimentRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            hypothesis: row.get(2)?,
+            goal_metric: row.get(3)?,
+            goal_direction: row.get(4)?,
+            goal_target: row.get(5)?,
+            goal_condition: row.get(6)?,
+            status: row.get(7)?,
+            budget_dollars: row.get(8)?,
+            budget_gpu_hours: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
+        })
+    })?;
     let mut out = Vec::new();
-    for r in rows { out.push(r?); }
+    for r in rows {
+        out.push(r?);
+    }
     Ok(out)
 }
 
-/// Update an existing experiment row (upsert by id).
-/// NOTE: callers MUST ensure `row.workspace_hash` is set to the canonical hash.
-pub fn update_experiment(conn: &Connection, row: &ExperimentRow) -> Result<()> {
-    create_experiment(conn, row)
-}
-
-/// Delete an experiment row by id, scoped to workspace_hash.
-/// `experiment_runs` are cascade-deleted via FK in `storage.rs`.
-/// Returns `Ok(())` always (idempotent).
-pub fn delete_experiment(
-    conn: &Connection,
-    id: &str,
-    workspace_hash: &str,
-) -> Result<()> {
-    conn.execute(
-        "DELETE FROM experiments WHERE id = ?1 AND workspace_hash = ?2",
-        params![id, workspace_hash],
+/// Fetch a single experiment by id.
+pub fn get_experiment(conn: &Connection, id: &str) -> Result<Option<ExperimentRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, hypothesis, goal_metric, goal_direction, goal_target,
+                goal_condition, status, budget_dollars, budget_gpu_hours,
+                created_at, updated_at
+           FROM experiments
+          WHERE id = ?1",
     )?;
-    Ok(())
+    let mut rows = stmt.query_map(params![id], |row| {
+        Ok(ExperimentRow {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            hypothesis: row.get(2)?,
+            goal_metric: row.get(3)?,
+            goal_direction: row.get(4)?,
+            goal_target: row.get(5)?,
+            goal_condition: row.get(6)?,
+            status: row.get(7)?,
+            budget_dollars: row.get(8)?,
+            budget_gpu_hours: row.get(9)?,
+            created_at: row.get(10)?,
+            updated_at: row.get(11)?,
+        })
+    })?;
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
 }
 
-/// Upsert a run-attachment row. `workspace_hash` prevents cross-workspace
-/// attachment: we check the experiment belongs to the caller's workspace
-/// before inserting, since the FK only checks `experiment_id` existence.
-pub fn attach_run(
-    conn: &Connection,
-    row: &ExperimentRunRow,
-    workspace_hash: &str,
-) -> Result<()> {
-    let owner_ok: bool = conn
-        .query_row(
-            "SELECT 1 FROM experiments WHERE id = ?1 AND workspace_hash = ?2",
-            params![row.experiment_id, workspace_hash],
-            |_r| Ok(true),
-        )
-        .optional()?
-        .is_some();
-
-    if !owner_ok {
-        return Err(rusqlite::Error::QueryReturnedNoRows);
-    }
-
+/// Update an experiment. Only updates the fields that are safe to change
+/// mid-experiment (title, hypothesis, goal, budget, status).
+pub fn update_experiment(conn: &Connection, row: &ExperimentRow) -> Result<()> {
+    let updated_at = current_timestamp();
     conn.execute(
-        r"
-        INSERT INTO experiment_runs (
-            id, experiment_id, run_id, config_overrides, metrics_summary, status, created_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-        ON CONFLICT(id) DO UPDATE SET
-            experiment_id    = excluded.experiment_id,
-            run_id           = excluded.run_id,
-            config_overrides = excluded.config_overrides,
-            metrics_summary  = excluded.metrics_summary,
-            status           = excluded.status
-        ",
+        r#"
+        UPDATE experiments SET
+            title           = excluded.title,
+            hypothesis      = excluded.hypothesis,
+            goal_metric     = excluded.goal_metric,
+            goal_direction  = excluded.goal_direction,
+            goal_target     = excluded.goal_target,
+            goal_condition  = excluded.goal_condition,
+            status          = excluded.status,
+            budget_dollars  = excluded.budget_dollars,
+            budget_gpu_hours= excluded.budget_gpu_hours,
+            updated_at      = ?1
+        WHERE id = excluded.id
+        "#,
         params![
-            row.id, row.experiment_id, row.run_id,
-            row.config_overrides, row.metrics_summary,
-            row.status, row.created_at,
+            updated_at,
+            row.title,
+            row.hypothesis,
+            row.goal_metric,
+            row.goal_direction,
+            row.goal_target,
+            row.goal_condition,
+            row.status,
+            row.budget_dollars,
+            row.budget_gpu_hours,
         ],
     )?;
     Ok(())
 }
 
-/// Fetch every run attachment for `experiment_id`, scoped to workspace_hash
-/// via JOIN. Sorted oldest-first for timeline order.
+/// Delete an experiment and all its runs (CASCADE).
+pub fn delete_experiment(conn: &Connection, id: &str) -> Result<()> {
+    conn.execute("DELETE FROM experiments WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// ── Experiment Run CRUD ───────────────────────────────────────────────────────
+
+/// Insert a new experiment run.
+pub fn create_experiment_run(conn: &Connection, row: &ExperimentRunRow) -> Result<()> {
+    conn.execute(
+        r#"
+        INSERT INTO experiment_runs (
+            id, experiment_id, run_id, config_overrides, status, metrics_summary, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+        "#,
+        params![
+            row.id,
+            row.experiment_id,
+            row.run_id,
+            row.config_overrides,
+            row.status,
+            row.metrics_summary,
+            row.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+/// List all runs for an experiment, newest-first.
 pub fn list_experiment_runs(
     conn: &Connection,
     experiment_id: &str,
-    workspace_hash: &str,
 ) -> Result<Vec<ExperimentRunRow>> {
     let mut stmt = conn.prepare(
-        "SELECT er.id, er.experiment_id, er.run_id, er.config_overrides,
-                er.metrics_summary, er.status, er.created_at
-           FROM experiment_runs er
-           JOIN experiments e ON e.id = er.experiment_id
-          WHERE er.experiment_id = ?1 AND e.workspace_hash = ?2
-          ORDER BY er.created_at ASC",
+        "SELECT id, experiment_id, run_id, config_overrides, status, metrics_summary, created_at
+           FROM experiment_runs
+          WHERE experiment_id = ?1
+          ORDER BY created_at DESC",
     )?;
-    let rows = stmt.query_map(params![experiment_id, workspace_hash], |row| {
+    let rows = stmt.query_map(params![experiment_id], |row| {
         Ok(ExperimentRunRow {
             id: row.get(0)?,
             experiment_id: row.get(1)?,
             run_id: row.get(2)?,
             config_overrides: row.get(3)?,
-            metrics_summary: row.get(4)?,
-            status: row.get(5)?,
+            status: row.get(4)?,
+            metrics_summary: row.get(5)?,
             created_at: row.get(6)?,
         })
     })?;
     let mut out = Vec::new();
-    for r in rows { out.push(r?); }
+    for r in rows {
+        out.push(r?);
+    }
     Ok(out)
 }
 
-fn row_to_experiment(row: &rusqlite::Row<'_>) -> rusqlite::Result<ExperimentRow> {
-    Ok(ExperimentRow {
-        id: row.get(0)?,
-        workspace_hash: row.get(1)?,
-        title: row.get(2)?,
-        hypothesis: row.get(3)?,
-        goal_metric: row.get(4)?,
-        goal_direction: row.get(5)?,
-        goal_target: row.get(6)?,
-        goal_condition: row.get(7)?,
-        status: row.get(8)?,
-        budget_dollars: row.get(9)?,
-        budget_gpu_hours: row.get(10)?,
-        created_at: row.get(11)?,
-        updated_at: row.get(12)?,
-    })
+/// Update an experiment run's status and/or metrics_summary.
+pub fn update_experiment_run(
+    conn: &Connection,
+    id: &str,
+    status: &str,
+    metrics_summary: &str,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE experiment_runs SET status = ?2, metrics_summary = ?3 WHERE id = ?1",
+        params![id, status, metrics_summary],
+    )?;
+    Ok(())
 }
-

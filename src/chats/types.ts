@@ -7,14 +7,14 @@
  * rather than each declaring their own copy.
  */
 
-export type ModeId = "debug" | "scaffold" | "plan" | "research" | "multitask";
+export type ModeId = "debug" | "scaffold" | "plan" | "research" | "multitask"
 
 export const MODES: {
-  id: ModeId;
-  icon: string;
-  label: string;
-  desc: string;
-  status?: "deferred" | "design";
+  id: ModeId
+  icon: string
+  label: string
+  desc: string
+  status?: "deferred" | "design"
 }[] = [
   {
     id: "debug",
@@ -49,4 +49,4 @@ export const MODES: {
     desc: "Coordinate multiple agents across a shared goal",
     status: "design",
   },
-];
+]

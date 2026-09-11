@@ -93,6 +93,9 @@ pub struct WorkspaceSummary {
 /// Per-workspace storage state — keyed by workspace hash.
 type StorageState = Arc<RwLock<HashMap<String, Storage>>>;
 
+/// Phase 2: per-workspace budget registry — keyed by workspace hash.
+type BudgetState = agent::budget::BudgetRegistry;
+
 // ── Directory walking ─────────────────────────────────────────────────────
 // Same logic as the Electron main process: skip noisy dirs (node_modules,
 // .git, caches, build output), classify files by extension, build path
@@ -448,15 +451,11 @@ async fn git_init(workspace: String) -> Result<git_service::GitOpResult, String>
 
 // ── Phase 0: Workspace commands ─────────────────────────────────────────────
 
+/// Wrapper around the shared `agent::compute_workspace_hash` for callers
+/// inside lib.rs. Keeps the local name short and avoids importing the
+/// agent module into this file's namespace.
 fn compute_workspace_hash(root: &Path) -> String {
-    let normalized = root.canonicalize()
-        .unwrap_or_else(|_| root.to_path_buf())
-        .to_string_lossy()
-        .to_string();
-    let mut hasher = Sha256::new();
-    hasher.update(normalized.as_bytes());
-    let digest = hasher.finalize();
-    hex::encode(&digest[..8])
+    agent::compute_workspace_hash(root)
 }
 
 #[tauri::command]
@@ -992,6 +991,244 @@ async fn upsert_thread(
         .map_err(|e| format!("Failed to upsert thread: {e}"))
 }
 
+// ── Phase 2: Experiment commands ────────────────────────────────────────────────
+
+#[tauri::command]
+async fn create_experiment(
+    row: agent::experiments::ExperimentRow,
+    workspace_root: String,
+) -> Result<(), String> {
+    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    agent::experiments::create_experiment(&conn, &row)
+        .map_err(|e| format!("Failed to create experiment: {e}"))
+}
+
+#[tauri::command]
+async fn list_experiments(
+    workspace_root: String,
+) -> Result<Vec<agent::experiments::ExperimentRow>, String> {
+    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    agent::experiments::list_experiments(&conn)
+        .map_err(|e| format!("Failed to list experiments: {e}"))
+}
+
+#[tauri::command]
+async fn get_experiment(
+    workspace_root: String,
+    id: String,
+) -> Result<Option<agent::experiments::ExperimentRow>, String> {
+    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    agent::experiments::get_experiment(&conn, &id)
+        .map_err(|e| format!("Failed to get experiment: {e}"))
+}
+
+#[tauri::command]
+async fn update_experiment(
+    row: agent::experiments::ExperimentRow,
+    workspace_root: String,
+) -> Result<(), String> {
+    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    agent::experiments::update_experiment(&conn, &row)
+        .map_err(|e| format!("Failed to update experiment: {e}"))
+}
+
+#[tauri::command]
+async fn delete_experiment(
+    workspace_root: String,
+    id: String,
+) -> Result<(), String> {
+    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    agent::experiments::delete_experiment(&conn, &id)
+        .map_err(|e| format!("Failed to delete experiment: {e}"))
+}
+
+#[tauri::command]
+async fn create_experiment_run(
+    row: agent::experiments::ExperimentRunRow,
+    workspace_root: String,
+) -> Result<(), String> {
+    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    agent::experiments::create_experiment_run(&conn, &row)
+        .map_err(|e| format!("Failed to create experiment run: {e}"))
+}
+
+#[tauri::command]
+async fn list_experiment_runs(
+    workspace_root: String,
+    experiment_id: String,
+) -> Result<Vec<agent::experiments::ExperimentRunRow>, String> {
+    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    agent::experiments::list_experiment_runs(&conn, &experiment_id)
+        .map_err(|e| format!("Failed to list experiment runs: {e}"))
+}
+
+#[tauri::command]
+async fn update_experiment_run(
+    workspace_root: String,
+    id: String,
+    status: String,
+    metrics_summary: String,
+) -> Result<(), String> {
+    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+    agent::experiments::update_experiment_run(&conn, &id, &status, &metrics_summary)
+        .map_err(|e| format!("Failed to update experiment run: {e}"))
+}
+
+// ── Phase 2: Budget commands ─────────────────────────────────────────────────
+
+#[tauri::command]
+async fn get_budget_status(
+    workspace_root: String,
+    budget_state: State<'_, BudgetState>,
+) -> Result<agent::budget::BudgetStatus, String> {
+    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
+    Ok(agent::budget::get_budget_status(&budget_state, &hash).await)
+}
+
+#[tauri::command]
+async fn update_budget(
+    workspace_root: String,
+    budget_dollars: f64,
+    budget_gpu_hours: f64,
+    budget_state: State<'_, BudgetState>,
+) -> Result<agent::budget::BudgetStatus, String> {
+    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
+    Ok(agent::budget::update_budget(&budget_state, &hash, budget_dollars, budget_gpu_hours).await)
+}
+
+#[tauri::command]
+async fn record_tool_call(
+    workspace_root: String,
+    tool_name: String,
+    budget_state: State<'_, BudgetState>,
+) -> Result<String, String> {
+    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
+    let level = agent::budget::record_tool_call(&budget_state, &hash, &tool_name)
+        .await
+        .ok_or_else(|| "No budget record for this workspace".to_string())?;
+    Ok(format!("{:?}", level).to_lowercase())
+}
+
+#[tauri::command]
+async fn check_tool_permission(
+    workspace_root: String,
+    tool_name: String,
+    budget_state: State<'_, BudgetState>,
+) -> Result<agent::engine::ToolPermission, String> {
+    Ok(agent::engine::check_tool_permission(
+        &budget_state,
+        PathBuf::from(&workspace_root).as_path(),
+        &tool_name,
+    )
+    .await)
+}
+
+// ── Phase 2: Planner commands ───────────────────────────────────────────────
+
+#[tauri::command]
+async fn propose_experiment(
+    workspace_root: String,
+    input: agent::planner::ProposeExperimentInput,
+    budget_state: State<'_, BudgetState>,
+) -> Result<agent::planner::ProposeExperimentOutput, String> {
+    agent::planner::propose_experiment(
+        &budget_state,
+        PathBuf::from(&workspace_root).as_path(),
+        input,
+    )
+    .await
+}
+
+/// List existing experiments so the planner can detect duplicates
+/// before proposing a new one.
+#[tauri::command]
+async fn list_experiments_for_planner(
+    workspace_root: String,
+) -> Result<Vec<agent::experiments::ExperimentRow>, String> {
+    agent::planner::list_experiments_for_planner(
+        PathBuf::from(&workspace_root).as_path(),
+    )
+    .await
+}
+
+// ── Phase 2: Scaffolder commands ────────────────────────────────────────────
+
+#[tauri::command]
+async fn scaffold_script(
+    workspace_root: String,
+    input: agent::scaffolder::ScaffoldInput,
+) -> Result<agent::scaffolder::ScaffoldOutput, String> {
+    agent::scaffolder::scaffold_script(
+        PathBuf::from(&workspace_root).as_path(),
+        &input,
+    )
+}
+
+/// Run a Python script with a hard step limit for smoke testing.
+/// Wraps the script in a `max_steps` guard so it terminates promptly.
+/// Exit code 0 = pass, non-zero = fail.
+/// Times out after 60 seconds.
+#[tauri::command]
+async fn run_smoke_test(
+    workspace_root: String,
+    script_path: String,
+    max_steps: Option<u32>,
+) -> Result<agent::scaffolder::SmokeTestResult, String> {
+    let steps_arg = max_steps.unwrap_or(50);
+    let abs_script = PathBuf::from(&workspace_root).join(&script_path);
+
+    if !abs_script.exists() {
+        return Ok(agent::scaffolder::SmokeTestResult::from_outcome(
+            1,
+            String::new(),
+            format!("Script not found: {}", abs_script.display()),
+            false,
+        ));
+    }
+
+    // Spawn the process on a blocking thread so we can enforce a 60s timeout
+    // without blocking the Tauri event loop. `std::process::Command::output`
+    // has no native async support, so we wrap it in `spawn_blocking` and race
+    // the join against a tokio timeout.
+    let script_str = abs_script.to_string_lossy().to_string();
+    let workspace_str = workspace_root.clone();
+    let join = tokio::task::spawn_blocking(move || {
+        use std::process::Command;
+        Command::new("python")
+            .args([&script_str, "--max_steps", &steps_arg.to_string()])
+            .current_dir(&workspace_str)
+            .output()
+    });
+
+    match tokio::time::timeout(std::time::Duration::from_secs(60), join).await {
+        Ok(Ok(Ok(output))) => {
+            let exit_code = output.status.code().unwrap_or(-1);
+            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+            Ok(agent::scaffolder::SmokeTestResult::from_outcome(exit_code, stdout, stderr, false))
+        }
+        Ok(Ok(Err(e))) => Err(format!("Failed to spawn python: {e}")),
+        Ok(Err(join_err)) => Err(format!("Smoke test task panicked: {join_err}")),
+        Err(_elapsed) => {
+            // Timeout: child may still be running but we return immediately.
+            Ok(agent::scaffolder::SmokeTestResult::from_outcome(
+                -1,
+                String::new(),
+                "Smoke test exceeded 60s timeout and was abandoned.".to_string(),
+                true,
+            ))
+        }
+    }
+}
+
 // ── Phase 0: Code graph commands ────────────────────────────────────────────
 
 #[tauri::command]
@@ -1222,6 +1459,22 @@ pub fn run() {
             query_run_graph,
             list_threads,
             upsert_thread,
+            create_experiment,
+            list_experiments,
+            get_experiment,
+            update_experiment,
+            delete_experiment,
+            create_experiment_run,
+            list_experiment_runs,
+            update_experiment_run,
+            get_budget_status,
+            update_budget,
+            record_tool_call,
+            check_tool_permission,
+            propose_experiment,
+            list_experiments_for_planner,
+            scaffold_script,
+            run_smoke_test,
         ])
         .setup(|app| {
             // Tauri 2 has a subtle race: `visible: true` shows the
@@ -1261,6 +1514,12 @@ pub fn run() {
             let storage_state: StorageState =
                 Arc::new(RwLock::new(HashMap::new()));
             app.manage(storage_state);
+
+            // ── Phase 2: Per-workspace budget state ────────────────────
+            // Stores the BudgetGovernor for each open workspace.
+            let budget_state: BudgetState =
+                Arc::new(RwLock::new(std::collections::HashMap::new()));
+            app.manage(budget_state);
 
             // Start the WebSocket LSP bridge on port 9877.
             // This relay server accepts connections from the browser

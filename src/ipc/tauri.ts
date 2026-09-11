@@ -20,10 +20,10 @@
  * That lets the existing preview/Storybook workflow keep working.
  */
 
-import { invoke, isTauri as tauriIsTauri } from "@tauri-apps/api/core";
-import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open as openExternal } from "@tauri-apps/plugin-shell";
+import { invoke, isTauri as tauriIsTauri } from "@tauri-apps/api/core"
+import { open as openDialog } from "@tauri-apps/plugin-dialog"
+import { getCurrentWindow } from "@tauri-apps/api/window"
+import { open as openExternal } from "@tauri-apps/plugin-shell"
 
 // ── Tauri presence check ───────────────────────────────────────────────────
 
@@ -38,146 +38,149 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
  * for `window.isTauri` — a boolean injected by Tauri's webview at page
  * load time. This is the correct and documented approach.
  */
-export { tauriIsTauri as isTauri };
+export { tauriIsTauri as isTauri }
 
 // ── Types — keep camelCase to match the old preload's shape ────────────────
 
 export type AppInfo = {
-  version: string;
-  name: string;
-  platform: NodeJS.Platform;
-  arch: string;
+  version: string
+  name: string
+  platform: NodeJS.Platform
+  arch: string
   // Tauri-specific fields; older Electron fields are dropped.
-  tauri: string;
-  webview: string;
-  isPackaged: boolean;
-  theme: "dark" | "light";
-};
+  tauri: string
+  webview: string
+  isPackaged: boolean
+  theme: "dark" | "light"
+}
 
 /** Represents any JSON value (matches serde_json::Value on the Rust side). */
-export type JSONValue = string | number | boolean | null | JSONValue[] | { [key: string]: JSONValue };
+export type JSONValue = string | number | boolean | null | JSONValue[] | {
+  [key: string]: JSONValue
+}
 
-export type FileType =
-  | "python" | "markdown" | "json" | "typescript" | "tsx"
-  | "css" | "yaml" | "toml" | "shell" | "text";
+export type FileType = "python" | "markdown" | "json" | "typescript" | "tsx" | "css" | "yaml" | "toml" | "shell" | "text"
 
 export type FsNode = {
-  id: string;
-  name: string;
-  kind: "folder" | "file";
-  parentId: string | null;
-  expanded?: boolean;
-  fileType: FileType;
-};
+  id: string
+  name: string
+  kind: "folder" | "file"
+  parentId: string | null
+  expanded?: boolean
+  fileType: FileType
+}
 
 export type DirListing = {
-  rootPath: string;
-  rootName: string;
-  files: FsNode[];
-};
+  rootPath: string
+  rootName: string
+  files: FsNode[]
+}
 
-export type OpResult = { ok: boolean; path?: string };
+export type OpResult = { ok: boolean path?: string }
 
 /**
  * A file-system change event emitted by the Rust watcher. The shape
  * is a tagged union; the renderer's event listener switches on `type`.
  */
-export type FsEvent =
-  | { type: "created"; path: string; is_dir: boolean }
-  | { type: "modified"; path: string }
-  | { type: "removed"; path: string };
+export type FsEvent = { type: "created" path: string is_dir: boolean } | {
+  type: "modified"
+  path: string
+} | { type: "removed" path: string }
 
 // ── IPC functions ──────────────────────────────────────────────────────────
 
 async function pickFolder(): Promise<string | null> {
   if (!tauriIsTauri()) {
-    console.warn("[bonafide] pickFolder called outside Tauri — returning null");
-    return null;
+    console.warn("[bonafide] pickFolder called outside Tauri — returning null")
+    return null
   }
   try {
     const result = await openDialog({
       directory: true,
       multiple: false,
       title: "Open folder",
-    });
-    if (Array.isArray(result)) return result[0] ?? null;
-    return result ?? null;
+    })
+    if (Array.isArray(result)) return result[0] ?? null
+    return result ?? null
   } catch (err) {
     // Common causes: capability mismatch (window label not "main"), plugin not
     // registered, or CSP blocking the IPC. Log for devtools, return null so
     // the caller (openFolder in App.tsx) can show its own error toast.
-    console.error("[bonafide] pickFolder failed:", err);
-    return null;
+    console.error("[bonafide] pickFolder failed:", err)
+    return null
   }
 }
 
 async function pickFile(): Promise<string | null> {
   if (!tauriIsTauri()) {
-    console.warn("[bonafide] pickFile called outside Tauri — returning null");
-    return null;
+    console.warn("[bonafide] pickFile called outside Tauri — returning null")
+    return null
   }
   try {
     const result = await openDialog({
       directory: false,
       multiple: false,
       title: "Open file",
-    });
-    if (Array.isArray(result)) return result[0] ?? null;
-    return result ?? null;
+    })
+    if (Array.isArray(result)) return result[0] ?? null
+    return result ?? null
   } catch (err) {
-    console.error("[bonafide] pickFile failed:", err);
-    return null;
+    console.error("[bonafide] pickFile failed:", err)
+    return null
   }
 }
 
 async function readDirectory(dirPath: string): Promise<DirListing> {
-  return invoke<DirListing>("read_directory", { path: dirPath });
+  return invoke<DirListing>("read_directory", { path: dirPath })
 }
 
 async function readFile(filePath: string): Promise<{ content: string }> {
-  return invoke<{ content: string }>("read_file", { path: filePath });
+  return invoke<{ content: string }>("read_file", { path: filePath })
 }
 
 async function writeFile(filePath: string, content: string): Promise<OpResult> {
-  return invoke<OpResult>("write_file", { path: filePath, content });
+  return invoke<OpResult>("write_file", { path: filePath, content })
 }
 
 async function createFile(parentDir: string, name: string): Promise<OpResult> {
-  return invoke<OpResult>("create_file", { parentDir, name });
+  return invoke<OpResult>("create_file", { parentDir, name })
 }
 
-async function createFolder(parentDir: string, name: string): Promise<OpResult> {
-  return invoke<OpResult>("create_folder", { parentDir, name });
+async function createFolder(
+  parentDir: string,
+  name: string,
+): Promise<OpResult> {
+  return invoke<OpResult>("create_folder", { parentDir, name })
 }
 
 async function rename(src: string, newName: string): Promise<OpResult> {
-  return invoke<OpResult>("rename_path", { src, newName });
+  return invoke<OpResult>("rename_path", { src, newName })
 }
 
 async function deletePath(target: string): Promise<OpResult> {
-  return invoke<OpResult>("delete_path", { target });
+  return invoke<OpResult>("delete_path", { target })
 }
 
 async function minimize(): Promise<void> {
-  if (!tauriIsTauri()) return;
-  await getCurrentWindow().minimize();
+  if (!tauriIsTauri()) return
+  await getCurrentWindow().minimize()
 }
 
 async function toggleMaximize(): Promise<void> {
-  if (!tauriIsTauri()) return;
-  const w = getCurrentWindow();
-  if (await w.isMaximized()) await w.unmaximize();
-  else await w.maximize();
+  if (!tauriIsTauri()) return
+  const w = getCurrentWindow()
+  if (await w.isMaximized()) await w.unmaximize()
+  else await w.maximize()
 }
 
 async function isMaximized(): Promise<boolean> {
-  if (!tauriIsTauri()) return false;
-  return getCurrentWindow().isMaximized();
+  if (!tauriIsTauri()) return false
+  return getCurrentWindow().isMaximized()
 }
 
 async function close(): Promise<void> {
-  if (!tauriIsTauri()) return;
-  await getCurrentWindow().close();
+  if (!tauriIsTauri()) return
+  await getCurrentWindow().close()
 }
 
 /**
@@ -186,22 +189,22 @@ async function close(): Promise<void> {
  * window's current maximized state.
  */
 function onMaximizeChanged(cb: (maximized: boolean) => void): () => void {
-  if (!tauriIsTauri()) return () => {};
-  const w = getCurrentWindow();
-  let lastState: boolean | null = null;
+  if (!tauriIsTauri()) return () => {}
+  const w = getCurrentWindow()
+  let lastState: boolean | null = null
   const handler = async () => {
-    const m = await w.isMaximized();
+    const m = await w.isMaximized()
     if (m !== lastState) {
-      lastState = m;
-      cb(m);
+      lastState = m
+      cb(m)
     }
-  };
-  const unlistenResize = w.onResized(handler);
+  }
+  const unlistenResize = w.onResized(handler)
   // Initial sync — fires once if the window starts maximized.
-  void handler();
+  void handler()
   return async () => {
-    await unlistenResize.then((f) => f());
-  };
+    await unlistenResize.then((f) => f())
+  }
 }
 
 async function getInfo(): Promise<AppInfo> {
@@ -215,12 +218,12 @@ async function getInfo(): Promise<AppInfo> {
       webview: navigator.userAgent,
       isPackaged: false,
       theme: "dark",
-    };
+    }
   }
   // `tauriIsTauri()` checks for `window.isTauri` — the official flag set by
   // Tauri's webview at load time. When false we know this is the browser
   // preview; when true we know it's the real desktop shell.
-  const tauriVersion = tauriIsTauri() ? "2.x" : "browser-preview";
+  const tauriVersion = tauriIsTauri() ? "2.x" : "browser-preview"
   return {
     version: "1.0.0", // populated at build time by tauri.conf.json
     name: "Bonafide",
@@ -233,31 +236,37 @@ async function getInfo(): Promise<AppInfo> {
     tauri: tauriVersion,
     webview: navigator.userAgent,
     isPackaged: !import.meta.env.DEV,
-    theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
-  };
+    theme: matchMedia("(prefers-color-scheme: dark)").matches
+      ? "dark"
+      : "light",
+  }
 }
 
 async function shellOpenExternal(url: string): Promise<boolean> {
   if (!tauriIsTauri()) {
-    try { window.open(url, "_blank", "noopener"); return true; }
-    catch { return false; }
+    try {
+      window.open(url, "_blank", "noopener")
+      return true
+    } catch {
+      return false
+    }
   }
-  await openExternal(url);
-  return true;
+  await openExternal(url)
+  return true
 }
 
 // ── File watcher (real-time file tree updates) ────────────────────────────
 
 /** Start watching a workspace directory for file-system changes. */
 async function startWatcher(path: string): Promise<void> {
-  if (!tauriIsTauri()) return;
-  return invoke<void>("start_watcher", { path });
+  if (!tauriIsTauri()) return
+  return invoke<void>("start_watcher", { path })
 }
 
 /** Stop watching the current workspace. */
 async function stopWatcher(): Promise<void> {
-  if (!tauriIsTauri()) return;
-  return invoke<void>("stop_watcher");
+  if (!tauriIsTauri()) return
+  return invoke<void>("stop_watcher")
 }
 
 /**
@@ -271,16 +280,16 @@ async function stopWatcher(): Promise<void> {
  * `removed` events.
  */
 function onFsEvent(cb: (events: FsEvent[]) => void): () => void {
-  if (!tauriIsTauri()) return () => {};
-  let unlisten: (() => void) | null = null;
+  if (!tauriIsTauri()) return () => {}
+  let unlisten: (() => void) | null = null
   void import("@tauri-apps/api/event").then(({ listen }) => {
     void listen<FsEvent[]>("fs:watcher", (e) => cb(e.payload)).then((fn) => {
-      unlisten = fn;
-    });
-  });
+      unlisten = fn
+    })
+  })
   return () => {
-    unlisten?.();
-  };
+    unlisten?.()
+  }
 }
 
 // ── LSP bridge + ruff CLI ──────────────────────────────────────────────────
@@ -289,21 +298,21 @@ function onFsEvent(cb: (events: FsEvent[]) => void): () => void {
 async function getLspBridgeUrl(): Promise<string> {
   if (!tauriIsTauri()) {
     // Fall back to a localhost URL when running standalone in the browser.
-    return "ws://127.0.0.1:9877";
+    return "ws://127.0.0.1:9877"
   }
-  return invoke<string>("get_lsp_bridge_url");
+  return invoke<string>("get_lsp_bridge_url")
 }
 
 /** Get the list of running LSP servers (serverId + rootUri). */
-async function getLspServers(): Promise<{ id: string; status: string }[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<{ id: string; status: string }[]>("get_lsp_servers");
+async function getLspServers(): Promise<{ id: string status: string }[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<{ id: string status: string }[]>("get_lsp_servers")
 }
 
 /** Stop a running LSP server by id. */
 async function stopLspServer(serverId: string): Promise<void> {
-  if (!tauriIsTauri()) return;
-  await invoke("stop_lsp_server", { serverId });
+  if (!tauriIsTauri()) return
+  await invoke("stop_lsp_server", { serverId })
 }
 
 /**
@@ -311,24 +320,24 @@ async function stopLspServer(serverId: string): Promise<void> {
  * Returns the raw JSON output (empty array when no issues).
  */
 async function ruffCheck(filePath: string): Promise<string> {
-  if (!tauriIsTauri()) return "[]";
-  return invoke<string>("ruff_check", { filePath });
+  if (!tauriIsTauri()) return "[]"
+  return invoke<string>("ruff_check", { filePath })
 }
 
 /** Get the WebSocket URL for the PTY bridge (xterm.js terminal sessions). */
 async function getPtyWsUrl(): Promise<string> {
-  if (!tauriIsTauri()) return "ws://127.0.0.1:9878";
-  return invoke<string>("get_pty_ws_url");
+  if (!tauriIsTauri()) return "ws://127.0.0.1:9878"
+  return invoke<string>("get_pty_ws_url")
 }
 
 /** One available terminal shell profile (cmd, powershell, pwsh, git-bash…). */
 export type TerminalProfile = {
-  id: string;
-  label: string;
-  program: string;
-  args: string[];
-  available: boolean;
-};
+  id: string
+  label: string
+  program: string
+  args: string[]
+  available: boolean
+}
 
 /**
  * List the shell profiles detected on this machine. The renderer uses
@@ -347,9 +356,9 @@ async function listTerminalProfiles(): Promise<TerminalProfile[]> {
         args: [],
         available: true,
       },
-    ];
+    ]
   }
-  return invoke<TerminalProfile[]>("list_terminal_profiles");
+  return invoke<TerminalProfile[]>("list_terminal_profiles")
 }
 
 // ── Git / source-control ──────────────────────────────────────────────────
@@ -362,130 +371,158 @@ async function listTerminalProfiles(): Promise<TerminalProfile[]> {
 // React panel render an offline message instead of crashing.
 
 export type GitStatusEntry = {
-  path: string;
+  path: string
   /** M = modified, A = added, D = deleted, R = renamed, C = copied,
    *  T = type-change, U = untracked, I = ignored. */
-  status: string;
-  staged: boolean;
+  status: string
+  staged: boolean
   /** Original path when status === "R"; empty otherwise. */
-  originalPath: string;
-};
+  originalPath: string
+}
 
 export type GitStatus = {
-  branch: string;
-  upstream: string;
-  ahead: number;
+  branch: string
+  upstream: string
+  ahead: number
   /** -1 when no upstream is configured. */
-  behind: number;
-  staged: GitStatusEntry[];
-  unstaged: GitStatusEntry[];
-  untracked: GitStatusEntry[];
-};
+  behind: number
+  staged: GitStatusEntry[]
+  unstaged: GitStatusEntry[]
+  untracked: GitStatusEntry[]
+}
 
 export type GitBranch = {
-  name: string;
-  shortHash: string;
-  subject: string;
-  isoDate: string;
-  isCurrent: boolean;
-  isRemote: boolean;
-  upstream: string;
-  ahead: number;
-  behind: number;
-};
+  name: string
+  shortHash: string
+  subject: string
+  isoDate: string
+  isCurrent: boolean
+  isRemote: boolean
+  upstream: string
+  ahead: number
+  behind: number
+}
 
 export type GitCommit = {
-  hash: string;
-  shortHash: string;
-  subject: string;
-  author: string;
-  isoDate: string;
-  isHead: boolean;
-};
+  hash: string
+  shortHash: string
+  subject: string
+  author: string
+  isoDate: string
+  isHead: boolean
+}
 
 export type GitDiffFile = {
-  path: string;
-  oldText: string;
-  newText: string;
-};
+  path: string
+  oldText: string
+  newText: string
+}
 
 export type GitDiffResult = {
   /** Raw unified diff text (empty when there are no changes). */
-  diff: string;
+  diff: string
   /** Per-file old/new text pairs ready for MergeViewEditor. */
-  files: GitDiffFile[];
-};
+  files: GitDiffFile[]
+}
 
 export type GitOpResult = {
-  ok: boolean;
-  stdout: string;
-  stderr: string;
-  message: string;
-};
+  ok: boolean
+  stdout: string
+  stderr: string
+  message: string
+}
 
 async function gitStatus(workspace: string): Promise<GitStatus> {
-  if (!tauriIsTauri()) return emptyGitStatus();
-  return invoke<GitStatus>("git_status", { workspace });
+  if (!tauriIsTauri()) return emptyGitStatus()
+  return invoke<GitStatus>("git_status", { workspace })
 }
 
 async function gitListBranches(workspace: string): Promise<GitBranch[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<GitBranch[]>("git_list_branches", { workspace });
+  if (!tauriIsTauri()) return []
+  return invoke<GitBranch[]>("git_list_branches", { workspace })
 }
 
 async function gitLog(workspace: string, maxCount = 50): Promise<GitCommit[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<GitCommit[]>("git_log", { workspace, maxCount });
+  if (!tauriIsTauri()) return []
+  return invoke<GitCommit[]>("git_log", { workspace, maxCount })
 }
 
-async function gitDiff(workspace: string, path?: string): Promise<GitDiffResult> {
-  if (!tauriIsTauri()) return { diff: "", files: [] };
-  return invoke<GitDiffResult>("git_diff", { workspace, path });
+async function gitDiff(
+  workspace: string,
+  path?: string,
+): Promise<GitDiffResult> {
+  if (!tauriIsTauri()) return { diff: "", files: [] }
+  return invoke<GitDiffResult>("git_diff", { workspace, path })
 }
 
-async function gitAdd(workspace: string, paths: string[]): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_add", { workspace, paths });
+async function gitAdd(
+  workspace: string,
+  paths: string[],
+): Promise<GitOpResult> {
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_add", { workspace, paths })
 }
 
-async function gitUnstage(workspace: string, paths: string[]): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_unstage", { workspace, paths });
+async function gitUnstage(
+  workspace: string,
+  paths: string[],
+): Promise<GitOpResult> {
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_unstage", { workspace, paths })
 }
 
-async function gitDiscard(workspace: string, paths: string[]): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_discard", { workspace, paths });
+async function gitDiscard(
+  workspace: string,
+  paths: string[],
+): Promise<GitOpResult> {
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_discard", { workspace, paths })
 }
 
-async function gitCommit(workspace: string, message: string): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_commit", { workspace, message });
+async function gitCommit(
+  workspace: string,
+  message: string,
+): Promise<GitOpResult> {
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_commit", { workspace, message })
 }
 
-async function gitCheckout(workspace: string, branch: string, create = false): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_checkout", { workspace, branch, create });
+async function gitCheckout(
+  workspace: string,
+  branch: string,
+  create = false,
+): Promise<GitOpResult> {
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_checkout", { workspace, branch, create })
 }
 
 async function gitPull(workspace: string): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_pull", { workspace });
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_pull", { workspace })
 }
 
 async function gitPush(workspace: string): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_push", { workspace });
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_push", { workspace })
 }
 
 async function gitFetch(workspace: string): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_fetch", { workspace });
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_fetch", { workspace })
 }
 
 async function gitInit(workspace: string): Promise<GitOpResult> {
-  if (!tauriIsTauri()) return { ok: false, stdout: "", stderr: "not in Tauri", message: "" };
-  return invoke<GitOpResult>("git_init", { workspace });
+  if (!tauriIsTauri())
+    return { ok: false, stdout: "", stderr: "not in Tauri", message: "" }
+  return invoke<GitOpResult>("git_init", { workspace })
 }
 
 function emptyGitStatus(): GitStatus {
@@ -497,153 +534,147 @@ function emptyGitStatus(): GitStatus {
     staged: [],
     unstaged: [],
     untracked: [],
-  };
+  }
 }
 
 // ── Phase 0: Tracker / Workspace / Code Graph types ────────────────────────
 
 /** Tracker kinds the renderer can connect. */
-export type TrackerKind = "wandb" | "mlflow";
+export type TrackerKind = "wandb" | "mlflow"
 
 /** JSON payload the renderer sends for an MLflow `connect_tracker`
  *  invocation. For W&B, the `api_key` argument is the plain API key
  *  string; for MLflow, we parse it as this struct. */
 export type MlflowConnectPayload = {
-  baseUrl: string;
-  token?: string;
-  project: string;
-};
+  baseUrl: string
+  token?: string
+  project: string
+}
 
 /** W&B tracker error variants returned by the Rust backend. */
-export type TrackerErrorKind =
-  | "no_python"
-  | "auth_failed"
-  | "not_found"
-  | "rate_limited"
-  | "shim_crashed"
-  | "unknown";
+export type TrackerErrorKind = "no_python" | "auth_failed" | "not_found" | "rate_limited" | "shim_crashed" | "unknown"
 
 /** Structured error from the tracker subsystem. */
 export type TrackerError = {
-  kind: TrackerErrorKind;
-  message: string;
-  hint?: string;
-};
+  kind: TrackerErrorKind
+  message: string
+  hint?: string
+}
 
 /** Result of `test_tracker_connection`. */
 export type TrackerStatus = {
-  connected: boolean;
-  latencyMs?: number;
-  errorKind?: string;
-};
+  connected: boolean
+  latencyMs?: number
+  errorKind?: string
+}
 
 /** Full workspace descriptor returned by `open_workspace`. */
 export type Workspace = {
-  root: string;
-  hash: string;
-  dbPath: string;
-  hasTracker: boolean;
-};
+  root: string
+  hash: string
+  dbPath: string
+  hasTracker: boolean
+}
 
 /** Lightweight workspace summary returned by `list_workspaces`. */
 export type WorkspaceSummary = {
-  root: string;
-  hash: string;
-  lastOpened: number;
-};
+  root: string
+  hash: string
+  lastOpened: number
+}
 
 /** Run summary returned by `list_runs`. */
 export type RunSummary = {
-  id: string;
-  name: string;
-  state: string;
-  createdAt: number;
-  summaryMetrics: JSONValue;
-};
+  id: string
+  name: string
+  state: string
+  createdAt: number
+  summaryMetrics: JSONValue
+}
 
 /** A page of runs with optional next-cursor. */
 export type RunPage = {
-  runs: RunSummary[];
-  nextCursor?: string;
-};
+  runs: RunSummary[]
+  nextCursor?: string
+}
 
 /** Full run detail returned by `get_run`. */
 export type RunDetail = {
-  id: string;
-  name: string;
-  state: string;
-  createdAt: number;
-  finishedAt?: number;
-  config: JSONValue;
-  summaryMetrics: JSONValue;
-  tags: string[];
-  notes: string;
-};
+  id: string
+  name: string
+  state: string
+  createdAt: number
+  finishedAt?: number
+  config: JSONValue
+  summaryMetrics: JSONValue
+  tags: string[]
+  notes: string
+}
 
 /** A single (step, value) point in a metric time series. */
 export type Point = {
-  step: number;
-  value: number;
-  ts: number;
-};
+  step: number
+  value: number
+  ts: number
+}
 
 /** Run configuration returned by `get_run_config`. */
 export type RunConfig = {
-  runId: string;
-  config: JSONValue;
-};
+  runId: string
+  config: JSONValue
+}
 
 /** Reference to a logged W&B artifact. */
 export type ArtifactRef = {
-  name: string;
-  digest: string;
-  sizeBytes: number;
-  createdAt: number;
-};
+  name: string
+  digest: string
+  sizeBytes: number
+  createdAt: number
+}
 
 /** Summary of a completed code-graph indexing pass. */
 export type IndexSummary = {
-  nodesIndexed: number;
-  edgesIndexed: number;
-  filesScanned: number;
-  durationMs: number;
-};
+  nodesIndexed: number
+  edgesIndexed: number
+  filesScanned: number
+  durationMs: number
+}
 
 /** A single entry returned from a code-graph search. */
 export type CodeGraphHit = {
-  id: string;
-  kind: string;
-  file: string;
-  name: string;
-  spanStart: number;
-  spanEnd: number;
-};
+  id: string
+  kind: string
+  file: string
+  name: string
+  spanStart: number
+  spanEnd: number
+}
 
 /** A single node returned from a run-graph query. The renderer uses
  *  these to draw cross-run relationships (framework × dataset × GPU).
  *  Mirrors the `RunGraphNode` shape on the Rust side. */
 export type RunGraphNode = {
-  id: string;
-  framework: string;
-  gpu: string;
-  datasetRef: string;
-  createdAt: number;
-};
+  id: string
+  framework: string
+  gpu: string
+  datasetRef: string
+  createdAt: number
+}
 
 // ── Phase 0: IPC function implementations ────────────────────────────────
 
 /** Open a workspace directory, creating its local DB on first access. */
 async function openWorkspace(path: string): Promise<Workspace> {
   if (!tauriIsTauri()) {
-    return { root: path, hash: "preview", dbPath: "", hasTracker: false };
+    return { root: path, hash: "preview", dbPath: "", hasTracker: false }
   }
-  return invoke<Workspace>("open_workspace", { path });
+  return invoke<Workspace>("open_workspace", { path })
 }
 
 /** List all workspaces currently tracked in app state. */
 async function listWorkspaces(): Promise<WorkspaceSummary[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<WorkspaceSummary[]>("list_workspaces");
+  if (!tauriIsTauri()) return []
+  return invoke<WorkspaceSummary[]>("list_workspaces")
 }
 
 /** Connect a tracker for the given workspace root.
@@ -664,13 +695,13 @@ async function connectTracker(
   workspaceRoot: string,
   project?: string,
 ): Promise<string> {
-  if (!tauriIsTauri()) return "preview";
+  if (!tauriIsTauri()) return "preview"
   return invoke<string>("connect_tracker", {
     kind,
     apiKey,
     workspaceRoot,
     project,
-  });
+  })
 }
 
 /** Disconnect the tracker for the given workspace root. */
@@ -678,8 +709,8 @@ async function disconnectTracker(
   kind: TrackerKind,
   workspaceRoot: string,
 ): Promise<void> {
-  if (!tauriIsTauri()) return;
-  return invoke<void>("disconnect_tracker", { kind, workspaceRoot });
+  if (!tauriIsTauri()) return
+  return invoke<void>("disconnect_tracker", { kind, workspaceRoot })
 }
 
 /** Test connectivity to the tracker service without storing credentials. */
@@ -687,8 +718,11 @@ async function testTrackerConnection(
   kind: TrackerKind,
   workspaceRoot: string,
 ): Promise<TrackerStatus> {
-  if (!tauriIsTauri()) return { connected: false };
-  return invoke<TrackerStatus>("test_tracker_connection", { kind, workspaceRoot });
+  if (!tauriIsTauri()) return { connected: false }
+  return invoke<TrackerStatus>("test_tracker_connection", {
+    kind,
+    workspaceRoot,
+  })
 }
 
 /** List runs for a project on the given tracker. */
@@ -699,8 +733,14 @@ async function listRuns(
   limit: number,
   cursor?: string,
 ): Promise<RunPage> {
-  if (!tauriIsTauri()) return { runs: [] };
-  return invoke<RunPage>("list_runs", { kind, workspaceRoot, project, limit, cursor });
+  if (!tauriIsTauri()) return { runs: [] }
+  return invoke<RunPage>("list_runs", {
+    kind,
+    workspaceRoot,
+    project,
+    limit,
+    cursor,
+  })
 }
 
 /** Get full detail for a single run. */
@@ -710,9 +750,9 @@ async function getRun(
   runId: string,
 ): Promise<RunDetail> {
   if (!tauriIsTauri()) {
-    throw new Error("getRun not available outside Tauri");
+    throw new Error("getRun not available outside Tauri")
   }
-  return invoke<RunDetail>("get_run", { kind, workspaceRoot, runId });
+  return invoke<RunDetail>("get_run", { kind, workspaceRoot, runId })
 }
 
 /** Get the time-series values for one metric of a run. */
@@ -722,8 +762,13 @@ async function getMetricSeries(
   runId: string,
   key: string,
 ): Promise<Point[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<Point[]>("get_metric_series", { kind, workspaceRoot, runId, key });
+  if (!tauriIsTauri()) return []
+  return invoke<Point[]>("get_metric_series", {
+    kind,
+    workspaceRoot,
+    runId,
+    key,
+  })
 }
 
 /** Get the config dict for a single run. */
@@ -733,9 +778,9 @@ async function getRunConfig(
   runId: string,
 ): Promise<RunConfig> {
   if (!tauriIsTauri()) {
-    throw new Error("getRunConfig not available outside Tauri");
+    throw new Error("getRunConfig not available outside Tauri")
   }
-  return invoke<RunConfig>("get_run_config", { kind, workspaceRoot, runId });
+  return invoke<RunConfig>("get_run_config", { kind, workspaceRoot, runId })
 }
 
 /** List artifacts logged to a run. */
@@ -744,16 +789,16 @@ async function listArtifacts(
   workspaceRoot: string,
   runId: string,
 ): Promise<ArtifactRef[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<ArtifactRef[]>("list_artifacts", { kind, workspaceRoot, runId });
+  if (!tauriIsTauri()) return []
+  return invoke<ArtifactRef[]>("list_artifacts", { kind, workspaceRoot, runId })
 }
 
 /** Index all Python files under a workspace root into the code graph. */
 async function indexCodeGraph(workspaceRoot: string): Promise<IndexSummary> {
   if (!tauriIsTauri()) {
-    return { nodesIndexed: 0, edgesIndexed: 0, filesScanned: 0, durationMs: 0 };
+    return { nodesIndexed: 0, edgesIndexed: 0, filesScanned: 0, durationMs: 0 }
   }
-  return invoke<IndexSummary>("index_code_graph", { workspaceRoot });
+  return invoke<IndexSummary>("index_code_graph", { workspaceRoot })
 }
 
 /** Search the code graph for functions/classes matching the query. */
@@ -761,8 +806,8 @@ async function queryCodeGraph(
   query: string,
   workspaceRoot: string,
 ): Promise<CodeGraphHit[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<CodeGraphHit[]>("query_code_graph", { query, workspaceRoot });
+  if (!tauriIsTauri()) return []
+  return invoke<CodeGraphHit[]>("query_code_graph", { query, workspaceRoot })
 }
 
 /** Query the run-graph for nodes matching an optional `framework` and
@@ -773,8 +818,12 @@ async function queryRunGraph(
   framework?: string,
   dataset?: string,
 ): Promise<RunGraphNode[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<RunGraphNode[]>("query_run_graph", { workspaceRoot, framework, dataset });
+  if (!tauriIsTauri()) return []
+  return invoke<RunGraphNode[]>("query_run_graph", {
+    workspaceRoot,
+    framework,
+    dataset,
+  })
 }
 
 // ── Phase 0+: Agent thread IPC ──────────────────────────────────────────────
@@ -783,38 +832,292 @@ async function queryRunGraph(
 // a strict subset of the renderer's `Thread` type (no trace/messages/
 // hypothesis/patch — those live in the append-only event log).
 
-export type ThreadRole =
-  | "debugger" | "scaffolder" | "planner" | "researcher" | "critic";
+export type ThreadRole = "debugger" | "scaffolder" | "planner" | "researcher" | "critic"
 
-export type ThreadState =
-  | "idle" | "investigating" | "hypothesis_formed" | "patch_proposed"
-  | "smoke_verifying" | "awaiting_approval" | "full_run_verifying"
-  | "resolved" | "rejected" | "stopped";
+export type ThreadState = "idle" | "investigating" | "hypothesis_formed" | "patch_proposed" | "smoke_verifying" | "awaiting_approval" | "full_run_verifying" | "resolved" | "rejected" | "stopped"
 
-export type ThreadBand = "active" | "awaiting_review" | "closed";
+export type ThreadBand = "active" | "awaiting_review" | "closed"
 
 export type ThreadRow = {
-  id: string;
-  workspaceHash: string;
-  role: ThreadRole;
-  title: string;
-  summary: string;
-  state: ThreadState;
-  detail: string;
-  band: ThreadBand;
-  system: boolean;
+  id: string
+  workspaceHash: string
+  role: ThreadRole
+  title: string
+  summary: string
+  state: ThreadState
+  detail: string
+  band: ThreadBand
+  system: boolean
   /** Unix millis — renderer formats "12s ago" relative labels from this. */
-  updatedAt: number;
-};
+  updatedAt: number
+}
 
 async function listThreads(workspaceRoot: string): Promise<ThreadRow[]> {
-  if (!tauriIsTauri()) return [];
-  return invoke<ThreadRow[]>("list_threads", { workspaceRoot });
+  if (!tauriIsTauri()) return []
+  return invoke<ThreadRow[]>("list_threads", { workspaceRoot })
 }
 
 async function upsertThread(row: ThreadRow): Promise<void> {
-  if (!tauriIsTauri()) return;
-  await invoke<void>("upsert_thread", { row });
+  if (!tauriIsTauri()) return
+  await invoke<void>("upsert_thread", { row })
+}
+
+// ── Phase 2: Experiment IPC ──────────────────────────────────────────────────
+
+export type {
+  Experiment,
+  ExperimentRun,
+  GoalCondition,
+  GoalDirection,
+  ExperimentStatus,
+  RunStatus,
+} from "../data/experiments"
+
+async function createExperiment(
+  workspaceRoot: string,
+  row: import("../data/experiments").Experiment,
+): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke<void>("create_experiment", { workspaceRoot, row })
+}
+
+async function listExperiments(
+  workspaceRoot: string,
+): Promise<import("../data/experiments").Experiment[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<import("../data/experiments").Experiment[]>(
+    "list_experiments",
+    { workspaceRoot },
+  )
+}
+
+async function getExperiment(
+  workspaceRoot: string,
+  id: string,
+): Promise<import("../data/experiments").Experiment | null> {
+  if (!tauriIsTauri()) return null
+  return invoke<import("../data/experiments").Experiment | null>(
+    "get_experiment",
+    { workspaceRoot, id },
+  )
+}
+
+async function updateExperiment(
+  workspaceRoot: string,
+  row: import("../data/experiments").Experiment,
+): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke<void>("update_experiment", { workspaceRoot, row })
+}
+
+async function deleteExperiment(
+  workspaceRoot: string,
+  id: string,
+): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke<void>("delete_experiment", { workspaceRoot, id })
+}
+
+async function createExperimentRun(
+  workspaceRoot: string,
+  row: import("../data/experiments").ExperimentRun,
+): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke<void>("create_experiment_run", { workspaceRoot, row })
+}
+
+async function listExperimentRuns(
+  workspaceRoot: string,
+  experimentId: string,
+): Promise<import("../data/experiments").ExperimentRun[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<import("../data/experiments").ExperimentRun[]>(
+    "list_experiment_runs",
+    { workspaceRoot, experimentId },
+  )
+}
+
+async function updateExperimentRun(
+  workspaceRoot: string,
+  id: string,
+  status: string,
+  metricsSummary: string,
+): Promise<void> {
+  if (!tauriIsTauri()) return
+  await invoke<void>("update_experiment_run", {
+    workspaceRoot,
+    id,
+    status,
+    metricsSummary,
+  })
+}
+
+// ── Phase 2: Budget IPC ─────────────────────────────────────────────────────
+
+export type {
+  BudgetStatus,
+  ToolPermission,
+  EscalationLevel,
+} from "../data/budget"
+
+async function getBudgetStatus(
+  workspaceRoot: string,
+): Promise<import("../data/budget").BudgetStatus> {
+  if (!tauriIsTauri()) {
+    return {
+      workspaceHash: "preview",
+      budgetDollars: 10,
+      budgetGpuHours: 4,
+      spentDollars: 0,
+      spentGpuHours: 0,
+      escalation: "normal",
+      spendRatio: 0,
+      requiresApproval: false,
+    }
+  }
+  return invoke<import("../data/budget").BudgetStatus>("get_budget_status", {
+    workspaceRoot,
+  })
+}
+
+async function updateBudget(
+  workspaceRoot: string,
+  budgetDollars: number,
+  budgetGpuHours: number,
+): Promise<import("../data/budget").BudgetStatus> {
+  if (!tauriIsTauri()) {
+    return {
+      workspaceHash: "preview",
+      budgetDollars,
+      budgetGpuHours,
+      spentDollars: 0,
+      spentGpuHours: 0,
+      escalation: "normal",
+      spendRatio: 0,
+      requiresApproval: false,
+    }
+  }
+  return invoke<import("../data/budget").BudgetStatus>("update_budget", {
+    workspaceRoot,
+    budgetDollars,
+    budgetGpuHours,
+  })
+}
+
+async function recordToolCall(
+  workspaceRoot: string,
+  toolName: string,
+): Promise<string> {
+  if (!tauriIsTauri()) return "normal"
+  return invoke<string>("record_tool_call", { workspaceRoot, toolName })
+}
+
+async function checkToolPermission(
+  workspaceRoot: string,
+  toolName: string,
+): Promise<import("../data/budget").ToolPermission> {
+  if (!tauriIsTauri()) {
+    return { allowed: true, escalation: "normal", requiresApproval: false }
+  }
+  return invoke<import("../data/budget").ToolPermission>(
+    "check_tool_permission",
+    {
+      workspaceRoot,
+      toolName,
+    },
+  )
+}
+
+// ── Phase 2: Planner IPC ────────────────────────────────────────────────────
+
+export type {
+  ProposeExperimentInput,
+  ProposeExperimentOutput,
+} from "../data/planner"
+
+async function proposeExperiment(
+  workspaceRoot: string,
+  input: import("../data/planner").ProposeExperimentInput,
+): Promise<import("../data/planner").ProposeExperimentOutput> {
+  if (!tauriIsTauri()) {
+    return {
+      experimentId: `exp_preview_${Date.now()}`,
+      title: input.title,
+      escalation: "normal",
+      withinBudget: true,
+    }
+  }
+  return invoke<import("../data/planner").ProposeExperimentOutput>(
+    "propose_experiment",
+    {
+      workspaceRoot,
+      input,
+    },
+  )
+}
+
+/** List existing experiments so the planner can detect duplicates. */
+async function listExperimentsForPlanner(
+  workspaceRoot: string,
+): Promise<import("../data/experiments").Experiment[]> {
+  if (!tauriIsTauri()) return []
+  return invoke<import("../data/experiments").Experiment[]>(
+    "list_experiments_for_planner",
+    { workspaceRoot },
+  )
+}
+
+// ── Phase 2: Scaffolder IPC ─────────────────────────────────────────────────
+
+export type {
+  ScaffoldInput,
+  ScaffoldOutput,
+  SmokeTestResult,
+  TemplateKind,
+} from "../data/scaffolder"
+
+async function scaffoldScript(
+  workspaceRoot: string,
+  input: import("../data/scaffolder").ScaffoldInput,
+): Promise<import("../data/scaffolder").ScaffoldOutput> {
+  if (!tauriIsTauri()) {
+    return {
+      filePath: `${workspaceRoot}/${input.outputPath}`,
+      template: input.template,
+      smokeTestTriggered: false,
+    }
+  }
+  return invoke<import("../data/scaffolder").ScaffoldOutput>(
+    "scaffold_script",
+    {
+      workspaceRoot,
+      input,
+    },
+  )
+}
+
+async function runSmokeTest(
+  workspaceRoot: string,
+  scriptPath: string,
+  maxSteps?: number,
+): Promise<import("../data/scaffolder").SmokeTestResult> {
+  if (!tauriIsTauri()) {
+    return {
+      exitCode: 0,
+      stdout: "(browser preview — smoke test skipped)",
+      stderr: "",
+      timedOut: false,
+      summary: "✅ Smoke test passed (preview)",
+    }
+  }
+  return invoke<import("../data/scaffolder").SmokeTestResult>(
+    "run_smoke_test",
+    {
+      workspaceRoot,
+      scriptPath,
+      maxSteps,
+    },
+  )
 }
 
 // ── Public API — same shape as the old electronAPI ────────────────────────
@@ -898,101 +1201,192 @@ export const bonafide = {
   agent: {
     listThreads,
     upsertThread,
+    createExperiment,
+    listExperiments,
+    getExperiment,
+    updateExperiment,
+    deleteExperiment,
+    createExperimentRun,
+    listExperimentRuns,
+    updateExperimentRun,
+    getBudgetStatus,
+    updateBudget,
+    recordToolCall,
+    checkToolPermission,
+    proposeExperiment,
+    listExperimentsForPlanner,
+    scaffoldScript,
+    runSmokeTest,
   },
-};
+}
 
 export type BonafideAPI = {
   window: {
-    minimize: () => Promise<void>;
-    toggleMaximize: () => Promise<void>;
-    isMaximized: () => Promise<boolean>;
-    close: () => Promise<void>;
-    onMaximizeChanged: (cb: (maximized: boolean) => void) => () => void;
-  };
-  shell: { openExternal: (url: string) => Promise<boolean> };
-  app: { getInfo: () => Promise<AppInfo> };
+    minimize: () => Promise<void>
+    toggleMaximize: () => Promise<void>
+    isMaximized: () => Promise<boolean>
+    close: () => Promise<void>
+    onMaximizeChanged: (cb: (maximized: boolean) => void) => () => void
+  }
+  shell: { openExternal: (url: string) => Promise<boolean> }
+  app: { getInfo: () => Promise<AppInfo> }
   fs: {
-    pickFolder: () => Promise<string | null>;
-    pickFile: () => Promise<string | null>;
-    readDirectory: (path: string) => Promise<DirListing>;
-    readFile: (path: string) => Promise<{ content: string }>;
-    writeFile: (path: string, content: string) => Promise<OpResult>;
-    createFile: (parentDir: string, name: string) => Promise<OpResult>;
-    createFolder: (parentDir: string, name: string) => Promise<OpResult>;
-    rename: (src: string, newName: string) => Promise<OpResult>;
-    delete: (target: string) => Promise<OpResult>;
-  };
+    pickFolder: () => Promise<string | null>
+    pickFile: () => Promise<string | null>
+    readDirectory: (path: string) => Promise<DirListing>
+    readFile: (path: string) => Promise<{ content: string }>
+    writeFile: (path: string, content: string) => Promise<OpResult>
+    createFile: (parentDir: string, name: string) => Promise<OpResult>
+    createFolder: (parentDir: string, name: string) => Promise<OpResult>
+    rename: (src: string, newName: string) => Promise<OpResult>
+    delete: (target: string) => Promise<OpResult>
+  }
   watcher: {
-    start: (path: string) => Promise<void>;
-    stop: () => Promise<void>;
-    onEvent: (cb: (events: FsEvent[]) => void) => () => void;
-  };
+    start: (path: string) => Promise<void>
+    stop: () => Promise<void>
+    onEvent: (cb: (events: FsEvent[]) => void) => () => void
+  }
   lsp: {
-    getBridgeUrl: () => Promise<string>;
-    getServers: () => Promise<{ id: string; status: string }[]>;
-    stopServer: (serverId: string) => Promise<void>;
-  };
-  linters: { ruffCheck: (filePath: string) => Promise<string> };
-  pty: { getWsUrl: () => Promise<string>; listProfiles: () => Promise<TerminalProfile[]> };
+    getBridgeUrl: () => Promise<string>
+    getServers: () => Promise<{ id: string status: string }[]>
+    stopServer: (serverId: string) => Promise<void>
+  }
+  linters: { ruffCheck: (filePath: string) => Promise<string> }
+  pty: {
+    getWsUrl: () => Promise<string>
+    listProfiles: () => Promise<TerminalProfile[]>
+  }
   git: {
-    status: (workspace: string) => Promise<GitStatus>;
-    listBranches: (workspace: string) => Promise<GitBranch[]>;
-    log: (workspace: string, maxCount?: number) => Promise<GitCommit[]>;
-    diff: (workspace: string, path?: string) => Promise<GitDiffResult>;
-    add: (workspace: string, paths: string[]) => Promise<GitOpResult>;
-    unstage: (workspace: string, paths: string[]) => Promise<GitOpResult>;
-    discard: (workspace: string, paths: string[]) => Promise<GitOpResult>;
-    commit: (workspace: string, message: string) => Promise<GitOpResult>;
-    checkout: (workspace: string, branch: string, create?: boolean) => Promise<GitOpResult>;
-    pull: (workspace: string) => Promise<GitOpResult>;
-    push: (workspace: string) => Promise<GitOpResult>;
-    fetch: (workspace: string) => Promise<GitOpResult>;
-    init: (workspace: string) => Promise<GitOpResult>;
-  };
+    status: (workspace: string) => Promise<GitStatus>
+    listBranches: (workspace: string) => Promise<GitBranch[]>
+    log: (workspace: string, maxCount?: number) => Promise<GitCommit[]>
+    diff: (workspace: string, path?: string) => Promise<GitDiffResult>
+    add: (workspace: string, paths: string[]) => Promise<GitOpResult>
+    unstage: (workspace: string, paths: string[]) => Promise<GitOpResult>
+    discard: (workspace: string, paths: string[]) => Promise<GitOpResult>
+    commit: (workspace: string, message: string) => Promise<GitOpResult>
+    checkout: (
+      workspace: string,
+      branch: string,
+      create?: boolean,
+    ) => Promise<GitOpResult>
+    pull: (workspace: string) => Promise<GitOpResult>
+    push: (workspace: string) => Promise<GitOpResult>
+    fetch: (workspace: string) => Promise<GitOpResult>
+    init: (workspace: string) => Promise<GitOpResult>
+  }
   workspace: {
-    open: (path: string) => Promise<Workspace>;
-    list: () => Promise<WorkspaceSummary[]>;
-  };
+    open: (path: string) => Promise<Workspace>
+    list: () => Promise<WorkspaceSummary[]>
+  }
   tracker: {
-    connect: (kind: TrackerKind, apiKey: string, workspaceRoot: string, project?: string) => Promise<string>;
-    disconnect: (kind: TrackerKind, workspaceRoot: string) => Promise<void>;
-    test: (kind: TrackerKind, workspaceRoot: string) => Promise<TrackerStatus>;
+    connect: (
+      kind: TrackerKind,
+      apiKey: string,
+      workspaceRoot: string,
+      project?: string,
+    ) => Promise<string>
+    disconnect: (kind: TrackerKind, workspaceRoot: string) => Promise<void>
+    test: (kind: TrackerKind, workspaceRoot: string) => Promise<TrackerStatus>
     listRuns: (
       kind: TrackerKind,
       workspaceRoot: string,
       project: string,
       limit: number,
       cursor?: string,
-    ) => Promise<RunPage>;
-    getRun: (kind: TrackerKind, workspaceRoot: string, runId: string) => Promise<RunDetail>;
+    ) => Promise<RunPage>
+    getRun: (
+      kind: TrackerKind,
+      workspaceRoot: string,
+      runId: string,
+    ) => Promise<RunDetail>
     getMetricSeries: (
       kind: TrackerKind,
       workspaceRoot: string,
       runId: string,
       key: string,
-    ) => Promise<Point[]>;
+    ) => Promise<Point[]>
     getRunConfig: (
       kind: TrackerKind,
       workspaceRoot: string,
       runId: string,
-    ) => Promise<RunConfig>;
+    ) => Promise<RunConfig>
     listArtifacts: (
       kind: TrackerKind,
       workspaceRoot: string,
       runId: string,
-    ) => Promise<ArtifactRef[]>;
-  };
+    ) => Promise<ArtifactRef[]>
+  }
   graph: {
-    index: (workspaceRoot: string) => Promise<IndexSummary>;
-    query: (query: string, workspaceRoot: string) => Promise<CodeGraphHit[]>;
+    index: (workspaceRoot: string) => Promise<IndexSummary>
+    query: (query: string, workspaceRoot: string) => Promise<CodeGraphHit[]>
     queryRunGraph: (
       workspaceRoot: string,
       framework?: string,
       dataset?: string,
-    ) => Promise<RunGraphNode[]>;
-  };
+    ) => Promise<RunGraphNode[]>
+  }
   agent: {
-    listThreads: (workspaceRoot: string) => Promise<ThreadRow[]>;
-    upsertThread: (row: ThreadRow) => Promise<void>;
-  };
-};
+    listThreads: (workspaceRoot: string) => Promise<ThreadRow[]>
+    upsertThread: (row: ThreadRow) => Promise<void>
+    createExperiment: (
+      workspaceRoot: string,
+      row: import("../data/experiments").Experiment,
+    ) => Promise<void>
+    listExperiments: (
+      workspaceRoot: string,
+    ) => Promise<import("../data/experiments").Experiment[]>
+    getExperiment: (
+      workspaceRoot: string,
+      id: string,
+    ) => Promise<import("../data/experiments").Experiment | null>
+    updateExperiment: (
+      workspaceRoot: string,
+      row: import("../data/experiments").Experiment,
+    ) => Promise<void>
+    deleteExperiment: (workspaceRoot: string, id: string) => Promise<void>
+    createExperimentRun: (
+      workspaceRoot: string,
+      row: import("../data/experiments").ExperimentRun,
+    ) => Promise<void>
+    listExperimentRuns: (
+      workspaceRoot: string,
+      experimentId: string,
+    ) => Promise<import("../data/experiments").ExperimentRun[]>
+    updateExperimentRun: (
+      workspaceRoot: string,
+      id: string,
+      status: string,
+      metricsSummary: string,
+    ) => Promise<void>
+    getBudgetStatus: (
+      workspaceRoot: string,
+    ) => Promise<import("../data/budget").BudgetStatus>
+    updateBudget: (
+      workspaceRoot: string,
+      budgetDollars: number,
+      budgetGpuHours: number,
+    ) => Promise<import("../data/budget").BudgetStatus>
+    recordToolCall: (workspaceRoot: string, toolName: string) => Promise<string>
+    checkToolPermission: (
+      workspaceRoot: string,
+      toolName: string,
+    ) => Promise<import("../data/budget").ToolPermission>
+    proposeExperiment: (
+      workspaceRoot: string,
+      input: import("../data/planner").ProposeExperimentInput,
+    ) => Promise<import("../data/planner").ProposeExperimentOutput>
+    listExperimentsForPlanner: (
+      workspaceRoot: string,
+    ) => Promise<import("../data/experiments").Experiment[]>
+    scaffoldScript: (
+      workspaceRoot: string,
+      input: import("../data/scaffolder").ScaffoldInput,
+    ) => Promise<import("../data/scaffolder").ScaffoldOutput>
+    runSmokeTest: (
+      workspaceRoot: string,
+      scriptPath: string,
+      maxSteps?: number,
+    ) => Promise<import("../data/scaffolder").SmokeTestResult>
+  }
+}

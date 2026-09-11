@@ -1,4 +1,4 @@
-import { Icon } from "./ui/Icon";
+import { Icon } from "./ui/Icon"
 
 export function StatusBar({ workspaceName }: { workspaceName: string | null }) {
   return (
@@ -29,5 +29,5 @@ export function StatusBar({ workspaceName }: { workspaceName: string | null }) {
         <span className="text-outline">Bonafide v1.0</span>
       </div>
     </div>
-  );
+  )
 }

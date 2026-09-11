@@ -59,7 +59,7 @@ function filterCommands(
 
 /** Group an array of commands by their `group` field. */
 
-type GroupedCommands = { group: string; commands: PaletteCommand[] }[];
+type GroupedCommands = { group: string commands: PaletteCommand[] }[]
 
 function groupCommands(commands: PaletteCommand[]): GroupedCommands {
   const map = new Map<string, PaletteCommand[]>()
@@ -74,6 +74,7 @@ function groupCommands(commands: PaletteCommand[]): GroupedCommands {
 
   return Array.from(map.entries()).map(([group, commands]) => ({
     group,
+
     commands,
   }))
 }
@@ -139,6 +140,7 @@ export default function CommandPalette() {
 
   const grouped = useMemo(
     () => groupCommands(filteredCommands),
+
     [filteredCommands],
   )
 
@@ -300,7 +302,9 @@ export default function CommandPalette() {
             <button
               onClick={() => {
                 setQuery("")
+
                 setSelectedIndex(0)
+
                 inputRef.current?.focus()
               }}
               className="shrink-0 text-outline hover:text-on-surface transition-colors"

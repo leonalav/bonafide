@@ -38,11 +38,7 @@ import { ToastHost } from "./components/ToastHost"
 import { bonafide } from "./ipc/tauri"
 
 import type { TerminalProfile, TrackerKind } from "./ipc/tauri"
-import {
-  RunsProvider,
-  useRunsData,
-  type Run,
-} from "./data/runs"
+import { RunsProvider, useRunsData, type Run } from "./data/runs"
 
 import { IdeStoreProvider } from "./ide/store.tsx"
 
@@ -209,9 +205,8 @@ function AppInner() {
   // that haven't connected any tracker yet; `RunsProvider` falls back
   // to "wandb" for the IPC call and surfaces `noTrackerConnected`
   // through `useRunsStatus`.
-  const [trackerKindByWs, setTrackerKindByWs] = useState<
-    Record<string, TrackerKind>
-  >({})
+  const [trackerKindByWs, setTrackerKindByWs] =
+    useState<Record<string, TrackerKind>>({})
   const trackerKind: TrackerKind | null =
     workspaceRoot && trackerKindByWs[workspaceRoot]
       ? trackerKindByWs[workspaceRoot]
@@ -248,7 +243,7 @@ function AppInner() {
 
   // Live runs surface — falls back to the design mock when no
   // workspace is open or when the backend returns zero rows.
-  const runs = useRunsData();
+  const runs = useRunsData()
 
   // Log selector cost. Only logs when a single selector takes >5ms.
 
@@ -693,15 +688,18 @@ function AppInner() {
 
     window.addEventListener("ide:toggle-sidebar", onToggleSidebar)
 
-    window.addEventListener(
-      "bonafide:open-prefs",
-      ((e: CustomEvent<string>) => {
-        const section = e.detail
-        if (section === "models" || section === "settings" || section === "account") {
-          setPrefs(section as PrefSection)
-        }
-      }) as EventListener,
-    )
+    window.addEventListener("bonafide:open-prefs", ((
+      e: CustomEvent<string>,
+    ) => {
+      const section = e.detail
+      if (
+        section === "models" ||
+        section === "settings" ||
+        section === "account"
+      ) {
+        setPrefs(section as PrefSection)
+      }
+    }) as EventListener)
 
     return () => {
       window.removeEventListener("ide:open-file", onOpenFile)
@@ -724,142 +722,147 @@ function AppInner() {
   }
 
   return (
-    <RunsProvider workspaceRoot={workspaceRoot ?? null} trackerKind={trackerKind}>
-    <div className="relative flex h-full w-full flex-col overflow-hidden bg-surface-container-lowest text-on-surface">
-      <TitleBar />
+    <RunsProvider
+      workspaceRoot={workspaceRoot ?? null}
+      trackerKind={trackerKind}
+    >
+      <div className="relative flex h-full w-full flex-col overflow-hidden bg-surface-container-lowest text-on-surface">
+        <TitleBar />
 
-      {/* Workspace empty state — full-screen overlay */}
-      {showEmptyState && (
-        <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
-          <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-6 rounded-2xl border border-outline-variant bg-surface-container/80 p-10 text-center backdrop-blur-xl">
-            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-container">
-              <Icon name="folder-open" size={32} className="text-secondary" />
-            </div>
-            <div>
-              <p className="font-sans text-[18px] font-medium text-on-surface">
-                No folder open
-              </p>
-              <p className="mt-1 font-body text-[13px] text-on-surface-variant">
-                Bonafide needs a project folder to browse files and run
-                experiments. Open a folder to get started.
-              </p>
-            </div>
-            <button
-              onClick={openFolder}
-              className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 font-sans text-[14px] font-medium text-on-primary transition-opacity hover:brightness-110"
-            >
-              <Icon name="folder-open" size={16} />
-              Open Folder
-            </button>
-            <div className="flex items-center gap-4 font-sans text-[12px] text-outline">
-              <span>⌘O to open</span>
-              <span>·</span>
-              <span>Ctrl+O on Windows</span>
+        {/* Workspace empty state — full-screen overlay */}
+        {showEmptyState && (
+          <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center">
+            <div className="pointer-events-auto flex max-w-sm flex-col items-center gap-6 rounded-2xl border border-outline-variant bg-surface-container/80 p-10 text-center backdrop-blur-xl">
+              <div className="flex h-16 w-16 items-center justify-center rounded-full bg-surface-container">
+                <Icon name="folder-open" size={32} className="text-secondary" />
+              </div>
+              <div>
+                <p className="font-sans text-[18px] font-medium text-on-surface">
+                  No folder open
+                </p>
+                <p className="mt-1 font-body text-[13px] text-on-surface-variant">
+                  Bonafide needs a project folder to browse files and run
+                  experiments. Open a folder to get started.
+                </p>
+              </div>
+              <button
+                onClick={openFolder}
+                className="flex items-center gap-2 rounded-lg bg-primary px-5 py-2.5 font-sans text-[14px] font-medium text-on-primary transition-opacity hover:brightness-110"
+              >
+                <Icon name="folder-open" size={16} />
+                Open Folder
+              </button>
+              <div className="flex items-center gap-4 font-sans text-[12px] text-outline">
+                <span>⌘O to open</span>
+                <span>·</span>
+                <span>Ctrl+O on Windows</span>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      <div className="flex min-h-0 flex-1">
-        <UtilityDock
-          active={prefs ? "settings" : workflowOpen ? "workflow" : dock}
-          onSelect={onDockSelect}
-          signedIn={false}
-        />
-        <Sidebar
-          view={dock}
-          workspaceRoot={workspaceRoot}
-          workspaceName={workspaceName}
-          onOpenFolder={openFolder}
-          width={sidebarWidth}
-        />
-        <ResizeHandle
-          width={sidebarWidth}
-          onResize={setSidebarWidth}
-          minWidth={180}
-          maxWidth={520}
-          side="right"
-          ariaLabel="Resize sidebar"
-        />
+        <div className="flex min-h-0 flex-1">
+          <UtilityDock
+            active={prefs ? "settings" : workflowOpen ? "workflow" : dock}
+            onSelect={onDockSelect}
+            signedIn={false}
+          />
+          <Sidebar
+            view={dock}
+            workspaceRoot={workspaceRoot}
+            workspaceName={workspaceName}
+            onOpenFolder={openFolder}
+            width={sidebarWidth}
+          />
+          <ResizeHandle
+            width={sidebarWidth}
+            onResize={setSidebarWidth}
+            minWidth={180}
+            maxWidth={520}
+            side="right"
+            ariaLabel="Resize sidebar"
+          />
 
-        {/* Right region: editor + panel | inspector.
+          {/* Right region: editor + panel | inspector.
             The Panel sits in the same column as the editor so its
             horizontal bounds never extend under the Inspector tab. */}
-        <div className="flex min-w-0 flex-1">
-          {/* Editor column: editor pane on top, bottom panel below */}
-          <div className="flex min-w-0 min-h-0 flex-1 flex-col">
-            <div className="flex min-h-0 min-w-0 flex-1">
-              <EditorPane
-                activeTabId={activeTabId ?? ""}
-                onActivate={activateTab}
-                onClose={closeTab}
-                onSelectRun={openRun}
-              />
-            </div>
-            {/* Bottom panel (Problems, Output, Terminal, Debug Console, Ports).
+          <div className="flex min-w-0 flex-1">
+            {/* Editor column: editor pane on top, bottom panel below */}
+            <div className="flex min-w-0 min-h-0 flex-1 flex-col">
+              <div className="flex min-h-0 min-w-0 flex-1">
+                <EditorPane
+                  activeTabId={activeTabId ?? ""}
+                  onActivate={activateTab}
+                  onClose={closeTab}
+                  onSelectRun={openRun}
+                />
+              </div>
+              {/* Bottom panel (Problems, Output, Terminal, Debug Console, Ports).
                 Sibling of the editor pane so it only spans the editor's width. */}
-            <Panel />
+              <Panel />
+            </div>
+
+            {inspectorOpen ? (
+              <>
+                <ResizeHandle
+                  width={inspectorWidth}
+                  onResize={setInspectorWidth}
+                  minWidth={240}
+                  maxWidth={560}
+                  side="left"
+                  ariaLabel="Resize inspector"
+                />
+                <Inspector
+                  width={inspectorWidth}
+                  onClose={() => setInspectorOpen(false)}
+                  onOpenWorkflow={() => setWorkflowOpen(true)}
+                  run={inspectorRun}
+                />
+              </>
+            ) : (
+              <button
+                onClick={() => setInspectorOpen(true)}
+                className="flex w-1 shrink-0 items-center justify-center bg-outline-variant/40 hover:bg-primary"
+                aria-label="Open inspector"
+                title="Open Run Inspector"
+              />
+            )}
           </div>
-
-          {inspectorOpen ? (
-            <>
-              <ResizeHandle
-                width={inspectorWidth}
-                onResize={setInspectorWidth}
-                minWidth={240}
-                maxWidth={560}
-                side="left"
-                ariaLabel="Resize inspector"
-              />
-              <Inspector
-                width={inspectorWidth}
-                onClose={() => setInspectorOpen(false)}
-                onOpenWorkflow={() => setWorkflowOpen(true)}
-                run={inspectorRun}
-              />
-            </>
-          ) : (
-            <button
-              onClick={() => setInspectorOpen(true)}
-              className="flex w-1 shrink-0 items-center justify-center bg-outline-variant/40 hover:bg-primary"
-              aria-label="Open inspector"
-              title="Open Run Inspector"
-            />
-          )}
         </div>
-      </div>
 
-      <StatusBar workspaceName={workspaceName} />
+        <StatusBar workspaceName={workspaceName} />
 
-      {/* Modal (delete / close-dirty) */}
-      <Modal
-        modal={modal}
-        onConfirmDelete={confirmDelete}
-        onCancelDelete={cancelDelete}
-        onCloseDirtyCancel={closeDirtyCancel}
-        onCloseDirtyDontSave={closeDirtyDontSave}
-        onCloseDirtySave={closeDirtySave}
-        onClose={() => dispatch({ type: "CLOSE_MODAL" })}
-      />
-
-      {/* Toast host */}
-      <ToastHost />
-
-      {prefs && (
-        <PreferencesWindow
-          initialSection={prefs}
-          onClose={() => setPrefs(null)}
-          workspaceRoot={workspaceRoot ?? null}
-          trackerKind={trackerKind}
-          onTrackerConnected={(kind) => setTrackerKind(kind)}
-          onTrackerDisconnected={() => clearTrackerKind()}
+        {/* Modal (delete / close-dirty) */}
+        <Modal
+          modal={modal}
+          onConfirmDelete={confirmDelete}
+          onCancelDelete={cancelDelete}
+          onCloseDirtyCancel={closeDirtyCancel}
+          onCloseDirtyDontSave={closeDirtyDontSave}
+          onCloseDirtySave={closeDirtySave}
+          onClose={() => dispatch({ type: "CLOSE_MODAL" })}
         />
-      )}
-      {workflowOpen && <WorkflowPanel onClose={() => setWorkflowOpen(false)} />}
 
-      {/* Command palette (Ctrl+Shift+P) */}
-      <CommandPalette />
-    </div>
+        {/* Toast host */}
+        <ToastHost />
+
+        {prefs && (
+          <PreferencesWindow
+            initialSection={prefs}
+            onClose={() => setPrefs(null)}
+            workspaceRoot={workspaceRoot ?? null}
+            trackerKind={trackerKind}
+            onTrackerConnected={(kind) => setTrackerKind(kind)}
+            onTrackerDisconnected={() => clearTrackerKind()}
+          />
+        )}
+        {workflowOpen && (
+          <WorkflowPanel onClose={() => setWorkflowOpen(false)} />
+        )}
+
+        {/* Command palette (Ctrl+Shift+P) */}
+        <CommandPalette />
+      </div>
     </RunsProvider>
   )
 }

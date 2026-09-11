@@ -9,39 +9,44 @@
  * Auto-dismisses after ttlMs. Clicking dismisses early.
  */
 
-import { useEffect, type CSSProperties } from "react";
-import type { Toast as ToastT } from "../ide/store.tsx";
-import { useIdeStore } from "../ide/hooks";
+import { useEffect, type CSSProperties } from "react"
+
+import type { Toast as ToastT } from "../ide/store.tsx"
+
+import { useIdeStore } from "../ide/hooks"
 
 export function Toast({ toast }: { toast: ToastT }) {
-  const store = useIdeStore();
+  const store = useIdeStore()
 
   // Auto-dismiss
+
   useEffect(() => {
     const id = setTimeout(() => {
-      store.dispatch({ type: "DISMISS_TOAST", id: toast.id });
-    }, toast.ttlMs);
-    return () => clearTimeout(id);
-  }, [toast.id, toast.ttlMs, store]);
+      store.dispatch({ type: "DISMISS_TOAST", id: toast.id })
+    }, toast.ttlMs)
+
+    return () => clearTimeout(id)
+  }, [toast.id, toast.ttlMs, store])
 
   const accent =
     toast.tone === "success"
       ? "border-l-2 border-l-primary"
       : toast.tone === "error"
-      ? "border-l-2 border-l-error"
-      : "";
+        ? "border-l-2 border-l-error"
+        : ""
 
   const textColor =
     toast.tone === "error"
       ? "text-error"
       : toast.tone === "success"
-      ? "text-on-surface"
-      : "text-on-surface-variant";
+        ? "text-on-surface"
+        : "text-on-surface-variant"
 
   const style: CSSProperties = {
     minWidth: 200,
+
     maxWidth: 320,
-  };
+  }
 
   return (
     <div
@@ -52,5 +57,5 @@ export function Toast({ toast }: { toast: ToastT }) {
     >
       {toast.message}
     </div>
-  );
+  )
 }

@@ -629,38 +629,38 @@ export function CodeMirrorEditor({
         // the editor root, gutters, panels, tooltips, selection, and active
         // line all come from a single source of truth.
         theme={bonafideTheme}
-      height="100%"
-      width="100%"
-      basicSetup={{
-        lineNumbers: true,
-        highlightActiveLine: true,
-        highlightActiveLineGutter: true,
-        foldGutter: true,
-        bracketMatching: true,
-        closeBrackets: true,
-        indentOnInput: true,
-        highlightSelectionMatches: true,
-        // Disable CodeMirror's built-in searchKeymap. Without this,
-        // Ctrl+F / Ctrl+H / F3 from `@uiw/codemirror-extensions-basic-setup`
-        // would call `openSearchPanel` and open CodeMirror's native
-        // search panel — the one that lives at the BOTTOM of the
-        // editor (not our top-right widget). We want a single find UI,
-        // so we turn off CodeMirror's keymap and rely on the global
-        // App.tsx keyboard router (`Ctrl+F` / `Ctrl+H`) plus the
-        // context menu's "Find…" / "Replace…" entries.
-        searchKeymap: false,
-        // Same logic for the lint keymap (Alt+Shift+L etc.) — Bonafide
-        // doesn't ship a lint action; disabling avoids accidentally
-        // running a CodeMirror default that we haven't reviewed.
-        lintKeymap: false,
-      }}
-      extensions={extensions}
-      onChange={handleChange}
-      onContextMenu={onEditorContextMenu}
-      onCreateEditor={(view) => {
-        viewRef.current = view
-        setCmView(view)
-      }}
+        height="100%"
+        width="100%"
+        basicSetup={{
+          lineNumbers: true,
+          highlightActiveLine: true,
+          highlightActiveLineGutter: true,
+          foldGutter: true,
+          bracketMatching: true,
+          closeBrackets: true,
+          indentOnInput: true,
+          highlightSelectionMatches: true,
+          // Disable CodeMirror's built-in searchKeymap. Without this,
+          // Ctrl+F / Ctrl+H / F3 from `@uiw/codemirror-extensions-basic-setup`
+          // would call `openSearchPanel` and open CodeMirror's native
+          // search panel — the one that lives at the BOTTOM of the
+          // editor (not our top-right widget). We want a single find UI,
+          // so we turn off CodeMirror's keymap and rely on the global
+          // App.tsx keyboard router (`Ctrl+F` / `Ctrl+H`) plus the
+          // context menu's "Find…" / "Replace…" entries.
+          searchKeymap: false,
+          // Same logic for the lint keymap (Alt+Shift+L etc.) — Bonafide
+          // doesn't ship a lint action; disabling avoids accidentally
+          // running a CodeMirror default that we haven't reviewed.
+          lintKeymap: false,
+        }}
+        extensions={extensions}
+        onChange={handleChange}
+        onContextMenu={onEditorContextMenu}
+        onCreateEditor={(view) => {
+          viewRef.current = view
+          setCmView(view)
+        }}
       />
       {/* Find/Replace overlay — sits inside the editor wrapper so its
           absolute positioning is anchored to the editor surface. The

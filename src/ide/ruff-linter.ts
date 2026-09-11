@@ -17,36 +17,36 @@
  * `languageServer` extension is mounted with the ruff LSP client.
  */
 
-import { invoke, isTauri } from "@tauri-apps/api/core";
-import type { DomainDiagnostic } from "./diagnostics";
+import { invoke, isTauri } from "@tauri-apps/api/core"
+import type { DomainDiagnostic } from "./diagnostics"
 
 /** Subset of ruff's JSON diagnostic format (the fields we use). */
 export type RuffDiagnostic = {
-  code?: string | null;
-  message: string;
+  code?: string | null
+  message: string
   location: {
-    row: number; // 1-based
-    column: number; // 0-based
-  };
+    row: number // 1-based
+    column: number // 0-based
+  }
   end_location?: {
-    row: number;
-    column: number;
-  } | null;
-  fix?: unknown;
-  severity?: string;
-};
+    row: number
+    column: number
+  } | null
+  fix?: unknown
+  severity?: string
+}
 
 /** Run `ruff check` on a file via the Tauri backend. */
 export async function ruffCheck(absPath: string): Promise<RuffDiagnostic[]> {
-  if (!isTauri()) return [];
+  if (!isTauri()) return []
   try {
-    const json = await invoke<string>("ruff_check", { filePath: absPath });
-    const parsed = JSON.parse(json);
-    if (!Array.isArray(parsed)) return [];
-    return parsed as RuffDiagnostic[];
+    const json = await invoke<string>("ruff_check", { filePath: absPath })
+    const parsed = JSON.parse(json)
+    if (!Array.isArray(parsed)) return []
+    return parsed as RuffDiagnostic[]
   } catch (err) {
-    console.error("[ruff] check failed:", err);
-    return [];
+    console.error("[ruff] check failed:", err)
+    return []
   }
 }
 
@@ -56,10 +56,10 @@ export async function ruffCheck(absPath: string): Promise<RuffDiagnostic[]> {
  * the Problems panel can display the correct line number.
  */
 export function ruffLocationToLineCol(
-  loc: { row: number; column: number } | undefined | null,
-): { line: number; col: number } {
-  if (!loc) return { line: 0, col: 0 };
-  return { line: loc.row, col: loc.column + 1 };
+  loc: { row: number column: number } | undefined | null,
+): { line: number col: number } {
+  if (!loc) return { line: 0, col: 0 }
+  return { line: loc.row, col: loc.column + 1 }
 }
 
 /**
@@ -71,30 +71,33 @@ export function ruffToCodeMirror(
   docs: RuffDiagnostic[],
   content: string,
 ): DomainDiagnostic[] {
-  const lineStarts = computeLineStarts(content);
-  const result: DomainDiagnostic[] = [];
+  const lineStarts = computeLineStarts(content)
+  const result: DomainDiagnostic[] = []
   for (const d of docs) {
-    const startLine = Math.max(0, Math.min(d.location.row - 1, lineStarts.length - 1));
+    const startLine = Math.max(
+      0,
+      Math.min(d.location.row - 1, lineStarts.length - 1),
+    )
     const endLine = d.end_location
       ? Math.max(0, Math.min(d.end_location.row - 1, lineStarts.length - 1))
-      : startLine;
-    const fromOffset =
-      (lineStarts[startLine] ?? 0) + (d.location.column ?? 0);
-    let toOffset: number;
+      : startLine
+    const fromOffset = (lineStarts[startLine] ?? 0) + (d.location.column ?? 0)
+    let toOffset: number
     if (d.end_location) {
       if (endLine === startLine) {
-        toOffset = fromOffset + ((d.end_location.column ?? 0) - (d.location.column ?? 0));
+        toOffset =
+          fromOffset + ((d.end_location.column ?? 0) - (d.location.column ?? 0))
       } else {
-        toOffset = lineStarts[endLine] + (d.end_location.column ?? 0);
+        toOffset = lineStarts[endLine] + (d.end_location.column ?? 0)
       }
     } else {
       // Default: highlight the whole rest of the line (ruff's `end_location`
       // is optional and many rules don't set it).
-      const lineEnd = content.indexOf("\n", fromOffset);
-      toOffset = lineEnd === -1 ? content.length : lineEnd;
+      const lineEnd = content.indexOf("\n", fromOffset)
+      toOffset = lineEnd === -1 ? content.length : lineEnd
     }
 
-    const { line, col } = ruffLocationToLineCol(d.location);
+    const { line, col } = ruffLocationToLineCol(d.location)
 
     result.push({
       from: fromOffset,
@@ -102,22 +105,20 @@ export function ruffToCodeMirror(
       line,
       col,
       severity: "error",
-      message: d.code
-        ? `${d.code}: ${d.message}`
-        : d.message,
+      message: d.code ? `${d.code}: ${d.message}` : d.message,
       source: "ruff",
-    });
+    })
   }
-  return result;
+  return result
 }
 
 /** O(N) scan: build an array of line-start offsets. */
 function computeLineStarts(content: string): number[] {
-  const starts: number[] = [0];
+  const starts: number[] = [0]
   for (let i = 0; i < content.length; i++) {
-    if (content[i] === "\n") starts.push(i + 1);
+    if (content[i] === "\n") starts.push(i + 1)
   }
-  return starts;
+  return starts
 }
 
 /**
@@ -131,6 +132,6 @@ export async function ruffCheckAsDomain(
   absPath: string,
   content: string,
 ): Promise<DomainDiagnostic[]> {
-  const raw = await ruffCheck(absPath);
-  return ruffToCodeMirror(raw, content);
+  const raw = await ruffCheck(absPath)
+  return ruffToCodeMirror(raw, content)
 }

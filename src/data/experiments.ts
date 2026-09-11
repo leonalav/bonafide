@@ -1,73 +1,119 @@
 /**
- * experiments.ts ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â TypeScript types for the Phase 2 experiment storage
- * layer. Mirrors the Rust `ExperimentRow` / `ExperimentRunRow` structs
- * in `src-tauri/src/agent/experiments.rs` so the renderer's typed
- * shape and the orchestrator's persisted row share one source of
- * truth.
+ * experiments.ts — TypeScript types mirroring the Rust `ExperimentRow` and
+ * `ExperimentRunRow` from `src-tauri/src/agent/experiments.rs`.
  *
- * These types are referenced by the Experiments tab UI and the IPC
- * wrappers in `src/ipc/tauri.ts`. Any new field added on the Rust side
- * must be mirrored here; otherwise the renderer will silently drop it
- * on the `invoke` round-trip.
+ * These types are the wire shape between the Tauri backend and the renderer.
+ * All values are plain JSON — no class wrapping needed.
  */
 
-/** Lifecycle status of an experiment. Mirrors the renderer-side
- *  filter chips on the Experiments tab. */
-export type ExperimentStatus =
-  | "proposed"
-  | "active"
-  | "completed"
-  | "failed"
-  | "paused";
+export type GoalCondition = "lt" | "gt" | "eq"
 
-/** Comparison operator used to decide whether a run's metric value
- *  satisfies the experiment's goal. Combined with `goalDirection` this
- *  fully describes "improve X toward Y" without needing a parser. */
-export type GoalCondition = "lt" | "gt" | "eq";
+export type GoalDirection = "minimize" | "maximize"
 
-/** Persisted shape of an Experiment row. Returned by
- *  `list_experiments` / `get_experiment` and accepted by
- *  `create_experiment` / `update_experiment`. All fields live on the
- *  wire shape because the Experiments tab reads them straight back
- *  from SQLite when rendering the detail view. */
-export type ExperimentRow = {
-  id: string;
-  workspaceHash: string;
-  title: string;
-  hypothesis: string;
-  goalMetric: string;
-  goalDirection: "minimize" | "maximize";
-  goalTarget: number;
-  goalCondition: GoalCondition;
-  status: ExperimentStatus;
-  budgetDollars: number;
-  budgetGpuHours: number;
-  /** Unix millis ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â the renderer formats "12s ago" relative labels from
-   *  this so a single `SELECT ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ ORDER BY updated_at DESC` powers both
-   *  the inbox ordering and the "last edited" pill. */
-  createdAt: number;
-  updatedAt: number;
-};
+export type ExperimentStatus = "proposed" | "running" | "completed" | "failed" | "abandoned"
 
-/** Status of a linked tracking run attached to an experiment. The
- *  lifecycle mirrors the tracker's run state ("queued" ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ "running" ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢
- *  "completed" / "failed") so the Experiments tab can render a status
- *  pill without round-tripping to the tracker. */
-export type ExperimentRunStatus = "queued" | "running" | "completed" | "failed";
-/// Persisted shape of an ExperimentRun attachment row.
-/// `config_overrides` and `metrics_summary` are serialised JSON strings
-/// stored as TEXT in SQLite. Callers MUST pass these as already-stringified
-/// JSON (e.g. `JSON.stringify({...})`). The `listExperimentRuns` return
-/// value also contains strings — callers must `JSON.parse` before using as objects.
-export type ExperimentRunRow = {
-  id: string;
-  experimentId: string;
-  runId: string;
-  configOverrides: string;
-  metricsSummary: string;
-  status: ExperimentRunStatus;
-  /** Unix millis ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â older links come first in the timeline so the
-   *  renderer can render a chronological "Runs" column on the
-   *  experiment card. */
-  createdAt: number;
-};
+export type RunStatus = "queued" | "running" | "success" | "failed"
+
+/** One experiment record. Matches `agent::experiments::ExperimentRow`. */
+
+export interface Experiment {
+  id: string
+
+  title: string
+
+  hypothesis: string
+
+  goalMetric: string
+
+  goalDirection: GoalDirection
+
+  goalTarget: number
+
+  goalCondition: GoalCondition
+
+  status: ExperimentStatus
+
+  budgetDollars: number
+
+  budgetGpuHours: number
+
+  createdAt: number // Unix seconds
+
+  updatedAt: number // Unix seconds
+}
+
+/** One run within an experiment. Matches `agent::experiments::ExperimentRunRow`. */
+
+export interface ExperimentRun {
+  id: string
+
+  experimentId: string
+
+  runId: string
+
+  /** JSON-encoded config overrides applied to this run. */
+
+  configOverrides: string
+
+  status: RunStatus
+
+  /** JSON-encoded metrics summary reported back from the tracker. */
+
+  metricsSummary: string
+
+  createdAt: number // Unix seconds
+}
+
+/** Helper to build a new Experiment with sensible defaults. */
+
+export function makeExperiment(
+  params: Partial<Experiment> & { id: string title: string hypothesis: string },
+): Experiment {
+  const now = Math.floor(Date.now() / 1000)
+
+  return {
+    goalMetric: "",
+
+    goalDirection: "maximize",
+
+    goalTarget: 0,
+
+    goalCondition: "gt",
+
+    status: "proposed",
+
+    budgetDollars: 10.0,
+
+    budgetGpuHours: 4.0,
+
+    createdAt: now,
+
+    updatedAt: now,
+
+    ...params,
+  }
+}
+
+/** Helper to build a new ExperimentRun with sensible defaults. */
+
+export function makeExperimentRun(
+  params: Partial<ExperimentRun> & {
+    id: string
+    experimentId: string
+    runId: string
+  },
+): ExperimentRun {
+  const now = Math.floor(Date.now() / 1000)
+
+  return {
+    configOverrides: "{}",
+
+    status: "queued",
+
+    metricsSummary: "{}",
+
+    createdAt: now,
+
+    ...params,
+  }
+}

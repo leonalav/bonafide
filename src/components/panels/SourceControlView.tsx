@@ -56,13 +56,7 @@
  * a refresh after typing by clicking ⟳ or pressing Ctrl+Shift+G.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { ReactNode } from "react"
 
 import { Icon } from "../ui/Icon"
@@ -82,11 +76,10 @@ import type {
 
 type TabId = "changes" | "commits" | "branches"
 
-type Selection =
-  | { kind: "staged"; path: string }
-  | { kind: "unstaged"; path: string }
-  | { kind: "untracked"; path: string }
-  | null
+type Selection = { kind: "staged" path: string } | {
+  kind: "unstaged"
+  path: string
+} | { kind: "untracked" path: string } | null
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -155,7 +148,11 @@ function formatRelative(iso: string): string {
 
 // ── SourceControlView ─────────────────────────────────────────────────────
 
-export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | null }) {
+export function SourceControlView({
+  workspaceRoot,
+}: {
+  workspaceRoot: string | null
+}) {
   const [tab, setTab] = useState<TabId>("changes")
   const [selection, setSelection] = useState<Selection>(null)
   const [status, setStatus] = useState<GitStatus | null>(null)
@@ -168,7 +165,9 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
   const [showBranchPicker, setShowBranchPicker] = useState(false)
   const [createBranchMode, setCreateBranchMode] = useState(false)
   const [newBranchName, setNewBranchName] = useState("")
-  const [discardConfirm, setDiscardConfirm] = useState<{ paths: string[] } | null>(null)
+  const [discardConfirm, setDiscardConfirm] = useState<{
+    paths: string[]
+  } | null>(null)
   const [commitMessage, setCommitMessage] = useState("")
   const branchPickerRef = useRef<HTMLDivElement | null>(null)
 
@@ -312,7 +311,8 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
     })
   const pull = () => runAction("pull", () => bonafide.git.pull(workspaceRoot!))
   const push = () => runAction("push", () => bonafide.git.push(workspaceRoot!))
-  const fetch = () => runAction("fetch", () => bonafide.git.fetch(workspaceRoot!))
+  const fetch = () =>
+    runAction("fetch", () => bonafide.git.fetch(workspaceRoot!))
   const init = () => runAction("init", () => bonafide.git.init(workspaceRoot!))
 
   const stage = (paths: string[]) =>
@@ -367,12 +367,17 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
         <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center">
           <Icon name="git-branch" size={28} className="text-outline-variant" />
           <p className="font-body text-[13px] text-on-surface-variant">
-            <span className="font-mono text-[12px] text-on-surface">{workspaceRoot}</span> is not a git repository.
+            <span className="font-mono text-[12px] text-on-surface">
+              {workspaceRoot}
+            </span>{" "}
+            is not a git repository.
           </p>
           <Button size="sm" onClick={init} disabled={busy}>
             <Icon name="plus" size={13} /> Initialize Repository
           </Button>
-          {errorMsg && <p className="font-mono text-[11px] text-error">{errorMsg}</p>}
+          {errorMsg && (
+            <p className="font-mono text-[11px] text-error">{errorMsg}</p>
+          )}
         </div>
       </>
     )
@@ -384,7 +389,7 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
         <PanelHeader title="Source Control" />
         <div className="flex flex-1 items-center justify-center p-6">
           <p className="font-body text-[12px] text-on-surface-variant">
-            {loading ? "Loading…" : errorMsg ?? "No status."}
+            {loading ? "Loading…" : (errorMsg ?? "No status.")}
           </p>
         </div>
       </>
@@ -473,7 +478,11 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
         </div>
 
         <div className="flex items-center gap-1.5 text-outline">
-          <IconBtn title="Pull (rebase never)" onClick={() => void pull()} disabled={busy}>
+          <IconBtn
+            title="Pull (rebase never)"
+            onClick={() => void pull()}
+            disabled={busy}
+          >
             <Icon name="cloud-download" size={14} />
           </IconBtn>
           <IconBtn title="Push" onClick={() => void push()} disabled={busy}>
@@ -622,7 +631,8 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
             )}
           </div>
           <span className="font-sans text-[10px] text-outline">
-            {counts.staged} staged · {counts.unstaged} unstaged · {counts.untracked} untracked
+            {counts.staged} staged · {counts.unstaged} unstaged ·{" "}
+            {counts.untracked} untracked
           </span>
         </div>
       )}
@@ -640,7 +650,9 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
           />
           <div className="mt-1.5 overflow-hidden rounded bg-surface-container/50 px-2 py-1 font-sans text-[11px] text-on-surface-variant">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="label-caps text-outline whitespace-nowrap">checks</span>
+              <span className="label-caps text-outline whitespace-nowrap">
+                checks
+              </span>
               <span className="flex items-center gap-1 whitespace-nowrap">
                 <Icon name="check" size={11} className="text-primary" /> lint
               </span>
@@ -651,7 +663,11 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
                 className={`ml-auto whitespace-nowrap ${
                   counts.staged > 0 ? "text-primary" : "text-outline"
                 }`}
-                title={counts.staged > 0 ? "Staged changes ready to commit" : "No staged changes"}
+                title={
+                  counts.staged > 0
+                    ? "Staged changes ready to commit"
+                    : "No staged changes"
+                }
               >
                 {counts.staged > 0 ? "ready" : "nothing staged"}
               </span>
@@ -662,7 +678,9 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
               size="sm"
               className="flex-1"
               onClick={() => void commit()}
-              disabled={busy || counts.staged === 0 || commitMessage.trim() === ""}
+              disabled={
+                busy || counts.staged === 0 || commitMessage.trim() === ""
+              }
             >
               <Icon name="check" size={13} /> Commit
             </Button>
@@ -671,7 +689,9 @@ export function SourceControlView({ workspaceRoot }: { workspaceRoot: string | n
               size="sm"
               className="flex-1"
               onClick={() => void commit()}
-              disabled={busy || counts.staged === 0 || commitMessage.trim() === ""}
+              disabled={
+                busy || counts.staged === 0 || commitMessage.trim() === ""
+              }
               title="Commit then pull --ff-only then push"
             >
               <Icon name="cloud-upload" size={13} /> Commit &amp; Sync
@@ -725,8 +745,7 @@ function ChangeGroup({
   const [expanded, setExpanded] = useState(true)
   if (count === 0) return null
 
-  const selectedKey =
-    selection?.kind === kind ? selection.path : null
+  const selectedKey = selection?.kind === kind ? selection.path : null
 
   return (
     <div>
@@ -776,7 +795,10 @@ function ChangeGroup({
             onStage={onStage ? () => onStage([entry.path]) : undefined}
             onUnstage={onUnstage ? () => onUnstage([entry.path]) : undefined}
             onDiscard={
-              onDiscard && (entry.status === "M" || entry.status === "D" || entry.status === "U")
+              onDiscard &&
+              (entry.status === "M" ||
+                entry.status === "D" ||
+                entry.status === "U")
                 ? () => onDiscard([entry.path])
                 : undefined
             }
@@ -830,7 +852,9 @@ function FileRow({
         <Icon name={icon} size={12} strokeWidth={2} />
       </span>
       <span className="flex min-w-0 flex-1 items-baseline gap-1.5 truncate">
-        <span className="truncate font-sans text-[13px] text-on-surface">{file}</span>
+        <span className="truncate font-sans text-[13px] text-on-surface">
+          {file}
+        </span>
         {dir && (
           <span className="truncate font-sans text-[11px] text-outline">
             {dir}
@@ -844,17 +868,35 @@ function FileRow({
       )}
       <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
         {entry.staged && onUnstage && (
-          <RowBtn title="Unstage" onClick={(e) => { e.stopPropagation(); onUnstage() }}>
+          <RowBtn
+            title="Unstage"
+            onClick={(e) => {
+              e.stopPropagation()
+              onUnstage()
+            }}
+          >
             <Icon name="rotate-ccw" size={11} />
           </RowBtn>
         )}
         {!entry.staged && onStage && (
-          <RowBtn title="Stage" onClick={(e) => { e.stopPropagation(); onStage() }}>
+          <RowBtn
+            title="Stage"
+            onClick={(e) => {
+              e.stopPropagation()
+              onStage()
+            }}
+          >
             <Icon name="plus" size={11} />
           </RowBtn>
         )}
         {onDiscard && (
-          <RowBtn title="Discard" onClick={(e) => { e.stopPropagation(); onDiscard() }}>
+          <RowBtn
+            title="Discard"
+            onClick={(e) => {
+              e.stopPropagation()
+              onDiscard()
+            }}
+          >
             <Icon name="discard" size={11} />
           </RowBtn>
         )}
@@ -895,8 +937,12 @@ function CommitList({
           className="grid w-full grid-cols-[1fr_auto] items-center gap-2 border-b border-outline-variant/50 px-3 py-1.5 text-left hover:bg-surface-container"
         >
           <span className="min-w-0">
-            <span className="mr-2 font-mono text-[12px] text-outline">{c.shortHash}</span>
-            <span className="truncate font-body text-[13px] text-on-surface">{c.subject}</span>
+            <span className="mr-2 font-mono text-[12px] text-outline">
+              {c.shortHash}
+            </span>
+            <span className="truncate font-body text-[13px] text-on-surface">
+              {c.subject}
+            </span>
           </span>
           <span className="flex flex-col items-end gap-0.5 text-right">
             <span className="font-sans text-[11px] text-outline">
@@ -992,13 +1038,17 @@ function BranchRow({
         className={isCurrent ? "text-primary" : "text-outline"}
       />
       <span className="min-w-0">
-        <span className="font-sans text-[13px] text-on-surface">{branch.name}</span>
+        <span className="font-sans text-[13px] text-on-surface">
+          {branch.name}
+        </span>
         {isCurrent && (
           <span className="ml-2 font-sans text-[10px] uppercase tracking-wide text-primary">
             current
           </span>
         )}
-        <div className="truncate font-body text-[11px] text-outline">{branch.subject}</div>
+        <div className="truncate font-body text-[11px] text-outline">
+          {branch.subject}
+        </div>
       </span>
       <span className="flex items-center gap-1 font-sans text-[10px] text-outline tabular-nums">
         {branch.ahead > 0 && (
@@ -1034,18 +1084,19 @@ function BranchPickerPopover({
   onEnterCreateMode: () => void
 }) {
   return (
-    <div
-      className="absolute left-0 top-full z-30 mt-1 w-72 overflow-hidden rounded border border-outline/20 bg-surface-container-lowest/80 shadow-2xl backdrop-blur-xl"
-    >
+    <div className="absolute left-0 top-full z-30 mt-1 w-72 overflow-hidden rounded border border-outline/20 bg-surface-container-lowest/80 shadow-2xl backdrop-blur-xl">
       {createMode ? (
         <div className="p-2">
-          <div className="label-caps mb-1 px-1 text-outline">Create new branch from HEAD</div>
+          <div className="label-caps mb-1 px-1 text-outline">
+            Create new branch from HEAD
+          </div>
           <input
             autoFocus
             value={newBranchName}
             onChange={(e) => onNewBranchNameChange(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && newBranchName.trim()) onCreate(newBranchName.trim())
+              if (e.key === "Enter" && newBranchName.trim())
+                onCreate(newBranchName.trim())
               if (e.key === "Escape") onEnterCreateMode()
             }}
             placeholder="feature/my-branch"
@@ -1061,7 +1112,9 @@ function BranchPickerPopover({
             </button>
             <Button
               size="sm"
-              onClick={() => newBranchName.trim() && onCreate(newBranchName.trim())}
+              onClick={() =>
+                newBranchName.trim() && onCreate(newBranchName.trim())
+              }
               disabled={!newBranchName.trim()}
             >
               <Icon name="plus" size={11} /> Create
@@ -1080,7 +1133,9 @@ function BranchPickerPopover({
                   onClick={() => !b.isCurrent && onSwitch(b.name)}
                   disabled={b.isCurrent}
                   className={`flex w-full items-center gap-2 px-3 py-1.5 text-left transition-colors ${
-                    b.isCurrent ? "bg-surface-container" : "hover:bg-surface-container"
+                    b.isCurrent
+                      ? "bg-surface-container"
+                      : "hover:bg-surface-container"
                   }`}
                 >
                   <Icon
@@ -1130,7 +1185,11 @@ function DiffPane({
       <div className="flex h-9 shrink-0 items-center justify-between border-b border-outline-variant px-3">
         <div className="flex min-w-0 items-center gap-2">
           <Icon
-            name={selection.kind === "untracked" ? "status-added" : "status-modified"}
+            name={
+              selection.kind === "untracked"
+                ? "status-added"
+                : "status-modified"
+            }
             size={12}
             className="text-outline"
           />
@@ -1224,7 +1283,9 @@ function TabBtn({
       // the label to break. `overflow-hidden` ensures the badge clips cleanly
       // inside the tab rather than bleeding past its right edge.
       className={`relative flex min-w-0 items-center overflow-hidden whitespace-nowrap px-2.5 font-sans text-[12px] uppercase tracking-wide transition-colors ${
-        active ? "text-on-surface" : "text-on-surface-variant hover:text-on-surface"
+        active
+          ? "text-on-surface"
+          : "text-on-surface-variant hover:text-on-surface"
       }`}
     >
       {children}

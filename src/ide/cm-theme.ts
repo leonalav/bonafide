@@ -16,9 +16,9 @@
  * other extensions.
  */
 
-import { EditorView } from "@codemirror/view";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
-import { tags as t } from "@lezer/highlight";
+import { EditorView } from "@codemirror/view"
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language"
+import { tags as t } from "@lezer/highlight"
 
 const PALETTE = {
   // Surfaces
@@ -51,14 +51,27 @@ const PALETTE = {
   // Misc
   selection: "#2b5ea7",
   cursor: "#e2e2e9",
-} as const;
+} as const
 
 const bonafideHighlight = HighlightStyle.define([
   // Comments — outline, italic
-  { tag: [t.comment, t.lineComment, t.blockComment, t.docComment], color: PALETTE.outline, fontStyle: "italic" },
+  {
+    tag: [t.comment, t.lineComment, t.blockComment, t.docComment],
+    color: PALETTE.outline,
+    fontStyle: "italic",
+  },
 
   // Keywords, types, built-ins — tertiary (amber)
-  { tag: [t.keyword, t.controlKeyword, t.operatorKeyword, t.modifier, t.definitionKeyword], color: PALETTE.tertiary },
+  {
+    tag: [
+      t.keyword,
+      t.controlKeyword,
+      t.operatorKeyword,
+      t.modifier,
+      t.definitionKeyword,
+    ],
+    color: PALETTE.tertiary,
+  },
   { tag: [t.typeName, t.className, t.namespace], color: PALETTE.tertiary },
   { tag: [t.atom, t.bool, t.number, t.null], color: PALETTE.tertiary },
 
@@ -67,7 +80,14 @@ const bonafideHighlight = HighlightStyle.define([
   { tag: t.regexp, color: PALETTE.primary },
 
   // Functions, methods — secondary (cool gray)
-  { tag: [t.function(t.definition(t.variableName)), t.function(t.variableName), t.macroName], color: PALETTE.secondary },
+  {
+    tag: [
+      t.function(t.definition(t.variableName)),
+      t.function(t.variableName),
+      t.macroName,
+    ],
+    color: PALETTE.secondary,
+  },
   { tag: [t.propertyName, t.attributeName], color: PALETTE.secondary },
 
   // Variables, identifiers — on-surface. Function parameter highlight is
@@ -80,7 +100,10 @@ const bonafideHighlight = HighlightStyle.define([
   { tag: t.meta, color: PALETTE.onSurfaceVariant },
 
   // Operators / punctuation — on-surface-variant
-  { tag: [t.punctuation, t.bracket, t.operator], color: PALETTE.onSurfaceVariant },
+  {
+    tag: [t.punctuation, t.bracket, t.operator],
+    color: PALETTE.onSurfaceVariant,
+  },
 
   // Markdown
   { tag: t.heading, color: PALETTE.onSurface, fontWeight: "bold" },
@@ -91,10 +114,10 @@ const bonafideHighlight = HighlightStyle.define([
 
   // Invalid tokens — red
   { tag: t.invalid, color: PALETTE.error },
-]);
+])
 
 const monospaceFamily =
-  "'Manrope', ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, Monaco, Consolas, monospace";
+  "'Manrope', ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, Monaco, Consolas, monospace"
 
 const bonafideEditorTheme = EditorView.theme(
   {
@@ -121,8 +144,12 @@ const bonafideEditorTheme = EditorView.theme(
       borderLeftColor: PALETTE.cursor,
       borderLeftWidth: "2px",
     },
-    ".cm-selectionBackground, ::selection": { backgroundColor: PALETTE.selection },
-    "&.cm-focused .cm-selectionBackground": { backgroundColor: PALETTE.selection },
+    ".cm-selectionBackground, ::selection": {
+      backgroundColor: PALETTE.selection,
+    },
+    "&.cm-focused .cm-selectionBackground": {
+      backgroundColor: PALETTE.selection,
+    },
     // Active-line highlight: a subtle outline + a very faint band. The
     // previous solid `surfaceContainerLow` (#191c20) fill produced a
     // clearly visible band across the cursor line, which combined with
@@ -147,7 +174,10 @@ const bonafideEditorTheme = EditorView.theme(
       backgroundColor: PALETTE.surface,
       color: PALETTE.onSurfaceVariant,
     },
-    ".cm-lineNumbers .cm-gutterElement": { padding: "0 8px 0 12px", minWidth: "32px" },
+    ".cm-lineNumbers .cm-gutterElement": {
+      padding: "0 8px 0 12px",
+      minWidth: "32px",
+    },
     ".cm-indent-guide": { borderLeft: `1px solid ${PALETTE.outlineVariant}` },
     ".cm-indent-guide.active": { borderLeft: `1px solid ${PALETTE.outline}` },
     ".cm-tooltip, .cm-tooltip.cm-tooltip-autocomplete": {
@@ -165,7 +195,10 @@ const bonafideEditorTheme = EditorView.theme(
     },
     ".cm-searchMatch": { backgroundColor: "#ffb77a55" },
     ".cm-searchMatch.cm-searchMatch-selected": { backgroundColor: "#ffb77a88" },
-    ".cm-matchingBracket": { backgroundColor: "#aac7ff22", outline: `1px solid ${PALETTE.primary}` },
+    ".cm-matchingBracket": {
+      backgroundColor: "#aac7ff22",
+      outline: `1px solid ${PALETTE.primary}`,
+    },
     ".cm-nonmatchingBracket": { color: PALETTE.error },
 
     // ── Diagnostics gutter + inline indicators ──────────────────────────
@@ -311,17 +344,20 @@ const bonafideEditorTheme = EditorView.theme(
     },
   },
   { dark: true },
-);
+)
 
 /**
  * Combined extension to drop into `<CodeMirror extensions={[...]} />`.
  * Pass exactly once — registering the same theme twice would create a
  * duplicate style sheet.
  */
-export const bonafideTheme = [bonafideEditorTheme, syntaxHighlighting(bonafideHighlight)];
+export const bonafideTheme = [
+  bonafideEditorTheme,
+  syntaxHighlighting(bonafideHighlight),
+]
 
 /**
  * Theme identifier kept for compatibility with the previous Monaco-based
  * identifier so any future callers can reference it the same way.
  */
-export const BONAFIDE_THEME_NAME = "bonafide-dark";
+export const BONAFIDE_THEME_NAME = "bonafide-dark"

@@ -124,8 +124,7 @@ const PATHS: Record<string, string> = {
   // horizontal arrows (one above, one below).
   "case-sensitive":
     "M3 17l4-10 4 10 M4.5 14h5 M14 15a2.5 2.5 0 0 1 5 0v4h-5v-1.5a1.5 1.5 0 0 1 1.5-1.5h1.5 M17 19h2",
-  "whole-word":
-    "M3 17l4-10 4 10 M4.5 14h5 M14 13h2 a3 3 0 0 1 0 6 h-2 z",
+  "whole-word": "M3 17l4-10 4 10 M4.5 14h5 M14 13h2 a3 3 0 0 1 0 6 h-2 z",
   regex:
     "M17 3v4a3 3 0 0 1-3 3 M14 17a3 3 0 0 0 3 3 M11 4l-2 18 M3 7l3 3-3 3 M21 7l-3 3 3 3",
   "replace-all":
@@ -133,34 +132,28 @@ const PATHS: Record<string, string> = {
   // Source-control status icons. Letter forms so the badge colour
   // stays the only encoding — this matches VS Code's "M / A / D / U"
   // presentation where the letter is the change kind.
-  "status-modified":
-    "M12 20l-4-4 4-4 M12 4v12 M16 4l4 4-4 4 M16 16H8 M4 8h8",
-  "status-added":
-    "M12 5v14 M5 12h14",
+  "status-modified": "M12 20l-4-4 4-4 M12 4v12 M16 4l4 4-4 4 M16 16H8 M4 8h8",
+  "status-added": "M12 5v14 M5 12h14",
   "status-deleted":
     "M5 7l14 0 M9 7V4h6v3 M7 7l1 13a2 2 0 0 0 2 2h4a2 2 0 0 0 2-2l1-13",
   "status-renamed":
     "M3 8h13a4 4 0 0 1 0 8H8 M3 8l4-4 M3 8l4 4 M21 16l-4-4 M21 16l-4 4",
   "status-untracked":
     "M12 17v.01 M12 10a3 3 0 1 0 0-6 3 3 0 0 0 0 6 M3 21a9 9 0 1 0 18 0 9 9 0 0 0-18 0",
-  "status-conflict":
-    "M12 2 2 7l10 5 10-5z M2 12l10 5 10-5 M2 17l10 5 10-5",
+  "status-conflict": "M12 2 2 7l10 5 10-5z M2 12l10 5 10-5 M2 17l10 5 10-5",
   "git-commit":
     "M12 2v6 M12 16v6 M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M12 12a4 4 0 1 1 0 8 4 4 0 0 1 0-8",
-  "rotate-ccw":
-    "M3 12a9 9 0 1 0 3-6.7 L3 8 M3 3v5h5",
-  "rotate-cw":
-    "M21 12a9 9 0 1 1-3-6.7 M21 3v5h-5",
+  "rotate-ccw": "M3 12a9 9 0 1 0 3-6.7 L3 8 M3 3v5h5",
+  "rotate-cw": "M21 12a9 9 0 1 1-3-6.7 M21 3v5h-5",
   "cloud-upload":
     "M16 16l-4-4-4 4 M12 12v9 M20 16.6A5 5 0 0 0 17 7h-1.3A8 8 0 1 0 4 15.3",
   "cloud-download":
     "M8 17l4 4 4-4 M12 12V21 M20 16.6A5 5 0 0 0 17 7h-1.3A8 8 0 1 0 4 15.3",
-  "inbox":
+  inbox:
     "M3 12h6l1.5 2h3L15 12h6 M3 12v7a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7 M3 12l2-7a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2l2 7",
-  "discard":
+  discard:
     "M3 6h18 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2 M12 11v6",
-  "circle-x":
-    "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18 M9 9l6 6 M15 9l-6 6",
+  "circle-x": "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18 M9 9l6 6 M15 9l-6 6",
   // CPU / chip icon.
   cpu: "M9 3H7a2 2 0 0 0-2 2v2a2 2 0 0 1-2 2H3v2h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2h2v2h-2a2 2 0 0 1-2 2v2a2 2 0 0 0 2 2h2v2h-2a2 2 0 0 1-2 2v2a2 2 0 0 0 2 2h2v2H7a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2v-2H9a2 2 0 0 1-2-2V9a2 2 0 0 0-2-2H3V5h2a2 2 0 0 1 2-2V3a2 2 0 0 0-2-2H3V1h2a2 2 0 0 1 2 2v2a2 2 0 0 1 2 2h2z",
   // Brain / neural-network icon — used for the AI Models section in Preferences.

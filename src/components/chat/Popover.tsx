@@ -18,36 +18,36 @@
  * handler. This matches the existing Composer behaviour exactly.
  */
 
-import { useEffect } from "react";
-import { createPortal } from "react-dom";
+import { useEffect } from "react"
+import { createPortal } from "react-dom"
 
-const MARGIN = 6; // px between anchor and popover edge
-const MENU_HEIGHT_ESTIMATE = 360; // px — used to decide direction before render
+const MARGIN = 6 // px between anchor and popover edge
+const MENU_HEIGHT_ESTIMATE = 360 // px — used to decide direction before render
 
 function computePosition(
   anchor: DOMRect,
   popoverHeight: number,
   popoverWidth: number,
-): { top: number; left: number; flip: boolean; clampLeft: number } {
-  const spaceBelow = window.innerHeight - anchor.bottom;
-  const flip = spaceBelow < MARGIN + popoverHeight;
+): { top: number left: number flip: boolean clampLeft: number } {
+  const spaceBelow = window.innerHeight - anchor.bottom
+  const flip = spaceBelow < MARGIN + popoverHeight
   // Clamp horizontally so wide popovers near the right edge don't
   // overflow the viewport.
-  const idealLeft = anchor.left;
-  const maxLeft = window.innerWidth - popoverWidth - 4;
-  const clampLeft = Math.max(4, Math.min(idealLeft, maxLeft));
+  const idealLeft = anchor.left
+  const maxLeft = window.innerWidth - popoverWidth - 4
+  const clampLeft = Math.max(4, Math.min(idealLeft, maxLeft))
   return {
     top: flip ? anchor.top - MARGIN : anchor.bottom + MARGIN,
     left: anchor.left,
     clampLeft,
     flip,
-  };
+  }
 }
 
 function Backdrop({ onClose }: { onClose: () => void }) {
   return (
     <div className="fixed inset-0 z-[60] cursor-default" onClick={onClose} />
-  );
+  )
 }
 
 export function Popover({
@@ -57,11 +57,11 @@ export function Popover({
   onClose,
   children,
 }: {
-  anchor: DOMRect | null;
-  width?: number;
-  height?: number;
-  onClose: () => void;
-  children: React.ReactNode;
+  anchor: DOMRect | null
+  width?: number
+  height?: number
+  onClose: () => void
+  children: React.ReactNode
 }) {
   // Escape closes the popover. We attach on the document level so
   // it fires regardless of focus — useful when the user clicks into
@@ -69,16 +69,16 @@ export function Popover({
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
-        e.stopPropagation();
-        onClose();
+        e.stopPropagation()
+        onClose()
       }
     }
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [onClose])
 
-  if (!anchor) return null;
-  const { top, clampLeft, flip } = computePosition(anchor, height, width);
+  if (!anchor) return null
+  const { top, clampLeft, flip } = computePosition(anchor, height, width)
   return createPortal(
     <>
       <Backdrop onClose={onClose} />
@@ -96,5 +96,5 @@ export function Popover({
       </div>
     </>,
     document.body,
-  );
+  )
 }
