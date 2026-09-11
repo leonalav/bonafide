@@ -1,7 +1,11 @@
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Icon } from "../ui/Icon"
 import { Button } from "../ui/primitives"
+import { CriticReviewCard } from "./CriticReviewCard"
+import { bonafide } from "../../ipc/tauri"
 import type { Confidence, Investigation } from "../../data/agents"
+import type { CriticReview } from "../../ipc/tauri"
+import { useWorkspaceRoot } from "../../ide/hooks"
 
 const CONF_TONE: Record<Confidence, string> = {
   Low: "text-outline",
@@ -39,6 +43,62 @@ export function ProposalView({
   const [traceOpen, setTraceOpen] = useState(false)
   const [expanded, setExpanded] = useState<Record<number, boolean>>({ 0: true })
   const shown = traceOpen ? data.trace : data.trace.slice(0, 4)
+
+  // Critic mode integration (WS5-T11)
+  const workspaceRoot = useWorkspaceRoot()
+  const [criticReview, setCriticReview] = useState<CriticReview | null>(null)
+  const [reviewLoading, setReviewLoading] = useState(false)
+  const [confirmFail, setConfirmFail] = useState(false)
+
+  // Run Critic review before presenting the patch
+  useEffect(() => {
+    if (!workspaceRoot || !data.patch.file) {
+      setCriticReview(null)
+      return
+    }
+
+    let cancelled = false
+    setReviewLoading(true)
+
+    // Extract diff text from patch lines
+    const diff = data.patch.lines
+      .map((l) => `${l.sign === " " ? " " : l.sign}${l.text}`)
+      .join("\n")
+
+    bonafide.agent
+      .reviewCode(workspaceRoot, data.patch.file, diff)
+      .then((review) => {
+        if (!cancelled) {
+          setCriticReview(review)
+          // Reset confirmation if verdict changes
+          setConfirmFail(false)
+        }
+      })
+      .catch((err) => {
+        console.warn("[ProposalView] reviewCode failed:", err)
+        if (!cancelled) {
+          setCriticReview({
+            score: 0,
+            issues: [],
+            recommendations: [],
+            verdict: "skip",
+            summary: "Code review unavailable",
+          })
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setReviewLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [workspaceRoot, data.patch.file, data.patch.lines])
+
+  // Determine if approval should be blocked
+  const shouldBlockApproval =
+    criticReview?.verdict === "fail" && !confirmFail
+  const shouldShowFailWarning = criticReview?.verdict === "fail"
 
   return (
     <div className="flex flex-col gap-6">
@@ -157,6 +217,46 @@ export function ProposalView({
         </div>
       </Region>
 
+      {/* Critic Review (WS5-T11) */}
+      {(reviewLoading || criticReview) && (
+        <Region label="Critic Review">
+          {reviewLoading ? (
+            <div className="flex items-center gap-2 rounded border border-outline-variant bg-surface-container-low p-3">
+              <Icon
+                name="refresh"
+                size={14}
+                className="animate-sync-spin text-tertiary"
+              />
+              <span className="font-sans text-[12px] text-on-surface-variant">
+                Reviewing code...
+              </span>
+            </div>
+          ) : criticReview ? (
+            <CriticReviewCard review={criticReview} />
+          ) : null}
+        </Region>
+      )}
+
+      {/* Fail Warning Banner */}
+      {shouldShowFailWarning && (
+        <div className="flex items-start gap-2 rounded border border-error/30 bg-error/10 p-3">
+          <Icon
+            name="alert-triangle"
+            size={16}
+            className="mt-0.5 shrink-0 text-error"
+          />
+          <div className="flex flex-col gap-1">
+            <p className="font-sans text-[13px] font-medium text-error">
+              Code review failed — proceed with caution
+            </p>
+            <p className="font-sans text-[12px] text-on-surface-variant">
+              The Critic identified serious issues with this patch. Review them
+              carefully before applying. You must confirm to apply anyway.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Proposed patch */}
       <Region label="Proposed patch">
         <div className="overflow-hidden rounded border border-outline-variant">
@@ -245,24 +345,47 @@ export function ProposalView({
       )}
 
       {/* Actions */}
-      <div className="flex items-center justify-end gap-1.5 border-t border-outline-variant pt-4">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="whitespace-nowrap !text-error hover:bg-error/10"
-        >
-          Reject
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="whitespace-nowrap hover:!text-on-surface"
-        >
-          Request revision
-        </Button>
-        <Button size="sm" className="whitespace-nowrap">
-          Approve &amp; apply
-        </Button>
+      <div className="flex flex-col gap-2 border-t border-outline-variant pt-4">
+        {shouldShowFailWarning && (
+          <label className="flex items-center gap-2 font-sans text-[12px] text-on-surface-variant">
+            <input
+              type="checkbox"
+              checked={confirmFail}
+              onChange={(e) => setConfirmFail(e.target.checked)}
+              className="rounded border-outline-variant bg-surface"
+            />
+            <span>I have reviewed the issues and want to apply anyway</span>
+          </label>
+        )}
+        <div className="flex items-center justify-end gap-1.5">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="whitespace-nowrap !text-error hover:bg-error/10"
+          >
+            Reject
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="whitespace-nowrap hover:!text-on-surface"
+            disabled={!criticReview || criticReview.verdict === "skip"}
+          >
+            Request revision
+          </Button>
+          <Button
+            size="sm"
+            className="whitespace-nowrap"
+            disabled={shouldBlockApproval}
+            title={
+              shouldBlockApproval
+                ? "Confirm the fail warning to apply this patch"
+                : undefined
+            }
+          >
+            Approve &amp; apply
+          </Button>
+        </div>
       </div>
     </div>
   )
