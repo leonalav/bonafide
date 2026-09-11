@@ -1,9 +1,10 @@
-//! Agent engine — BudgetGovernor integration and mode routing.
+//! Agent engine — tool-permission gate and mode routing.
 //!
-//! Phase 2 stubs: the tool-call budget check is live; mode routing and
-//! the full ReAct loop are wired in Steps 3–4.
+//! Phase 0 reset (WS0-T1): the BudgetRegistry integration was removed.
+//! The stub returns `allowed: true` so the renderer can keep calling
+//! `check_tool_permission` while the real governor is rebuilt in
+//! WS2-T4.
 
-use crate::agent::budget::{self, BudgetRegistry};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -18,42 +19,19 @@ pub struct ToolPermission {
 }
 
 /// Check whether a tool call is permitted under the current budget.
-/// Used by the frontend before every compute-intensive tool invocation.
+///
+/// Phase 0 stub: always allow. Real BudgetRegistry wiring returns in
+/// WS2-T4 — until then this is a no-op gate that preserves the IPC
+/// contract for the renderer.
+#[allow(dead_code)]
 pub async fn check_tool_permission(
-    registry: &BudgetRegistry,
-    workspace_root: &Path,
-    tool_name: &str,
+    _workspace_root: &Path,
+    _tool_name: &str,
 ) -> ToolPermission {
-    use crate::agent::budget::EscalationLevel;
-    let hash = crate::agent::compute_workspace_hash(workspace_root);
-    let guard = registry.read().await;
-    match guard.get(&hash) {
-        Some(budget) => {
-            let escalation = budget.escalation();
-            let can = budget.can_proceed(tool_name);
-            ToolPermission {
-                allowed: can.is_ok(),
-                escalation: format!("{:?}", escalation).to_lowercase(),
-                requires_approval: matches!(
-                    escalation,
-                    EscalationLevel::Critical | EscalationLevel::Exhausted
-                ),
-                message: if can.is_err() {
-                    Some(format!(
-                        "Budget {} — {} tools require approval.",
-                        escalation.label(),
-                        tool_name
-                    ))
-                } else {
-                    None
-                },
-            }
-        }
-        None => ToolPermission {
-            allowed: true,
-            escalation: "normal".to_string(),
-            requires_approval: false,
-            message: None,
-        },
+    ToolPermission {
+        allowed: true,
+        escalation: "normal".into(),
+        requires_approval: false,
+        message: None,
     }
 }

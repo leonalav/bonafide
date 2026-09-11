@@ -94,8 +94,10 @@ pub struct WorkspaceSummary {
 /// Per-workspace storage state — keyed by workspace hash.
 type StorageState = Arc<RwLock<HashMap<String, Storage>>>;
 
-/// Phase 2: per-workspace budget registry — keyed by workspace hash.
-type BudgetState = agent::budget::BudgetRegistry;
+// Phase 2: per-workspace budget registry removed in WS0-T1.
+// The real BudgetRegistry is rebuilt in WS2-T4; until then this
+// alias is a no-op so the `manage()` builder below still type-checks.
+type BudgetState = ();
 
 // ── Directory walking ─────────────────────────────────────────────────────
 // Same logic as the Electron main process: skip noisy dirs (node_modules,
@@ -993,139 +995,128 @@ async fn upsert_thread(
 }
 
 // ── Phase 2: Experiment commands ────────────────────────────────────────────────
+//
+// Stripped in WS0-T1. Commands are kept as no-op stubs that return a
+// structured "not yet implemented" error so the renderer's IPC client
+// keeps resolving `bonafide.experiment.*`. Real implementations land
+// in WS2-T4.
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn create_experiment(
-    row: agent::experiments::ExperimentRow,
-    workspace_root: String,
+    _row: serde_json::Value,
+    _workspace_root: String,
 ) -> Result<(), String> {
-    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::experiments::create_experiment(&conn, &row)
-        .map_err(|e| format!("Failed to create experiment: {e}"))
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn list_experiments(
-    workspace_root: String,
-) -> Result<Vec<agent::experiments::ExperimentRow>, String> {
-    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::experiments::list_experiments(&conn)
-        .map_err(|e| format!("Failed to list experiments: {e}"))
+    _workspace_root: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn get_experiment(
-    workspace_root: String,
-    id: String,
-) -> Result<Option<agent::experiments::ExperimentRow>, String> {
-    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::experiments::get_experiment(&conn, &id)
-        .map_err(|e| format!("Failed to get experiment: {e}"))
+    _workspace_root: String,
+    _id: String,
+) -> Result<Option<serde_json::Value>, String> {
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn update_experiment(
-    row: agent::experiments::ExperimentRow,
-    workspace_root: String,
+    _row: serde_json::Value,
+    _workspace_root: String,
 ) -> Result<(), String> {
-    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::experiments::update_experiment(&conn, &row)
-        .map_err(|e| format!("Failed to update experiment: {e}"))
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn delete_experiment(
-    workspace_root: String,
-    id: String,
+    _workspace_root: String,
+    _id: String,
 ) -> Result<(), String> {
-    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::experiments::delete_experiment(&conn, &id)
-        .map_err(|e| format!("Failed to delete experiment: {e}"))
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn create_experiment_run(
-    row: agent::experiments::ExperimentRunRow,
-    workspace_root: String,
+    _row: serde_json::Value,
+    _workspace_root: String,
 ) -> Result<(), String> {
-    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::experiments::create_experiment_run(&conn, &row)
-        .map_err(|e| format!("Failed to create experiment run: {e}"))
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn list_experiment_runs(
-    workspace_root: String,
-    experiment_id: String,
-) -> Result<Vec<agent::experiments::ExperimentRunRow>, String> {
-    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::experiments::list_experiment_runs(&conn, &experiment_id)
-        .map_err(|e| format!("Failed to list experiment runs: {e}"))
+    _workspace_root: String,
+    _experiment_id: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn update_experiment_run(
-    workspace_root: String,
-    id: String,
-    status: String,
-    metrics_summary: String,
+    _workspace_root: String,
+    _id: String,
+    _status: String,
+    _metrics_summary: String,
 ) -> Result<(), String> {
-    let (conn, _hash) = graph::storage::open_workspace_db(PathBuf::from(&workspace_root).as_path())
-        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
-    agent::experiments::update_experiment_run(&conn, &id, &status, &metrics_summary)
-        .map_err(|e| format!("Failed to update experiment run: {e}"))
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 // ── Phase 2: Budget commands ─────────────────────────────────────────────────
+//
+// Stripped in WS0-T1. Commands are kept as no-op stubs so the renderer's
+// IPC client keeps resolving `bonafide.budget.*`. Real implementations
+// land in WS2-T4.
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn get_budget_status(
-    workspace_root: String,
-    budget_state: State<'_, BudgetState>,
-) -> Result<agent::budget::BudgetStatus, String> {
-    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
-    Ok(agent::budget::get_budget_status(&budget_state, &hash).await)
+    _workspace_root: String,
+    _budget_state: State<'_, BudgetState>,
+) -> Result<serde_json::Value, String> {
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn update_budget(
-    workspace_root: String,
-    budget_dollars: f64,
-    budget_gpu_hours: f64,
-    budget_state: State<'_, BudgetState>,
-) -> Result<agent::budget::BudgetStatus, String> {
-    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
-    Ok(agent::budget::update_budget(&budget_state, &hash, budget_dollars, budget_gpu_hours).await)
+    _workspace_root: String,
+    _budget_dollars: f64,
+    _budget_gpu_hours: f64,
+    _budget_state: State<'_, BudgetState>,
+) -> Result<serde_json::Value, String> {
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn record_tool_call(
-    workspace_root: String,
-    tool_name: String,
-    budget_state: State<'_, BudgetState>,
+    _workspace_root: String,
+    _tool_name: String,
+    _budget_state: State<'_, BudgetState>,
 ) -> Result<String, String> {
-    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
-    let level = agent::budget::record_tool_call(&budget_state, &hash, &tool_name)
-        .await
-        .ok_or_else(|| "No budget record for this workspace".to_string())?;
-    Ok(format!("{:?}", level).to_lowercase())
+    Err("Not yet implemented — wired in WS2-T4.".into())
 }
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn check_tool_permission(
     workspace_root: String,
     tool_name: String,
-    budget_state: State<'_, BudgetState>,
 ) -> Result<agent::engine::ToolPermission, String> {
     Ok(agent::engine::check_tool_permission(
-        &budget_state,
         PathBuf::from(&workspace_root).as_path(),
         &tool_name,
     )
@@ -1133,101 +1124,57 @@ async fn check_tool_permission(
 }
 
 // ── Phase 2: Planner commands ───────────────────────────────────────────────
+//
+// Stripped in WS0-T1. Commands are kept as no-op stubs so the renderer's
+// IPC client keeps resolving `bonafide.agent.propose_experiment` (and
+// `list_experiments_for_planner`). Real implementations land in WS4-T1.
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn propose_experiment(
-    workspace_root: String,
-    input: agent::planner::ProposeExperimentInput,
-    budget_state: State<'_, BudgetState>,
-) -> Result<agent::planner::ProposeExperimentOutput, String> {
-    agent::planner::propose_experiment(
-        &budget_state,
-        PathBuf::from(&workspace_root).as_path(),
-        input,
-    )
-    .await
+    _workspace_root: String,
+    _input: serde_json::Value,
+    _budget_state: State<'_, BudgetState>,
+) -> Result<serde_json::Value, String> {
+    Err("Not yet implemented — wired in WS4-T1.".into())
 }
 
 /// List existing experiments so the planner can detect duplicates
-/// before proposing a new one.
+/// before proposing a new one. Stub for WS0-T1.
 #[tauri::command]
+#[allow(dead_code)]
 async fn list_experiments_for_planner(
-    workspace_root: String,
-) -> Result<Vec<agent::experiments::ExperimentRow>, String> {
-    agent::planner::list_experiments_for_planner(
-        PathBuf::from(&workspace_root).as_path(),
-    )
-    .await
+    _workspace_root: String,
+) -> Result<Vec<serde_json::Value>, String> {
+    Err("Not yet implemented — wired in WS4-T1.".into())
 }
 
 // ── Phase 2: Scaffolder commands ────────────────────────────────────────────
+//
+// Stripped in WS0-T1. Commands are kept as no-op stubs so the renderer's
+// IPC client keeps resolving `bonafide.agent.scaffold_script` and
+// `bonafide.agent.run_smoke_test`. Real implementations land in WS4-T1.
 
 #[tauri::command]
+#[allow(dead_code)]
 async fn scaffold_script(
-    workspace_root: String,
-    input: agent::scaffolder::ScaffoldInput,
-) -> Result<agent::scaffolder::ScaffoldOutput, String> {
-    agent::scaffolder::scaffold_script(
-        PathBuf::from(&workspace_root).as_path(),
-        &input,
-    )
+    _workspace_root: String,
+    _input: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    Err("Not yet implemented — wired in WS4-T1.".into())
 }
 
 /// Run a Python script with a hard step limit for smoke testing.
-/// Wraps the script in a `max_steps` guard so it terminates promptly.
-/// Exit code 0 = pass, non-zero = fail.
-/// Times out after 60 seconds.
+/// Stub for WS0-T1 — the real implementation (process spawn + 60s
+/// timeout) is reintroduced in WS4-T1.
 #[tauri::command]
+#[allow(dead_code)]
 async fn run_smoke_test(
-    workspace_root: String,
-    script_path: String,
-    max_steps: Option<u32>,
-) -> Result<agent::scaffolder::SmokeTestResult, String> {
-    let steps_arg = max_steps.unwrap_or(50);
-    let abs_script = PathBuf::from(&workspace_root).join(&script_path);
-
-    if !abs_script.exists() {
-        return Ok(agent::scaffolder::SmokeTestResult::from_outcome(
-            1,
-            String::new(),
-            format!("Script not found: {}", abs_script.display()),
-            false,
-        ));
-    }
-
-    // Spawn the process on a blocking thread so we can enforce a 60s timeout
-    // without blocking the Tauri event loop. `std::process::Command::output`
-    // has no native async support, so we wrap it in `spawn_blocking` and race
-    // the join against a tokio timeout.
-    let script_str = abs_script.to_string_lossy().to_string();
-    let workspace_str = workspace_root.clone();
-    let join = tokio::task::spawn_blocking(move || {
-        use std::process::Command;
-        Command::new("python")
-            .args([&script_str, "--max_steps", &steps_arg.to_string()])
-            .current_dir(&workspace_str)
-            .output()
-    });
-
-    match tokio::time::timeout(std::time::Duration::from_secs(60), join).await {
-        Ok(Ok(Ok(output))) => {
-            let exit_code = output.status.code().unwrap_or(-1);
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            Ok(agent::scaffolder::SmokeTestResult::from_outcome(exit_code, stdout, stderr, false))
-        }
-        Ok(Ok(Err(e))) => Err(format!("Failed to spawn python: {e}")),
-        Ok(Err(join_err)) => Err(format!("Smoke test task panicked: {join_err}")),
-        Err(_elapsed) => {
-            // Timeout: child may still be running but we return immediately.
-            Ok(agent::scaffolder::SmokeTestResult::from_outcome(
-                -1,
-                String::new(),
-                "Smoke test exceeded 60s timeout and was abandoned.".to_string(),
-                true,
-            ))
-        }
-    }
+    _workspace_root: String,
+    _script_path: String,
+    _max_steps: Option<u32>,
+) -> Result<serde_json::Value, String> {
+    Err("Not yet implemented — wired in WS4-T1.".into())
 }
 
 // ── Phase 0: Code graph commands ────────────────────────────────────────────
@@ -1539,9 +1486,11 @@ pub fn run() {
             app.manage(storage_state);
 
             // ── Phase 2: Per-workspace budget state ────────────────────
-            // Stores the BudgetGovernor for each open workspace.
-            let budget_state: BudgetState =
-                Arc::new(RwLock::new(std::collections::HashMap::new()));
+            // Stripped in WS0-T1. We still register a `()` placeholder so
+            // the `manage()` call type-checks against `BudgetState` in the
+            // stubbed commands. The real BudgetRegistry is reintroduced in
+            // WS2-T4.
+            let budget_state: BudgetState = ();
             app.manage(budget_state);
 
             // Start the WebSocket LSP bridge on port 9877.
