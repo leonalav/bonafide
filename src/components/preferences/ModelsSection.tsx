@@ -55,11 +55,17 @@ function EndpointForm({
     setTestStatus("testing")
     setTestMsg("")
     try {
-      const res = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, {
+      const res = await fetch(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
+        body: JSON.stringify({
+          model: defaultModel,
+          messages: [{ role: "user", content: "ping" }],
+          stream: false,
+        }),
       })
       if (res.ok) {
         setTestStatus("ok")

@@ -153,47 +153,53 @@ export function StatusBar({ workspaceName }: { workspaceName: string | null }) {
   }, [workspaceRoot])
 
   return (
-    <div className="flex h-6 shrink-0 items-center border-t border-outline-variant bg-surface-container-low px-3 font-sans text-[12px] text-on-surface-variant">
+    <div className="flex h-6 min-w-0 shrink-0 items-center overflow-hidden border-t border-outline-variant bg-surface-container-low px-3 font-sans text-[12px] text-on-surface-variant">
       {/* left: workspace */}
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         {workspaceName ? (
           <>
-            <Icon name="folder-open" size={12} className="text-secondary" />
-            <span>{workspaceName}</span>
+            <Icon name="folder-open" size={12} className="shrink-0 text-secondary" />
+            <span className="truncate">{workspaceName}</span>
           </>
         ) : (
           <span className="text-outline">No folder open</span>
         )}
       </div>
 
-      <div className="mx-3 h-3 w-px bg-outline-variant" />
+      <div className="mx-3 h-3 w-px shrink-0 bg-outline-variant" />
 
       {/* center: status */}
-      <div className="flex items-center gap-3">
-        <span className="text-outline">Ready</span>
+      <div className="flex min-w-0 items-center gap-3">
+        <span className="shrink-0 text-outline">Ready</span>
       </div>
 
-      <div className="flex-1" />
+      <div className="flex-1 min-w-0" />
 
-      {/* right: badges — each shows only when its IPC reports truthy. */}
-      <div className="flex items-center gap-3">
+      {/* right: badges — each shows only when its IPC reports truthy.
+          Wrapping is enabled so badges flow to a second row on narrow
+          windows instead of overflowing; individual labels truncate
+          when they still don't fit. */}
+      <div className="flex min-w-0 flex-wrap items-center justify-end gap-x-3 gap-y-1">
         {info?.gitBranch ? (
-          <span className="flex items-center gap-1 text-outline">
-            <Icon name="git-branch" size={11} /> {info.gitBranch}
+          <span className="flex min-w-0 items-center gap-1 text-outline">
+            <Icon name="git-branch" size={11} className="shrink-0" />
+            <span className="truncate">{info.gitBranch}</span>
           </span>
         ) : null}
         {info?.pythonDetected ? (
-          <span className="flex items-center gap-1 text-outline">
-            <Icon name="terminal" size={11} /> Python
+          <span className="flex shrink-0 items-center gap-1 text-outline">
+            <Icon name="terminal" size={11} className="shrink-0" /> Python
           </span>
         ) : null}
         {info?.wandbConnected ? (
-          <span className="flex items-center gap-1 text-outline">
-            <Icon name="zap" size={11} /> W&amp;B
+          <span className="flex shrink-0 items-center gap-1 text-outline">
+            <Icon name="zap" size={11} className="shrink-0" /> W&amp;B
           </span>
         ) : null}
         {info ? (
-          <span className="text-outline">Bonafide v{info.version}</span>
+          <span className="shrink-0 text-outline">
+            Bonafide v{info.version}
+          </span>
         ) : null}
       </div>
     </div>

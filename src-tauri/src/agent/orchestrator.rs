@@ -161,6 +161,17 @@ pub struct Thread {
     /// Defaults to 0.
     #[serde(default)]
     pub patch_revisions: u32,
+    /// Structured tool-call records produced during the engine run.
+    /// The engine appends one entry per tool invocation; the IPC
+    /// handler moves this Vec out and returns it to the renderer
+    /// so each call becomes an inline `ToolArtifact` card.
+    ///
+    /// Not persisted with the SQLite row (the engine replays trace
+    /// steps on resume; this Vec is purely the live turn's
+    /// artifacts). Kept on the thread so the engine has a single
+    /// owning struct to mutate.
+    #[serde(default)]
+    pub tool_artifacts: Vec<crate::agent::engine::ToolArtifact>,
 }
 
 impl Thread {
@@ -185,6 +196,7 @@ impl Thread {
             event_log_path,
             hypothesis_iterations: 0,
             patch_revisions: 0,
+            tool_artifacts: Vec::new(),
         }
     }
 

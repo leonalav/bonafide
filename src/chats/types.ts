@@ -1,52 +1,94 @@
 /**
  * chat/types.ts — Shared chat-layer types that cross module boundaries.
  *
- * `ModeId` is shared between the Composer (which owns the mode picker UI)
- * and the chat surface (which needs to pass it to `createThread`). We
- * define it here so both modules import from the same source of truth
- * rather than each declaring their own copy.
+ * `ModeId` is the canonical identifier for the five agent roles.
+ * The renderer-friendly label (e.g. "Debug") is derived from the
+ * same identifier by `MODE_META` — there is exactly one source of
+ * truth for "which modes exist" and "what each mode is called".
+ *
+ * The identifier (`debugger`, `scaffolder`, `planner`, `researcher`,
+ * `critic`) is wire-compatible with the Rust `AgentRole` enum
+ * (`src-tauri/src/agent/orchestrator.rs`) which `#[serde]`
+ * serialises as snake_case. Keep them aligned.
  */
 
-export type ModeId = "debug" | "scaffold" | "plan" | "research" | "multitask"
+export type ModeId = "debugger" | "scaffolder" | "planner" | "researcher" | "critic"
 
-export const MODES: {
+export const MODE_META: {
   id: ModeId
   icon: string
   label: string
   desc: string
-  status?: "deferred" | "design"
 }[] = [
   {
-    id: "debug",
+    id: "debugger",
     icon: "search",
     label: "Debug",
-    desc: "Investigate run divergences and trace root causes",
+    desc: "Investigate run divergences, crashes, and regressions",
   },
   {
-    id: "scaffold",
+    id: "scaffolder",
     icon: "box",
     label: "Scaffold",
-    desc: "Generate project structure and boilerplate code",
+    desc: "Generate complete, runnable project structures for ML training",
   },
   {
-    id: "plan",
+    id: "planner",
     icon: "line-chart",
     label: "Plan",
-    desc: "Draft experiment timelines and resource estimates",
-    status: "deferred",
+    desc: "Draft hypothesis-driven experiment sequences and timelines",
   },
   {
-    id: "research",
+    id: "researcher",
     icon: "package",
     label: "Research",
-    desc: "Cross-reference papers and gather evidence",
-    status: "deferred",
+    desc: "Cross-reference arXiv papers and gather evidence for decisions",
   },
   {
-    id: "multitask",
-    icon: "layers",
-    label: "Multitask",
-    desc: "Coordinate multiple agents across a shared goal",
-    status: "design",
+    id: "critic",
+    icon: "shield",
+    label: "Critic",
+    desc: "Review proposals for correctness, safety, and ML best practices",
   },
 ]
+
+/**
+ * Backwards-compatibility export: a few older callers (Composer,
+ * ChatStore) used the shorthand `debug | scaffold | plan | research`
+ * labels. We re-map those to the new canonical ids. Anything not
+ * recognised falls back to `debugger` so the legacy callers still
+ * compile and behave sanely.
+ */
+export function toCanonicalModeId(value: string | null | undefined): ModeId {
+  switch (value) {
+    case "debugger":
+    case "debug":
+      return "debugger"
+    case "scaffolder":
+    case "scaffold":
+      return "scaffolder"
+    case "planner":
+    case "plan":
+      return "planner"
+    case "researcher":
+    case "research":
+      return "researcher"
+    case "critic":
+      return "critic"
+    default:
+      return "debugger"
+  }
+}
+
+/** Resolve the icon + label + desc by id. Defaults to the Debugger row. */
+export function getModeMeta(id: ModeId | string) {
+  const canonical = toCanonicalModeId(id)
+  return (
+    MODE_META.find((m) => m.id === canonical) ?? {
+      id: canonical,
+      icon: "search",
+      label: "Agent",
+      desc: "General agent mode",
+    }
+  )
+}

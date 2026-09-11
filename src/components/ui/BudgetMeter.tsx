@@ -122,13 +122,16 @@ export function BudgetMeter() {
       : 0
 
   return (
-    <div className="flex flex-col gap-1 px-3 py-2 border-b border-outline-variant">
-      {/* Label row */}
-      <div className="flex items-center justify-between">
-        <span className="label-caps text-[10px] text-on-surface-variant">
+    <div className="flex min-w-0 flex-col gap-1 overflow-hidden border-b border-outline-variant px-3 py-2">
+      {/* Label row — `min-w-0` lets the right-side dollar/GPU value
+          shrink and ellipsize rather than overflow the panel when the
+          Inspector is narrow. The label stays fully visible because it
+          doesn't truncate. */}
+      <div className="flex min-w-0 items-center justify-between gap-2">
+        <span className="label-caps shrink-0 text-[10px] text-on-surface-variant">
           {label(escalation)}
         </span>
-        <span className="font-sans text-[10px] tabular-nums text-on-surface-variant">
+        <span className="min-w-0 truncate text-right font-sans text-[10px] tabular-nums text-on-surface-variant">
           ${budget.spentDollars.toFixed(2)} / ${budget.budgetDollars.toFixed(0)}
           {gpuCount > 0
             ? ` · ${budget.spentGpuHours.toFixed(1)}h / ${budget.budgetGpuHours.toFixed(0)}h GPU`

@@ -30,6 +30,7 @@ import { UserMessage } from "./UserMessage"
 import { AssistantMessage } from "./AssistantMessage"
 import { SystemMessage } from "./SystemMessage"
 import { WaitingArtifact } from "./WaitingArtifact"
+import { ToolArtifact } from "./ToolArtifact"
 
 const STICK_TO_BOTTOM_PX = 80
 

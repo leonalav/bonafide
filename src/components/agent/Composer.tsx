@@ -7,56 +7,35 @@ import {
   type ModelFamily,
 } from "../../modelsStore"
 import type { ModeId } from "../../chats/types"
+import { MODE_META, toCanonicalModeId } from "../../chats/types"
 import type { Attachment } from "../../chats/ChatStore"
+import { useWorkspaceRoot } from "../../ide/hooks"
+import { bonafide, type BudgetStatus } from "../../ipc/tauri"
 
-const MODES: {
-  id: ModeId
-  icon: string
-  label: string
-  desc: string
-  status?: "deferred" | "design"
-}[] = [
-  {
-    id: "debug",
-    icon: "search",
-    label: "Debug",
-    desc: "Investigate run divergences and trace root causes",
-  },
-  {
-    id: "scaffold",
-    icon: "box",
-    label: "Scaffold",
-    desc: "Generate project structure and boilerplate code",
-  },
-  {
-    id: "plan",
-    icon: "line-chart",
-    label: "Plan",
-    desc: "Draft experiment timelines and resource estimates",
-    status: "deferred",
-  },
-  {
-    id: "research",
-    icon: "package",
-    label: "Research",
-    desc: "Cross-reference papers and gather evidence",
-    status: "deferred",
-  },
-  {
-    id: "multitask",
-    icon: "layers",
-    label: "Multitask",
-    desc: "Coordinate multiple agents across a shared goal",
-    status: "design",
-  },
-]
+// The mode picker surfaces the five canonical agent roles. The
+// identifier (`id`) is the snake_case `AgentRole` value the Rust
+// engine accepts verbatim, so picking a mode here is the only step
+// required to route a message through the right system prompt +
+// approval gate + tool allowlist.
+const MODES = MODE_META
 
 const HINTS: Record<ModeId, string> = {
-  debug: "▸ investigating… Type a follow-up.",
-  scaffold: "▸ scaffolding… Describe what to build.",
-  plan: "▸ planning… (in design)",
-  research: "▸ researching… (in design)",
-  multitask: "▸ multitask… (in design)",
+  debugger: "▸ investigating… Type a follow-up.",
+  scaffolder: "▸ scaffolding… Describe what to build.",
+  planner: "▸ planning… Describe the goal you want to sequence.",
+  researcher: "▸ researching… Describe the topic or paper to look up.",
+  critic: "▸ reviewing… Describe a proposal you want reviewed.",
+}
+
+// Model IDs that are considered expensive (for budget lockout per spec §10)
+const EXPENSIVE_MODEL_IDS = new Set([
+  "claude-opus",
+  "o1-preview",
+])
+
+/** Returns true when the given escalation level means expensive models should be locked. */
+function shouldDisableExpensiveModels(escalation: BudgetStatus["escalation"]): boolean {
+  return escalation === "caution" || escalation === "critical"
 }
 
 // ─── Click-outside backdrop ────────────────────────────────────────────────────
@@ -140,6 +119,9 @@ function Popover({
 }
 
 // ─── Mode row (used inside the dropdown) ───────────────────────────────────────
+// Every canonical `AgentRole` is active today. The row renders a
+// short description (from `MODE_META`) under the label via
+// `title=` so users can tell what each mode does without clicking.
 function ModeRow({
   m,
   active,
@@ -149,18 +131,13 @@ function ModeRow({
   active: boolean
   onClick: () => void
 }) {
-  const muted = m.status === "deferred"
   return (
     <button
       onClick={onClick}
-      title={
-        muted
-          ? "This role is in design. The thread is created but won't receive replies yet."
-          : undefined
-      }
+      title={m.desc}
       className={`relative flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-surface-container-high ${
         active ? "bg-surface-container-high" : ""
-      } ${muted ? "opacity-50" : ""}`}
+      }`}
     >
       {active && (
         <span className="absolute left-0 top-0 h-full w-[2px] rounded-full bg-primary" />
@@ -172,15 +149,6 @@ function ModeRow({
         <span className="truncate font-body text-[12px] font-medium text-on-surface">
           {m.label}
         </span>
-        {m.status === "deferred" && (
-          <span className="text-[9px] text-outline">ⓘ</span>
-        )}
-        {m.status === "design" && (
-          <span className="flex shrink-0 items-center gap-0.5 rounded bg-outline/15 px-1 py-0.5 font-sans text-[9px] text-outline">
-            <Icon name="lock" size={8} />
-            in design
-          </span>
-        )}
       </span>
       {active && (
         <Icon name="check" size={11} className="shrink-0 text-primary" />
@@ -194,23 +162,29 @@ function ModelRow({
   m,
   active,
   onClick,
+  disabled,
+  disabledReason,
 }: {
   m: { id: string name: string badge: string }
   active: boolean
   onClick: () => void
+  disabled?: boolean
+  disabledReason?: string
 }) {
   return (
     <button
       onClick={onClick}
+      disabled={disabled}
+      title={disabledReason}
       className={`relative flex w-full items-center gap-1.5 rounded px-1.5 py-1 text-left hover:bg-surface-container-high ${
         active ? "bg-surface-container-high" : ""
-      }`}
+      } ${disabled ? "opacity-50" : ""}`}
     >
       {active && (
         <span className="absolute left-0 top-0 h-full w-[2px] rounded-full bg-primary" />
       )}
       <Icon
-        name={active ? "check" : "circle"}
+        name={disabled ? "lock" : (active ? "check" : "circle")}
         size={11}
         className={active ? "text-primary" : "text-outline"}
       />
@@ -272,11 +246,13 @@ export function Composer({
   sending?: boolean
   seedText?: string | null
   resetKey?: number
-  mode?: "debug" | "scaffold" | "plan" | "research" | "multitask"
+  mode?: ModeId
   builtinId?: ModelFamily
   onModeChange?: (mode: ModeId) => void
   onBuiltinChange?: (id: ModelFamily) => void
 }) {
+  const workspaceRoot = useWorkspaceRoot()
+
   const [loop, setLoop] = useState(true)
   const [text, setText] = useState("")
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -285,8 +261,19 @@ export function Composer({
   // Controlled mode: parent owns the state, we just call onModeChange.
   // Uncontrolled mode: own state internally.
   const [internalMode, setInternalMode] =
-    useState<"debug" | "scaffold" | "plan" | "research" | "multitask">("debug")
+    useState<ModeId>("debugger")
   const mode = controlledMode ?? internalMode
+
+  // REVIEW: defensively canonicalise the incoming mode so a stale
+  // persistence row or a typo in a parent can't make `MODES.find`
+  // return undefined and crash on `activeMode.icon`. `toCanonicalModeId`
+  // maps every legacy / shorthand label back to a known `ModeId`, so
+  // `MODES.find(...)` is guaranteed to match. We additionally fall
+  // back to the Debugger row in the (impossible-after-canonicalise)
+  // case that the lookup still misses.
+  const safeMode = toCanonicalModeId(mode)
+  const activeMode =
+    MODES.find((m) => m.id === safeMode) ?? MODES[0]!
 
   // Controlled built-in model.
   const [internalBuiltinId, setInternalBuiltinId] =
@@ -392,7 +379,8 @@ export function Composer({
     }
   }, [menu])
 
-  const activeMode = MODES.find((m) => m.id === mode)!
+  const activeModeIcon = activeMode.icon
+  const activeModeLabel = activeMode.label
 
   // Label + badge shown in the model picker button.
   const modelButtonLabel = selectedEndpoint
@@ -485,24 +473,24 @@ export function Composer({
             className="flex h-6 items-center gap-1.5 rounded border border-outline-variant px-2 font-sans text-[12px] text-on-surface hover:bg-surface-container"
           >
             <Icon
-              name={activeMode.icon}
+              name={activeModeIcon}
               size={13}
               className="text-on-surface-variant"
             />
-            {activeMode.label}
+            {activeModeLabel}
             <Icon name="chevron-down" size={11} className="text-outline" />
           </button>
 
           {menu === "mode" && (
             <Popover
               anchor={modeAnchor}
-              width={200}
+              width={220}
               onClose={() => setMenu(null)}
             >
               <div className="label-caps px-1.5 pb-0.5 pt-0.5 text-outline">
-                Active
+                Agent mode
               </div>
-              {MODES.filter((m) => !m.status).map((m) => (
+              {MODES.map((m) => (
                 <ModeRow
                   key={m.id}
                   m={m}
@@ -513,37 +501,18 @@ export function Composer({
                   }}
                 />
               ))}
-
-              <div className="label-caps px-1.5 pb-0.5 pt-1 text-outline">
-                In design
-              </div>
-              {MODES.filter((m) => m.status === "deferred").map((m) => (
-                <ModeRow
-                  key={m.id}
-                  m={m}
-                  active={false}
-                  onClick={() => {
-                    changeMode(m.id)
-                    setMenu(null)
-                  }}
-                />
-              ))}
-
-              <div className="my-0.5 h-px bg-outline-variant/50" />
-              {MODES.filter((m) => m.status === "design").map((m) => (
-                <ModeRow
-                  key={m.id}
-                  m={m}
-                  active={false}
-                  onClick={() => setMenu(null)}
-                />
-              ))}
+              <p className="flex gap-1.5 px-2 pb-1 pt-1.5 font-body text-[11px] text-outline">
+                <span>ⓘ</span> Picking a mode routes your message
+                through the matching tool allowlist + protocol.
+              </p>
             </Popover>
           )}
         </div>
 
-        {/* Model picker */}
-        <div className="relative flex min-w-0 items-center">
+        {/* Model picker — `min-w-0` lets the button shrink; the label
+            and badge each truncate independently so the chevron stays
+            visible at any width. */}
+        <div className="relative flex min-w-0 flex-1 items-center">
           <button
             ref={modelBtnRef}
             onClick={() => {
@@ -554,10 +523,10 @@ export function Composer({
               }
               setMenu(menu === "model" ? null : "model")
             }}
-            className="flex h-6 min-w-0 flex-none items-center gap-1 rounded border border-outline-variant px-2 font-sans text-[12px] text-on-surface-variant hover:border-outline hover:bg-surface-container hover:text-on-surface"
+            className="flex h-6 min-w-0 max-w-full items-center gap-1 rounded border border-outline-variant px-2 font-sans text-[12px] text-on-surface-variant hover:border-outline hover:bg-surface-container hover:text-on-surface"
           >
-            <span className="truncate">{modelButtonLabel}</span>
-            <span className="shrink-0 truncate text-outline">
+            <span className="min-w-0 truncate">{modelButtonLabel}</span>
+            <span className="min-w-0 shrink truncate text-outline">
               {modelButtonBadge}
             </span>
             <Icon
@@ -736,7 +705,7 @@ export function Composer({
           }}
           rows={2}
           disabled={sending}
-          placeholder={text || attachments.length > 0 ? "" : HINTS[mode]}
+          placeholder={text || attachments.length > 0 ? "" : HINTS[safeMode]}
           className="w-full resize-none bg-transparent px-3 pb-9 pt-2 font-body text-[13px] leading-[19px] text-on-surface placeholder:text-outline focus:outline-none disabled:opacity-60"
         />
 

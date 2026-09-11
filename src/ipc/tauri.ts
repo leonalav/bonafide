@@ -1001,6 +1001,63 @@ export interface AgentBudget {
   spentGpuHours: number
 }
 
+/**
+ * One structured tool-call record returned by the engine. The
+ * renderer turns each entry into an inline `ToolArtifact` card in
+ * the assistant message so the user sees what the agent actually
+ * did — not just the final prose.
+ *
+ * Mirrors the renderer's `Artifact` type in `src/chats/ChatStore.ts`.
+ */
+export type AgentToolArtifactKind = "terminal" | "file" | "tool"
+
+export type AgentToolArtifactStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+
+export interface AgentToolArtifact {
+  /** Stable id; matches the engine-side `tool_call_id`. */
+  id: string
+  kind: AgentToolArtifactKind
+  /** Original tool name, e.g. "run_shell", "write_file". */
+  name: string
+  /** Short human-readable label shown on the card header. */
+  displayName: string
+  /** Sub-label / target (file path, command, etc.). */
+  target?: string
+  /** Raw JSON arguments the LLM passed. */
+  args?: string
+  /** Output text for terminal tools (stdout/stderr joined). */
+  output?: string
+  /** Result summary for file tools (file path + bytes). */
+  resultSummary?: string
+  status: AgentToolArtifactStatus
+  /** Milliseconds since epoch. */
+  ts: number
+}
+
+/**
+ * Endpoint payload forwarded from the renderer to the Rust agent engine.
+ *
+ * Matches the Rust `EndpointPayload` struct in `src-tauri/src/agent/llm.rs`
+ * (camelCase serde rename). The renderer serialises the selected
+ * `ModelEndpoint` from `modelsStore.tsx` into this shape so the Rust
+ * side can build a real `OpenAiCompatibleClient` without needing to read
+ * `settings.json`.
+ */
+export type EndpointPayload = {
+  id: string
+  label: string
+  /** OpenAI-compatible base URL, e.g. "https://api.openai.com/v1". */
+  baseUrl: string
+  /** Bearer token. `null` for local endpoints (LM Studio, vLLM). */
+  apiKey: string | null
+  /** Default model ID, e.g. "claude-3-5-sonnet-20241022". */
+  defaultModel: string
+}
+
 /** Input for `agentSendMessage`. */
 export interface AgentSendMessageInput {
   threadId: string
@@ -1008,6 +1065,13 @@ export interface AgentSendMessageInput {
   role?: AgentRole
   runId?: string
   modelId?: string
+  /**
+   * The configured endpoint the renderer selected in Preferences → Models.
+   * Absent (`undefined`) when the user has no custom endpoint configured —
+   * the Rust engine will use a noop client and surface a "not configured"
+   * error rather than silently failing.
+   */
+  endpoint?: EndpointPayload
 }
 
 /** Output for `agentSendMessage`. */
@@ -1017,6 +1081,13 @@ export interface AgentSendMessageOutput {
   newState: ThreadState
   escalation: EscalationLevel
   budget: AgentBudget
+  /**
+   * Structured tool-call records produced during the engine run.
+   * Each entry maps to one `ToolArtifact` card rendered inline in
+   * the assistant message. Empty when the engine did not invoke
+   * any tools.
+   */
+  toolArtifacts?: AgentToolArtifact[]
 }
 
 /** Input for `agentStopThread`. */
@@ -1070,6 +1141,7 @@ async function agentSendMessage(
         spentDollars: 0,
         spentGpuHours: 0,
       },
+      toolArtifacts: [],
     }
   }
   return invoke<AgentSendMessageOutput>("agent_send_message", {

@@ -15,14 +15,15 @@ const PATHS: Record<string, string> = {
     "M14 3a2 2 0 0 0-4 0v2H7a1 1 0 0 0-1 1v3H4a2 2 0 1 0 0 4h2v3a1 1 0 0 0 1 1h3v2a2 2 0 1 0 4 0v-2h3a1 1 0 0 0 1-1v-3h2a2 2 0 1 0 0-4h-2V6a1 1 0 0 0-1-1h-3z",
   "user-circle":
     "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20 M12 12a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7 M6 19a6 6 0 0 1 12 0",
+  // Canonical Lucide settings gear with a circular hub.
   settings:
-    // Clean gear — outer ring with 8 teeth + inner hub.
-    "M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M12 1v2 M12 21v2 M4.22 4.22l1.42 1.42 M18.36 18.36l1.42 1.42 M1 12h2 M21 12h2 M4.22 19.78l1.42-1.42 M18.36 5.64l1.42-1.42",
+    "M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915 M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z",
   "chevron-right": "M9 6l6 6-6 6",
   "chevron-down": "M6 9l6 6 6-6",
   "chevron-up": "M6 15l6-6 6 6",
   "chevron-left": "M15 6l-6 6 6 6",
   x: "M18 6 6 18 M6 6l12 12",
+  "x-circle": "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18 M9 9l6 6 M15 9l-6 6",
   plus: "M12 5v14 M5 12h14",
   folder:
     "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z",
@@ -49,6 +50,10 @@ const PATHS: Record<string, string> = {
   "log-out": "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4 M16 17l5-5-5-5 M21 12H9",
   "hard-drive":
     "M22 12H2 M5.5 5h13l3.5 7v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-6z M6 16h.01 M10 16h.01",
+  "activity":
+    "M22 12h-4l-3 9-4-18-3 9H2",
+  "alert-octagon":
+    "M7.86 2h8.28L22 7.86v8.28L16.14 22H7.86L2 16.14V7.86z M12 8v4 M12 16h.01",
   "alert-triangle":
     "M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z M12 9v4 M12 17h.01",
   edit: "M12 20h9 M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z",
@@ -68,6 +73,7 @@ const PATHS: Record<string, string> = {
   "arrow-up": "M12 19V5 M6 11l6-6 6 6",
   "arrow-down": "M12 5v14 M6 13l6 6 6-6",
   minimize: "M6 12h12",
+  "minus-circle": "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18 M8 12h8",
   "maximize-2":
     "M8 3H5a2 2 0 0 0-2 2v3 M8 8H3v5a2 2 0 0 0 2 2h5 M16 3h3a2 2 0 0 1 2 2v3 M21 8v5a2 2 0 0 1-2 2h-5",
   square: "M4 4h16v16H4z",
@@ -84,10 +90,13 @@ const PATHS: Record<string, string> = {
   paperclip:
     "M21.4 11 12.2 20.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.9-2.9l8.5-8.5",
   send: "M22 2 11 13 M22 2 15 22 11 13 2 9z",
+  "shield-alert":
+    "M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10 M12 8v4 M12 16h.01",
   zap: "M13 2 3 14h7l-1 8 10-12h-7z",
   flag: "M4 21V4 M4 4h13l-2 4 2 4H4",
   circle: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18",
   "check-circle": "M22 11.08V12a10 10 0 1 1-5.93-9.14 M22 4 12 14.01l-3-3",
+  "info": "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18 M12 12v.01",
   lock: "M6 11h12a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z M8 11V7a4 4 0 0 1 8 0v4",
   "stop-circle": "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18 M9 9h6v6H9z",
   git: "M6 3v12 M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6 M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6 M18 9a9 9 0 0 1-9 9",
@@ -96,6 +105,8 @@ const PATHS: Record<string, string> = {
     "M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2 M9 4h6a2 2 0 0 1 2 2H7a2 2 0 0 1 2-2z",
   "trash-2":
     "M3 6h18 M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6 M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2 M10 11v6 M14 11v6",
+  "trending-down": "M22 17 13.5 8.5 8.5 13.5 2 7 M22 17h-5 M22 17v-5",
+  "trending-up": "M22 7 13.5 15.5 8.5 10.5 2 17 M22 7h-5 M22 7v5",
   "edit-2": "M17 3a2.8 2.8 0 1 1 4 4L7 21H3v-4z",
   terminal: "M4 17l6-6-6-6 M12 19h8",
   type: "M4 7V4h16v3 M9 20h6 M12 4v16",
@@ -156,7 +167,7 @@ const PATHS: Record<string, string> = {
   "circle-x": "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18 M9 9l6 6 M15 9l-6 6",
   // CPU / chip icon.
   cpu: "M9 3H7a2 2 0 0 0-2 2v2a2 2 0 0 1-2 2H3v2h2a2 2 0 0 1 2 2v2a2 2 0 0 0 2 2h2v2h-2a2 2 0 0 1-2 2v2a2 2 0 0 0 2 2h2v2h-2a2 2 0 0 1-2 2v2a2 2 0 0 0 2 2h2v2H7a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2h2v-2H9a2 2 0 0 1-2-2V9a2 2 0 0 0-2-2H3V5h2a2 2 0 0 1 2-2V3a2 2 0 0 0-2-2H3V1h2a2 2 0 0 1 2 2v2a2 2 0 0 1 2 2h2z",
-  // Brain / neural-network icon — used for the AI Models section in Preferences.
+  // Brain / neural-network icon — used in ReasoningArtifact.
   brain:
     "M12 5a4 4 0 1 0 0 8 4 4 0 0 0 0-8z M12 5v2 M12 19v2 M4 12H2 M22 12h-2 M6.34 6.34 4.93 4.93 M19.07 4.93l-1.41 1.41 M6.34 17.66l-1.41 1.41 M19.07 19.07l-1.41-1.41 M8 8a4 4 0 1 0 8 0 4 4 0 0 0-8 0 M11 8v2 M15 8v2 M8 16a4 4 0 1 0 8 0 4 4 0 0 0-8 0 M13 16v2",
 }

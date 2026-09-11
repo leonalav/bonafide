@@ -305,6 +305,32 @@ pub struct OpenAiCompatibleClient {
     base_url: String,
 }
 
+/// A serialisable endpoint spec forwarded by the renderer over IPC.
+///
+/// Built from the `selectedEndpoint` the user configured in
+/// Preferences → Models. The renderer serialises this with
+/// camelCase field names to match the TypeScript `ModelEndpoint` type
+/// (`src/modelsStore.tsx`).
+///
+/// The `model_id` field is used only by the renderer to stamp
+/// `thread.model_id` before the engine runs; the `OpenAiCompatibleClient`
+/// itself is parameterised by the base URL + API key here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EndpointPayload {
+    /// The opaque endpoint id (not used for routing, but useful for logs).
+    pub id: String,
+    /// Human-readable label shown in the model picker.
+    pub label: String,
+    /// OpenAI-compatible base URL, e.g. "https://api.openai.com/v1".
+    pub base_url: String,
+    /// Bearer token. `None` for local endpoints (LM Studio, vLLM).
+    pub api_key: Option<String>,
+    /// Default model ID for this endpoint, e.g. "claude-3-5-sonnet-20241022".
+    /// Stored here so the caller can stamp `thread.model_id` with it.
+    pub default_model: String,
+}
+
 impl OpenAiCompatibleClient {
     /// Start building with no settings.
     pub fn builder() -> OpenAiClientBuilder {
@@ -316,6 +342,10 @@ impl OpenAiCompatibleClient {
     /// Mirrors the logic in `src/llm/client.ts` — picks the first endpoint
     /// whose `isActive` flag is `true`. Returns `LlmError::NoEndpoint` when
     /// no active endpoint is configured (matches the TS error message).
+    ///
+    /// **Deprecated**: Use `from_endpoint` instead, which accepts the payload
+    /// directly from the renderer IPC call. This function is retained only
+    /// for the settings-file lookup path (Option B) if it is adopted later.
     pub fn from_settings(
         _model_endpoints: &[serde_json::Value],
         model_id: &str,
@@ -327,6 +357,42 @@ impl OpenAiCompatibleClient {
         // same error the TS client throws so callers handle it uniformly.
         let _ = model_id;
         Err(LlmError::NoEndpoint)
+    }
+
+    /// Build an `OpenAiCompatibleClient` from an endpoint payload sent by the
+    /// renderer over IPC.
+    ///
+    /// The renderer is the source of truth for the endpoint configuration
+    /// (Preferences → Models). This method accepts the serialised payload
+    /// directly so the Rust side never needs to read `settings.json` to
+    /// discover the endpoint — a simpler architecture with no shared schema.
+    ///
+    /// If `payload.base_url` already ends with `/v1` or `/v1/chat/completions`
+    /// we strip the suffix so the client's `build_url()` (which appends
+    /// `/chat/completions`) produces a correct URL.
+    ///
+    /// Returns `LlmError::NoEndpoint` when the payload is `None`.
+    pub fn from_endpoint(payload: EndpointPayload) -> Result<Self, LlmError> {
+        let base_url = payload.base_url;
+
+        // Normalise the base URL: strip any `/v1` or `/v1/chat/completions`
+        // suffix the user may have included so the client's `build_url()`
+        // appends the correct path without duplication.
+        let normalise_url = |url: &str| -> String {
+            let url = url.trim_end_matches('/');
+            let url = url.strip_suffix("/v1/chat/completions").unwrap_or(url);
+            let url = url.strip_suffix("/v1").unwrap_or(url);
+            url.to_string()
+        };
+
+        let base_url = normalise_url(&base_url);
+
+        let client = OpenAiClientBuilder::default()
+            .api_key(payload.api_key.unwrap_or_default())
+            .endpoint_base_url(base_url)
+            .build()?;
+
+        Ok(client)
     }
 
     fn build_url(&self) -> String {
@@ -670,5 +736,66 @@ mod tests {
             msg.contains("No endpoint configured"),
             "error message should mention 'No endpoint configured', got: {msg}"
         );
+    }
+
+    /// `from_endpoint_roundtrip_with_v1_suffix`:
+    /// When the renderer sends `baseUrl` with a trailing `/v1` or
+    /// `/v1/chat/completions`, `from_endpoint` normalises it so the
+    /// client's `build_url()` produces a clean URL without duplication.
+    #[test]
+    fn from_endpoint_roundtrip_with_v1_suffix() {
+        let payload = EndpointPayload {
+            id: "ep-test".into(),
+            label: "Test Endpoint".into(),
+            base_url: "https://api.openai.com/v1/chat/completions".into(),
+            api_key: Some("sk-test-key".into()),
+            default_model: "gpt-4o".into(),
+        };
+
+        let client = OpenAiCompatibleClient::from_endpoint(payload).unwrap();
+
+        // The client should have stored the normalised base URL.
+        assert_eq!(client.base_url, "https://api.openai.com");
+        // build_url() appends /chat/completions, so we check it ends correctly.
+        assert_eq!(client.build_url(), "https://api.openai.com/chat/completions");
+    }
+
+    /// `from_endpoint_roundtrip_without_v1_suffix`:
+    /// A base URL without `/v1` passes through unchanged.
+    #[test]
+    fn from_endpoint_roundtrip_without_v1_suffix() {
+        let payload = EndpointPayload {
+            id: "ep-local".into(),
+            label: "LM Studio".into(),
+            base_url: "http://localhost:1234/v1".into(),
+            api_key: None,
+            default_model: "llama-3".into(),
+        };
+
+        let client = OpenAiCompatibleClient::from_endpoint(payload).unwrap();
+
+        assert_eq!(client.base_url, "http://localhost:1234");
+        assert_eq!(client.build_url(), "http://localhost:1234/chat/completions");
+    }
+
+    /// `from_endpoint_serialises_camelcase`:
+    /// `EndpointPayload` must deserialise from camelCase JSON matching the
+    /// TypeScript `ModelEndpoint` shape in `modelsStore.tsx`.
+    #[test]
+    fn from_endpoint_serialises_camelcase() {
+        let json = serde_json::json!({
+            "id": "ep-abc",
+            "label": "My Endpoint",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "sk-secret",
+            "defaultModel": "claude-3-5-sonnet"
+        });
+
+        let payload: EndpointPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(payload.id, "ep-abc");
+        assert_eq!(payload.label, "My Endpoint");
+        assert_eq!(payload.base_url, "https://api.example.com/v1");
+        assert_eq!(payload.api_key, Some("sk-secret".into()));
+        assert_eq!(payload.default_model, "claude-3-5-sonnet");
     }
 }

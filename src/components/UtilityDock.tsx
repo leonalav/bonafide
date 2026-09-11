@@ -26,7 +26,7 @@ const BOTTOM: { id: DockId icon: string label: string shortcut: string }[] = [
   },
   { id: "account", icon: "user-circle", label: "Account", shortcut: "" },
   { id: "settings", icon: "settings", label: "Settings", shortcut: "⌘," },
-  { id: "models", icon: "brain", label: "Models", shortcut: "" },
+  { id: "models", icon: "layers", label: "Models", shortcut: "" },
 ]
 
 function DockButton({

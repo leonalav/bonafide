@@ -92,9 +92,69 @@ export type ChatMessage = {
    * aren't set today.
    */
   attachments?: Attachment[]
+  /**
+   * Inline tool-call artifacts rendered alongside the assistant
+   * message. Each entry corresponds to one tool invocation that
+   * the engine ran as part of producing this assistant turn.
+   * Stored on the message so reloads keep the artifact context.
+   */
+  artifacts?: Artifact[]
 }
 
-export type ChatThreadMode = "debug" | "scaffold" | "plan" | "research" | "multitask"
+/**
+ * An inline tool-call artifact rendered in the chat alongside an
+ * assistant message. Per `agent-reasoning-designs.html` and
+ * `agent-sticker-sheet.html`, tool invocations surface as visible
+ * cards in the conversation — not buried in logs.
+ *
+ * Lifecycle:
+ *   - `pending` — created when the agent decides to invoke the tool
+ *     (set by the engine before execution begins).
+ *   - `running` — the tool is currently executing.
+ *   - `completed` — the tool returned successfully.
+ *   - `failed` — the tool errored or the engine blocked it.
+ *
+ * `kind` drives the rendered layout: Terminal gets stdout/stderr
+ * styling, File gets a header + diff body, anything else falls back
+ * to the generic Tool card. The renderer never has to inspect
+ * `name` to decide the layout — `kind` is canonical.
+ */
+export type ArtifactKind = "terminal" | "file" | "tool"
+
+export type ArtifactStatus = "pending" | "running" | "completed" | "failed"
+
+export type Artifact = {
+  /** Stable id; matches the engine-side `tool_call_id`. */
+  id: string
+  /** Layout family. */
+  kind: ArtifactKind
+  /** Original tool name, e.g. "run_shell", "write_file". */
+  name: string
+  /** Short human-readable label shown on the card header. */
+  displayName: string
+  /** Sub-label / target (file path, command, etc.). */
+  target?: string
+  /** Raw JSON arguments the LLM passed. Rendered in the collapsed body. */
+  args?: string
+  /** Output text for `terminal` artifacts (stdout/stderr joined). */
+  output?: string
+  /** Result summary for `file` artifacts (file path + bytes). */
+  resultSummary?: string
+  /** Lifecycle status. */
+  status: ArtifactStatus
+  /** Milliseconds since epoch. */
+  ts: number
+}
+
+// Mode identifiers are the snake_case names of the Rust `AgentRole`
+// enum (debugger | scaffolder | planner | researcher | critic) so
+// the renderer can pass them straight through to the engine.
+export type ChatThreadMode =
+  | "debugger"
+  | "scaffolder"
+  | "planner"
+  | "researcher"
+  | "critic"
 
 export type ChatThread = {
   id: string
@@ -144,11 +204,11 @@ function isValidThread(t: unknown): t is ChatThread {
     typeof o.title === "string" &&
     typeof o.createdAt === "number" &&
     typeof o.updatedAt === "number" &&
-    (o.mode === "debug" ||
-      o.mode === "scaffold" ||
-      o.mode === "plan" ||
-      o.mode === "research" ||
-      o.mode === "multitask") &&
+    (o.mode === "debugger" ||
+      o.mode === "scaffolder" ||
+      o.mode === "planner" ||
+      o.mode === "researcher" ||
+      o.mode === "critic") &&
     (o.endpointId === null || typeof o.endpointId === "string") &&
     typeof o.model === "string" &&
     Array.isArray(o.messages) &&
@@ -180,12 +240,36 @@ function isValidMessage(m: unknown): m is ChatMessage {
           ((a as Attachment).kind === "image" ||
             (a as Attachment).kind === "file"),
       ))
+  // artifacts is optional; when present it must be an array of
+  // objects with the fields the renderer uses. We don't validate
+  // the (potentially large) `output` / `resultSummary` strings —
+  // loadConfig will silently drop a malformed entry.
+  const artifactOk =
+    o.artifacts === undefined ||
+    (Array.isArray(o.artifacts) &&
+      o.artifacts.every(
+        (a) =>
+          a &&
+          typeof a === "object" &&
+          typeof (a as Artifact).id === "string" &&
+          typeof (a as Artifact).name === "string" &&
+          typeof (a as Artifact).displayName === "string" &&
+          typeof (a as Artifact).ts === "number" &&
+          ((a as Artifact).kind === "terminal" ||
+            (a as Artifact).kind === "file" ||
+            (a as Artifact).kind === "tool") &&
+          ((a as Artifact).status === "pending" ||
+            (a as Artifact).status === "running" ||
+            (a as Artifact).status === "completed" ||
+            (a as Artifact).status === "failed"),
+      ))
   return (
     typeof o.id === "string" &&
     (o.role === "user" || o.role === "assistant" || o.role === "system") &&
     typeof o.content === "string" &&
     typeof o.ts === "number" &&
-    attOk
+    attOk &&
+    artifactOk
   )
 }
 
@@ -203,13 +287,50 @@ function loadConfig(): ChatConfig {
         (parsed.activeThreadId === null ||
           typeof parsed.activeThreadId === "string")
       ) {
-        return parsed as ChatConfig
+        // Backwards-compat migration: older configs may have used
+        // the shorthand UI labels (debug, scaffold, plan,
+        // research, multitask). Normalise them to the canonical
+        // AgentRole ids so downstream callers don't have to.
+        const migrated: ChatConfig = {
+          ...parsed,
+          threads: (parsed.threads as ChatThread[]).map((t) => ({
+            ...t,
+            mode: normaliseMode(t.mode),
+          })),
+        } as ChatConfig
+        return migrated
       }
     }
   } catch {
     /* ignore parse errors, fall through to default */
   }
   return DEFAULT_CONFIG
+}
+
+/**
+ * Translate any persisted mode label to the canonical `ChatThreadMode`
+ * (snake_case `AgentRole`). Anything unknown is mapped to `debugger`
+ * so a stale row keeps working instead of being silently dropped.
+ */
+function normaliseMode(mode: string): ChatThreadMode {
+  switch (mode) {
+    case "debugger":
+    case "debug":
+      return "debugger"
+    case "scaffolder":
+    case "scaffold":
+      return "scaffolder"
+    case "planner":
+    case "plan":
+      return "planner"
+    case "researcher":
+    case "research":
+      return "researcher"
+    case "critic":
+      return "critic"
+    default:
+      return "debugger"
+  }
 }
 
 function saveConfig(cfg: ChatConfig) {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 import { Icon } from "./ui/Icon"
 import { SectionLabel } from "./ui/primitives"
 import { Chart } from "./ui/Chart"
@@ -7,9 +7,130 @@ import { AgentContent } from "./agent/AgentContent"
 import { BudgetMeter } from "./ui/BudgetMeter"
 import { RunEmptyState, DiffEmptyState } from "./ui/RunEmptyState"
 import { WorkflowPanel } from "./agent/WorkflowPanel"
+import { AnomalyTimeline } from "./agent/AnomalyTimeline"
+import { useWorkspaceRoot } from "../ide/hooks"
 
 const TABS = ["Overview", "Metrics", "Agent", "Workflow", "Experiments", "Artifacts", "Config", "Diff"] as const
 type TabName = typeof TABS[number]
+
+/**
+ * Tab strip with two nav arrows instead of a scrollbar.
+ *
+ * The scroll container is hidden from overflow (`overflow-hidden`) so
+ * the user can't drag-scroll it; left/right chevron buttons drive a
+ * programmatic scroll by ~80% of the visible width per click. The
+ * arrows disable themselves at each end so we never expose a dead
+ * button, and the active-tab pill always scrolls back into view when
+ * the user reselects a tab that's currently off-screen.
+ */
+function TabsRow({
+  active,
+  onSelect,
+}: {
+  active: TabName
+  onSelect: (t: TabName) => void
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const tabRefs = useRef(new Map<number, HTMLButtonElement>())
+  const [canScrollLeft, setCanScrollLeft] = useState(false)
+  const [canScrollRight, setCanScrollRight] = useState(false)
+
+  const updateScrollState = useCallback(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    setCanScrollLeft(el.scrollLeft > 1)
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1)
+  }, [])
+
+  // Observe size + scroll changes so the arrow-enabled state always
+  // matches reality (panel resize, theme switch, tab labels change, …).
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    updateScrollState()
+    el.addEventListener("scroll", updateScrollState, { passive: true })
+    const ro = new ResizeObserver(updateScrollState)
+    ro.observe(el)
+    return () => {
+      el.removeEventListener("scroll", updateScrollState)
+      ro.disconnect()
+    }
+  }, [updateScrollState])
+
+  // Keep the active tab visible when it changes (e.g. via keyboard
+  // shortcut or external state) so it isn't stranded off-screen.
+  useEffect(() => {
+    const idx = TABS.indexOf(active)
+    const btn = tabRefs.current.get(idx)
+    const el = scrollerRef.current
+    if (!btn || !el) return
+    const btnRect = btn.getBoundingClientRect()
+    const elRect = el.getBoundingClientRect()
+    if (btnRect.left < elRect.left) {
+      el.scrollBy({ left: btnRect.left - elRect.left - 4, behavior: "smooth" })
+    } else if (btnRect.right > elRect.right) {
+      el.scrollBy({ left: btnRect.right - elRect.right + 4, behavior: "smooth" })
+    }
+  }, [active])
+
+  const scrollByViewport = (direction: -1 | 1) => {
+    const el = scrollerRef.current
+    if (!el) return
+    el.scrollBy({ left: direction * el.clientWidth * 0.8, behavior: "smooth" })
+  }
+
+  return (
+    <div className="flex h-8 min-w-0 shrink-0 items-stretch border-b border-outline-variant">
+      <button
+        type="button"
+        onClick={() => scrollByViewport(-1)}
+        disabled={!canScrollLeft}
+        aria-label="Scroll tabs left"
+        title="Scroll tabs left"
+        className="flex w-6 shrink-0 items-center justify-center text-outline transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-default disabled:opacity-0"
+      >
+        <Icon name="chevron-left" size={12} />
+      </button>
+      <div
+        ref={scrollerRef}
+        className="flex min-w-0 flex-1 items-stretch gap-0 overflow-hidden"
+      >
+        {TABS.map((t, idx) => (
+          <button
+            key={t}
+            ref={(el) => {
+              if (el) tabRefs.current.set(idx, el)
+              else tabRefs.current.delete(idx)
+            }}
+            onClick={() => onSelect(t)}
+            title={t}
+            aria-current={active === t ? "page" : undefined}
+            className={`relative flex h-full min-w-0 shrink-0 items-center px-2.5 font-sans text-[13px] transition-colors duration-[120ms] ${
+              active === t
+                ? "text-on-surface"
+                : "text-on-surface-variant hover:text-on-surface"
+            }`}
+          >
+            <span className="truncate">{t}</span>
+            {active === t && (
+              <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-primary" />
+            )}
+          </button>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => scrollByViewport(1)}
+        disabled={!canScrollRight}
+        aria-label="Scroll tabs right"
+        title="Scroll tabs right"
+        className="flex w-6 shrink-0 items-center justify-center text-outline transition-colors hover:bg-surface-container hover:text-on-surface disabled:cursor-default disabled:opacity-0"
+      >
+        <Icon name="chevron-right" size={12} />
+      </button>
+    </div>
+  )
+}
 
 type DiffLine = { sign: " " | "+" | "-" text: string }
 
@@ -80,27 +201,8 @@ export function Inspector({
         {/* Budget meter strip — shows dollars + GPU hours spent vs budget */}
         <BudgetMeter />
 
-        {/* Tabs */}
-        <div className="flex h-8 shrink-0 items-stretch border-b border-outline-variant px-2">
-          {TABS.map((t) => (
-            <button
-              key={t}
-              onClick={() => setTab(t)}
-              className={`relative px-2.5 font-sans text-[13px] transition-colors duration-[120ms] ${
-                tab === t
-                  ? "text-on-surface"
-                  : "text-on-surface-variant hover:text-on-surface"
-              }`}
-            >
-              {t}
-              {tab === t && (
-                <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-primary" />
-              )}
-            </button>
-          ))}
-        </div>
-
-        {/* Empty state */}
+        {/* Tabs — left/right chevrons scroll the row; no scrollbar. */}
+        <TabsRow active={tab} onSelect={setTab} />
         <div className="flex flex-1 flex-col overflow-hidden">
           {tab === "Agent" ? (
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4">
@@ -108,7 +210,7 @@ export function Inspector({
             </div>
           ) : tab === "Workflow" ? (
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-              <WorkflowPanel onClose={onClose} />
+              <WorkflowPanel />
             </div>
           ) : (
             <RunEmptyState />
@@ -146,25 +248,8 @@ export function Inspector({
       {/* Budget meter strip — shows dollars + GPU hours spent vs budget */}
       <BudgetMeter />
 
-      {/* Tabs */}
-      <div className="flex h-8 shrink-0 items-stretch border-b border-outline-variant px-2">
-        {TABS.map((t) => (
-          <button
-            key={t}
-            onClick={() => setTab(t)}
-            className={`relative px-2.5 font-sans text-[13px] transition-colors duration-[120ms] ${
-              tab === t
-                ? "text-on-surface"
-                : "text-on-surface-variant hover:text-on-surface"
-            }`}
-          >
-            {t}
-            {tab === t && (
-              <span className="absolute inset-x-2 bottom-0 h-0.5 rounded-full bg-primary" />
-            )}
-          </button>
-        ))}
-      </div>
+      {/* Tabs — left/right chevrons scroll the row; no scrollbar. */}
+      <TabsRow active={tab} onSelect={setTab} />
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-4">
@@ -175,7 +260,7 @@ export function Inspector({
         )}
         {tab === "Workflow" && (
           <div className="flex min-h-0 min-w-0 h-full -m-4 flex-col overflow-hidden">
-            <WorkflowPanel onClose={onClose} />
+            <WorkflowPanel />
           </div>
         )}
         {tab === "Config" && <RunConfig run={run} />}
@@ -216,12 +301,69 @@ function RunMetrics({
 }: {
   run: NonNullable<Parameters<typeof Inspector>[0]["run"]>
 }) {
+  const workspaceRoot = useWorkspaceRoot()
+
+  // Placeholder chart dimensions for AnomalyTimeline overlay
+  const [chartDimensions] = useState({ width: 280, height: 120 })
+
   return (
     <div className="flex flex-col gap-4">
       <p className="font-body text-[13px] text-on-surface-variant">
         Run metrics will appear here once a tracker (W&amp;B / MLflow) is
         connected.
       </p>
+
+      {/* Anomaly timeline overlay on placeholder chart */}
+      {workspaceRoot && run && (
+        <div className="relative rounded border border-outline-variant bg-surface-container-low">
+          {/* Placeholder chart area for anomaly markers */}
+          <div
+            className="relative overflow-hidden rounded"
+            style={{
+              width: chartDimensions.width,
+              height: chartDimensions.height,
+              background: "linear-gradient(to right, var(--color-surface-container-low) 0%, var(--color-surface-container) 100%)",
+            }}
+          >
+            {/* Simple placeholder metric line */}
+            <svg
+              width={chartDimensions.width}
+              height={chartDimensions.height}
+              className="absolute inset-0"
+            >
+              <polyline
+                points="0,60 40,55 80,65 120,50 160,70 200,45 240,55 280,40"
+                fill="none"
+                stroke="var(--color-outline)"
+                strokeWidth="1.5"
+                strokeDasharray="4,2"
+              />
+            </svg>
+
+            {/* Anomaly markers overlay */}
+            <AnomalyTimeline
+              workspaceRoot={workspaceRoot}
+              runId={run.shortHash}
+              chartWidth={chartDimensions.width}
+              chartHeight={chartDimensions.height}
+              maxStep={run.totalSteps}
+              onMarkerClick={(anomaly) => {
+                console.log("[Metrics] Anomaly clicked:", anomaly)
+              }}
+            />
+          </div>
+
+          {/* Chart label */}
+          <div className="border-t border-outline-variant px-3 py-2">
+            <span className="label-caps text-on-surface-variant">
+              Anomalies
+            </span>
+            <span className="ml-2 font-sans text-[11px] text-outline">
+              run {run.shortHash}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

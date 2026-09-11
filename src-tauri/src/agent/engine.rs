@@ -82,6 +82,53 @@ pub enum EngineResult {
     LlmError { message: String },
 }
 
+/// One structured tool-call record emitted by the engine. The
+/// renderer turns each entry into an inline `ToolArtifact` card in
+/// the assistant message so the user sees what the agent actually
+/// did — not just the final prose.
+///
+/// Lifecycle:
+///   - `pending`  — agent decided to invoke the tool but execution
+///                   has not started (used for streaming variants
+///                   where the engine emits events before the call).
+///   - `running`  — the tool is currently executing.
+///   - `completed`— the tool returned successfully.
+///   - `failed`   — the tool errored, returned `ToolResult::Error`,
+///                   or was blocked by the structural approval gate.
+///
+/// `kind` drives the renderer's layout family (terminal / file /
+/// generic tool) so the card matches the spec's sticker-sheet
+/// families. The engine picks `kind` from the tool name; see
+/// `AgentEngine::classify_tool`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolArtifact {
+    /// Stable id; matches the engine-side `tool_call_id`.
+    pub id: String,
+    /// Layout family — terminal / file / generic tool.
+    pub kind: String,
+    /// Original tool name, e.g. "run_shell", "write_file".
+    pub name: String,
+    /// Short human-readable label shown on the card header.
+    pub display_name: String,
+    /// Sub-label / target (file path, command, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    /// Raw JSON arguments the LLM passed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    /// Output text for `terminal` artifacts (stdout/stderr joined).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<String>,
+    /// Result summary for `file` artifacts (file path + bytes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result_summary: Option<String>,
+    /// Lifecycle status.
+    pub status: String,
+    /// Milliseconds since epoch.
+    pub ts: i64,
+}
+
 // ── AgentEngine ──────────────────────────────────────────────────────────────
 
 /// The ReAct loop engine. Holds references to the LLM client, tool
@@ -596,6 +643,16 @@ impl AgentEngine {
 
                 // 6d. Execute tool.
                 let result = self.tools.execute(tool_call).await;
+
+                // 6d-artifact. Push a structured tool-artifact record
+                // onto the thread so the renderer can surface this
+                // call as an inline card in the assistant message.
+                // We do this BEFORE the trace step so the artifact's
+                // status reflects the *executed* outcome (not the
+                // pending call), and so a renderer that consumes the
+                // artifacts list mid-loop can render live updates.
+                let artifact = build_artifact(tool_call, &result, chrono_millis());
+                thread.tool_artifacts.push(artifact);
 
                 // 6e. Record trace step.
                 let trace_content = self
@@ -1118,6 +1175,152 @@ fn chrono_millis() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+// ── Tool-artifact helpers ─────────────────────────────────────────────────────
+
+/// Classify a tool call into one of the renderer's three layout
+/// families. Mirrors the mapping in
+/// `src/components/chat/ToolArtifact.tsx::kindForToolName` so the
+/// frontend and backend agree on the canonical names.
+fn classify_tool(name: &str) -> &'static str {
+    match name {
+        "run_shell" | "run_python" | "run_smoke_test" | "pip_install" => "terminal",
+        "write_file" | "create_file" | "apply_patch" | "rename_path" | "delete_path" => "file",
+        _ => "tool",
+    }
+}
+
+/// Pull a short target string out of the tool's JSON arguments.
+/// Mirrors the per-tool field the renderer wants to show in the
+/// card subtitle (file path, shell command, arxiv query, etc.).
+fn artifact_target(name: &str, args_json: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(args_json).ok()?;
+    let string_field = |key: &str| -> Option<String> {
+        v.get(key).and_then(|x| x.as_str()).map(String::from)
+    };
+    match name {
+        "read_file" | "write_file" | "apply_patch" | "create_file" | "open_file_in_editor" => {
+            string_field("path")
+        }
+        "run_shell" => string_field("command"),
+        "run_python" => string_field("code").map(|c| {
+            let first = c.lines().next().unwrap_or("").trim();
+            if first.len() > 60 {
+                format!("{}…", &first[..60])
+            } else {
+                first.to_string()
+            }
+        }),
+        "search_arxiv" | "query_code_graph" => string_field("query"),
+        "read_paper" | "get_arxiv_paper" => string_field("paper_id").or_else(|| string_field("arxiv_id")),
+        "delete_path" | "rename_path" => string_field("target").or_else(|| string_field("src")),
+        "show_metric_plot" => string_field("run_id"),
+        _ => None,
+    }
+}
+
+/// Build a `ToolArtifact` record for one tool execution. The
+/// `status` mirrors the `ToolResult` variant so the renderer can
+/// show the right icon without re-classifying.
+fn build_artifact(
+    tool_call: &crate::agent::llm::ToolCall,
+    result: &ToolResult,
+    ts: i64,
+) -> ToolArtifact {
+    let kind = classify_tool(&tool_call.function.name).to_string();
+    let target = artifact_target(&tool_call.function.name, &tool_call.function.arguments);
+    let (status, output, result_summary) = match result {
+        ToolResult::Ok { summary } => (
+            "completed".to_string(),
+            if kind == "terminal" {
+                Some(summary.clone())
+            } else {
+                None
+            },
+            if kind != "terminal" {
+                Some(summary.clone())
+            } else {
+                None
+            },
+        ),
+        ToolResult::Skipped { reason } => (
+            "failed".to_string(),
+            None,
+            Some(format!("(skipped: {reason})")),
+        ),
+        ToolResult::Error { error } => (
+            "failed".to_string(),
+            None,
+            Some(format!("(error: {error})")),
+        ),
+    };
+    ToolArtifact {
+        id: tool_call.id.clone(),
+        kind,
+        name: tool_call.function.name.clone(),
+        display_name: display_name_for(&tool_call.function.name).to_string(),
+        target,
+        args: Some(tool_call.function.arguments.clone()),
+        output,
+        result_summary,
+        status,
+        ts,
+    }
+}
+
+/// Human-readable label for a tool. Falls back to the raw name if
+/// we don't have a prettier translation in the catalog.
+fn display_name_for(name: &str) -> &'static str {
+    match name {
+        "read_file" => "Read file",
+        "read_directory" => "List directory",
+        "search_files" => "Search files",
+        "write_file" => "Write file",
+        "create_file" => "Create file",
+        "create_folder" => "Create folder",
+        "rename_path" => "Rename",
+        "delete_path" => "Delete",
+        "apply_patch" => "Apply patch",
+        "run_shell" => "Shell",
+        "run_python" => "Python",
+        "run_smoke_test" => "Smoke test",
+        "pip_install" => "pip install",
+        "list_runs" => "List runs",
+        "get_run" => "Get run",
+        "get_metric_series" => "Get metric series",
+        "get_run_config" => "Get run config",
+        "list_artifacts" => "List artifacts",
+        "compare_runs" => "Compare runs",
+        "query_run_graph" => "Query run graph",
+        "query_code_graph" => "Code search",
+        "index_code_graph" => "Index code graph",
+        "ruff_check" => "Ruff check",
+        "lsp_hover" => "LSP hover",
+        "lsp_definition" => "LSP definition",
+        "git_diff" => "git diff",
+        "git_log" => "git log",
+        "git_status" => "git status",
+        "git_checkout" => "git checkout",
+        "git_add" => "git add",
+        "git_commit" => "git commit",
+        "git_discard" => "Discard changes",
+        "search_arxiv" => "arXiv search",
+        "read_paper" => "Read paper",
+        "query_project_memory" => "Project memory",
+        "write_project_memory" => "Save to memory",
+        "open_file_in_editor" => "Open in editor",
+        "show_metric_plot" => "Show metrics",
+        "show_notification" => "Notify",
+        "request_approval" => "Awaiting input",
+        "create_experiment" => "New experiment",
+        "update_experiment" => "Update experiment",
+        "launch_experiment_run" => "Launch run",
+        "stop_experiment_run" => "Stop run",
+        "list_experiments" => "List experiments",
+        "get_experiment" => "Get experiment",
+        _ => "Tool",
+    }
 }
 
 // ── NoopLlmClient for test / default engine ────────────────────────────────────

@@ -26,12 +26,15 @@ import { Icon } from "../ui/Icon"
 import type { ChatMessage } from "../../chats/ChatStore"
 import { InlineContent } from "./UserMessage"
 import { ReasoningArtifact } from "./ReasoningArtifact"
+import { ToolArtifact } from "./ToolArtifact"
 
 /** Per-frame reveal cadence. Lower = faster; tuned for "fast" feel. */
 const TYPEWRITER_BASE_DELAY_MS = 10
 const TYPEWRITER_PER_CHAR_DELAY_MS = 4
 
 export function AssistantMessage({ message }: { message: ChatMessage }) {
+  const hasArtifacts =
+    Array.isArray(message.artifacts) && message.artifacts.length > 0
   return (
     // Per `agent-example-sessions.html` lines 710-730: agent turns
     // are borderless blocks. The 2px primary-tinted bar on the left
@@ -46,6 +49,19 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
       </header>
       {message.reasoning ? (
         <ReasoningArtifact reasoning={message.reasoning} />
+      ) : null}
+      {/* Inline tool artifacts — each card lives below the
+          reasoning / body and reflects the tool's lifecycle
+          (pending → running → completed / failed). */}
+      {hasArtifacts ? (
+        <div
+          className="flex flex-col gap-1.5"
+          aria-label="Tool calls"
+        >
+          {message.artifacts!.map((a) => (
+            <ToolArtifact key={a.id} artifact={a} />
+          ))}
+        </div>
       ) : null}
       {message.error ? (
         <ErrorBubble error={message.error} />

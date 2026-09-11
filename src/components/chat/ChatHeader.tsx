@@ -80,15 +80,17 @@ export function ChatHeader({
   const isSending = thread.status === "sending"
 
   return (
-    <header className="shrink-0 border-b border-outline-variant bg-surface-container-low px-3 py-2">
-      <div className="flex items-center gap-2">
-        <InlineTitleEditor
-          value={thread.title}
-          onCommit={(t) => renameThread(thread.id, t)}
-          placeholder="New chat"
-          className="font-body text-[14px] font-medium"
-        />
-        <div className="flex items-center gap-1">
+    <header className="shrink-0 overflow-hidden border-b border-outline-variant bg-surface-container-low px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <InlineTitleEditor
+            value={thread.title}
+            onCommit={(t) => renameThread(thread.id, t)}
+            placeholder="New chat"
+            className="font-body text-[14px] font-medium"
+          />
+        </div>
+        <div className="flex shrink-0 items-center gap-1">
           <button
             ref={triggerRef}
             onClick={() => {

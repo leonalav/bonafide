@@ -291,3 +291,61 @@ mod tests {
         assert!(anomalies.iter().all(|a| a.anomaly_type == AnomalyType::Nan));
     }
 }
+
+// ── Async helper for Tauri IPC command ────────────────────────────────────────
+//
+// `detect_anomalies_for_run` fetches metric series from the tracker provider
+// and runs `detect_anomalies`. It is async so it can await the tracker
+// provider's HTTP calls. The Tauri command wraps it in `block_in_place`.
+
+/// Fetch all available metric series for `run_id` from whichever tracker
+/// is connected for `workspace_hash`, then run `detect_anomalies`.
+pub async fn detect_anomalies_for_run(
+    workspace_hash: &str,
+    run_id: &str,
+) -> Vec<Anomaly> {
+    use crate::tracker::wandb::Point as WbPoint;
+
+    let common_keys = ["loss", "train_loss", "val_loss", "accuracy", "val_accuracy"];
+
+    // Collect metrics from whichever tracker is available.
+    let mut all_points: Vec<MetricPoint> = Vec::new();
+
+    // W&B path
+    if let Some(provider) = crate::tracker::wandb::get_wandb_provider(workspace_hash).await {
+        for key in &common_keys {
+            match provider.get_metric_series(run_id, key).await {
+                Ok(points) => {
+                    for WbPoint { step, value, .. } in points {
+                        all_points.push(MetricPoint {
+                            step: step as u64,
+                            metric_name: key.to_string(),
+                            value,
+                        });
+                    }
+                }
+                Err(_) => { /* metric not present for this run — skip */ }
+            }
+        }
+    }
+
+    // MLflow path (re-uses wandb::Point via re-export)
+    if let Some(provider) = crate::tracker::mlflow::get_mlflow_provider(workspace_hash).await {
+        for key in &common_keys {
+            match provider.get_metric_series(run_id, key).await {
+                Ok(points) => {
+                    for WbPoint { step, value, .. } in points {
+                        all_points.push(MetricPoint {
+                            step: step as u64,
+                            metric_name: key.to_string(),
+                            value,
+                        });
+                    }
+                }
+                Err(_) => { /* metric not present for this run — skip */ }
+            }
+        }
+    }
+
+    detect_anomalies(&all_points)
+}

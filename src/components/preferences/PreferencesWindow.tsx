@@ -10,7 +10,7 @@ export type PrefSection = "settings" | "account" | "shortcuts" | "themes" | "ext
 const NAV: { id: PrefSection icon: string label: string }[] = [
   { id: "settings", icon: "settings", label: "Settings" },
   { id: "account", icon: "user-circle", label: "Account" },
-  { id: "models", icon: "brain", label: "Models" },
+  { id: "models", icon: "layers", label: "Models" },
   { id: "shortcuts", icon: "keyboard", label: "Keyboard shortcuts" },
   { id: "themes", icon: "palette", label: "Themes" },
   { id: "extensions", icon: "puzzle", label: "Extensions" },

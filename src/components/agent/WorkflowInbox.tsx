@@ -1,4 +1,3 @@
-import { useState } from "react"
 import { Icon } from "../ui/Icon"
 import { StatusDot } from "../ui/primitives"
 import {
@@ -65,42 +64,15 @@ function SectionBand({ label, count }: { label: string; count: number }) {
 export function WorkflowInbox({
   threads,
   onOpen,
-  closedCount,
 }: {
   threads: Thread[]
   onOpen: (t: Thread) => void
-  closedCount: number
 }) {
-  const [showClosed, setShowClosed] = useState(false)
-
   return (
     <div className="flex flex-col gap-5">
       {BANDS.map((band) => {
         const rows = threads.filter((t) => t.band === band.key)
-
-        if (band.key === "closed") {
-          return (
-            <section key={band.key} className="flex flex-col gap-2">
-              <SectionBand label="Closed" count={closedCount} />
-              {showClosed ? (
-                rows.map((t) => (
-                  <ThreadCard key={t.id} t={t} onOpen={() => onOpen(t)} />
-                ))
-              ) : (
-                <button
-                  onClick={() => setShowClosed(true)}
-                  className="flex items-center gap-1.5 px-1 font-sans text-[12px] text-outline hover:text-on-surface"
-                >
-                  <Icon name="chevron-down" size={13} /> Show {closedCount}{" "}
-                  closed threads
-                </button>
-              )}
-            </section>
-          )
-        }
-
         if (!rows.length) return null
-
         return (
           <section key={band.key} className="flex flex-col gap-2">
             <SectionBand label={band.label} count={rows.length} />

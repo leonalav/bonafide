@@ -1100,13 +1100,38 @@ async fn update_experiment_run(
 // IPC client keeps resolving `bonafide.budget.*`. Real implementations
 // land in WS2-T4.
 
+/// `BudgetStatus` — the IPC response for `get_budget_status`.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BudgetStatus {
+    workspace_hash: String,
+    budget_dollars: f64,
+    budget_gpu_hours: f64,
+    spent_dollars: f64,
+    spent_gpu_hours: f64,
+    escalation: String,
+    spend_ratio: f64,
+    requires_approval: bool,
+    currency: String,
+}
+
 #[tauri::command]
-#[allow(dead_code)]
 async fn get_budget_status(
-    _workspace_root: String,
-    _budget_state: State<'_, BudgetState>,
-) -> Result<serde_json::Value, String> {
-    Err("Not yet implemented — wired in WS2-T4.".into())
+    workspace_root: String,
+) -> Result<BudgetStatus, String> {
+    log::warn!("[budget] get_budget_status: not yet implemented — wired in WS2-T4");
+    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
+    Ok(BudgetStatus {
+        workspace_hash: hash,
+        budget_dollars: 0.0,
+        budget_gpu_hours: 0.0,
+        spent_dollars: 0.0,
+        spent_gpu_hours: 0.0,
+        escalation: "normal".to_string(),
+        spend_ratio: 0.0,
+        requires_approval: false,
+        currency: "USD".to_string(),
+    })
 }
 
 #[tauri::command]
@@ -1195,6 +1220,246 @@ async fn run_smoke_test(
     _max_steps: Option<u32>,
 ) -> Result<serde_json::Value, String> {
     Err("Not yet implemented — wired in WS4-T1.".into())
+}
+
+// ── Phase 3: Project Memory, Researcher, Critic, Monitoring ──────────────────
+//
+// These commands bridge the Phase 3 renderer surfaces to the agent sub-modules.
+// Stubs return sensible defaults; real implementations land in WS4-T2..T5.
+
+// ── Critic: ML-specific code review ───────────────────────────────────────────
+
+/// `CriticReview` wire type with camelCase fields expected by the frontend.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CriticReviewOutput {
+    score: u8,
+    issues: Vec<String>,
+    recommendations: Vec<String>,
+    verdict: String,
+    summary: String,
+    duration_ms: u64,
+}
+
+/// Run ML-specific code review on a diff. Wraps `critic::review_code`.
+#[tauri::command]
+async fn review_code(
+    _workspace_root: String,
+    _file_path: String,
+    patch: String,
+) -> Result<CriticReviewOutput, String> {
+    let start = std::time::Instant::now();
+    let review = agent::critic::review_code(&patch)
+        .map_err(|e| format!("review_code failed: {e}"))?;
+
+    let verdict = match review.verdict {
+        agent::critic::Verdict::Approved => "pass",
+        agent::critic::Verdict::NeedsRevision => "fail",
+        agent::critic::Verdict::Blocked => "fail",
+    };
+
+    Ok(CriticReviewOutput {
+        score: review.score,
+        issues: review.issues.into_iter().map(|i| i.description).collect(),
+        recommendations: review.recommendations,
+        verdict: verdict.to_string(),
+        summary: format!("score={}", review.score),
+        duration_ms: start.elapsed().as_millis() as u64,
+    })
+}
+
+// ── Monitoring: Anomaly detection ────────────────────────────────────────────
+
+/// `AnomalyEntry` wire type for the frontend.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnomalyEntryOutput {
+    metric: String,
+    kind: String,
+    description: String,
+    severity: String,
+    step: u64,
+    value: f64,
+}
+
+/// `AnomalyReport` wire type for the frontend.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnomalyReportOutput {
+    run_id: String,
+    anomalies: Vec<AnomalyEntryOutput>,
+    summary: String,
+}
+
+/// Detect anomalies in a run's metric stream. Fetches metrics from the
+/// tracker provider and passes them to `monitoring::detect_anomalies`.
+#[tauri::command]
+async fn detect_anomalies(
+    workspace_root: String,
+    run_id: String,
+) -> Result<AnomalyReportOutput, String> {
+    let hash = compute_workspace_hash(PathBuf::from(&workspace_root).as_path());
+    let run_id_for_async = run_id.clone();
+
+    let anomalies = tokio::task::block_in_place(move || -> Vec<agent::monitoring::Anomaly> {
+        let rt = tokio::runtime::Handle::current();
+        rt.block_on(agent::monitoring::detect_anomalies_for_run(&hash, &run_id_for_async))
+    });
+
+    let entries: Vec<AnomalyEntryOutput> = anomalies
+        .iter()
+        .map(|a| {
+            let (kind, severity) = match a.anomaly_type {
+                agent::monitoring::AnomalyType::Nan => ("spike", "high"),
+                agent::monitoring::AnomalyType::LossSpike => ("spike", "medium"),
+                agent::monitoring::AnomalyType::Divergence => ("drift", "high"),
+                agent::monitoring::AnomalyType::Plateau => ("plateau", "low"),
+            };
+            AnomalyEntryOutput {
+                metric: a.metric_name.clone(),
+                kind: kind.to_string(),
+                description: a.threshold_violated.clone(),
+                severity: severity.to_string(),
+                step: a.step,
+                value: a.metric_value,
+            }
+        })
+        .collect();
+
+    let summary = if entries.is_empty() {
+        "No anomalies detected".to_string()
+    } else {
+        format!("{} anomaly(ies) detected", entries.len())
+    };
+
+    Ok(AnomalyReportOutput {
+        run_id,
+        anomalies: entries,
+        summary,
+    })
+}
+
+// ── Proposal approval stubs ──────────────────────────────────────────────────
+
+/// Stub for `approve_action`. The real implementation is wired in WS4-T1.
+#[tauri::command]
+async fn approve_action(
+    thread_id: String,
+    _patch_file: String,
+    approved: bool,
+    _rejection_reason: Option<String>,
+) -> Result<serde_json::Value, String> {
+    log::warn!("[ipc] approve_action({thread_id}, approved={approved}): stub — wired in WS4-T1");
+    Ok(serde_json::json!({ "applied": approved }))
+}
+
+/// Stub for `reject_action`. The real implementation is wired in WS4-T1.
+#[tauri::command]
+async fn reject_action(
+    thread_id: String,
+    _reason: String,
+) -> Result<serde_json::Value, String> {
+    log::warn!("[ipc] reject_action({thread_id}): stub — wired in WS4-T1");
+    Ok(serde_json::json!({ "done": true }))
+}
+
+// ── Project memory ───────────────────────────────────────────────────────────
+
+/// `ProjectInsight` wire type for the frontend.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectInsightInput {
+    workspace_hash: String,
+    finding: String,
+    evidence: String,
+    confidence: String,
+}
+
+/// Query project memory entries by kind ("insight" | "dead_end").
+#[tauri::command]
+async fn query_project_memory(
+    workspace_root: String,
+    kind: String,
+) -> Result<serde_json::Value, String> {
+    let root = PathBuf::from(&workspace_root);
+    let workspace_hash = compute_workspace_hash(root.as_path());
+    let (conn, _hash) = graph::storage::open_workspace_db(&root)
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+
+    // Initialise tables if they don't exist (idempotent).
+    let _ = agent::memory::init_memory_tables(&conn);
+
+    let memory_type = match kind.as_str() {
+        "dead_end" => agent::memory::MemoryType::DeadEnd,
+        _ => agent::memory::MemoryType::Insight,
+    };
+
+    let entries = agent::memory::query_project_memory(&conn, memory_type)
+        .map_err(|e| format!("query_project_memory failed: {e}"))?;
+
+    let formatted: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|e| {
+            serde_json::json!({
+                "id": e.id.to_string(),
+                "workspaceHash": workspace_hash,
+                "finding": e.finding,
+                "evidence": e.evidence,
+                "confidence": if e.confidence >= 80 { "high" } else if e.confidence >= 50 { "medium" } else { "low" },
+                "createdAt": e.expires_at * 1000,
+            })
+        })
+        .collect();
+
+    if memory_type == agent::memory::MemoryType::Insight {
+        Ok(serde_json::json!({
+            "insights": formatted,
+            "deadEnds": Vec::<serde_json::Value>::new(),
+        }))
+    } else {
+        Ok(serde_json::json!({
+            "insights": Vec::<serde_json::Value>::new(),
+            "deadEnds": formatted,
+        }))
+    }
+}
+
+/// Write a new project insight. Wraps `memory::write_project_memory`.
+#[tauri::command]
+async fn write_project_insight(
+    workspace_root: String,
+    insight: ProjectInsightInput,
+) -> Result<serde_json::Value, String> {
+    let root = PathBuf::from(&workspace_root);
+    let (conn, _hash) = graph::storage::open_workspace_db(&root)
+        .map_err(|e| format!("Failed to open workspace DB: {e}"))?;
+
+    let _ = agent::memory::init_memory_tables(&conn);
+
+    let confidence = match insight.confidence.as_str() {
+        "high" => 90u8,
+        "medium" => 60u8,
+        _ => 30u8,
+    };
+
+    let expires_at = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 30 * 24 * 3600) as i64; // 30-day TTL
+
+    let id = agent::memory::write_project_memory(
+        &conn,
+        agent::memory::MemoryType::Insight,
+        &insight.finding,
+        confidence,
+        &insight.finding,
+        &insight.evidence,
+        expires_at,
+    )
+    .map_err(|e| format!("write_project_memory failed: {e}"))?;
+
+    Ok(serde_json::json!({ "id": id.to_string() }))
 }
 
 // ── Phase 0: Code graph commands ────────────────────────────────────────────
@@ -1443,6 +1708,13 @@ pub fn run() {
             list_experiments_for_planner,
             scaffold_script,
             run_smoke_test,
+            // Phase 3 (WS3-T4..T5): Critic, Monitoring, Memory, Proposal approval
+            review_code,
+            detect_anomalies,
+            approve_action,
+            reject_action,
+            query_project_memory,
+            write_project_insight,
             // Phase 2 (WS2-T5): Agent loop IPC commands
             agent::ipc::agent_send_message,
             agent::ipc::agent_stop_thread,

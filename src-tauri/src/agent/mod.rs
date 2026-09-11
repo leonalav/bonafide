@@ -20,14 +20,14 @@ pub mod ipc;             // WS2-T5: agent_send_message + approval commands
 pub mod modes;           // WS3-T1..T6: per-mode protocol + ModeRegistry
 #[allow(unused_imports)]
 pub mod experiments;     // WS4-T1: Experiment CRUD
-// #[allow(unused_imports)]
-// pub mod memory;          // WS4-T2: Project memory
-// #[allow(unused_imports)]
-// pub mod researcher;      // WS4-T3: arXiv integration
-// #[allow(unused_imports)]
-// pub mod critic;          // WS4-T4: ML review pipeline
-// #[allow(unused_imports)]
-// pub mod monitoring;      // WS4-T5: Anomaly detection
+#[allow(unused_imports)]
+pub mod critic;          // WS4-T4: ML review pipeline
+#[allow(unused_imports)]
+pub mod memory;          // WS4-T2: Project memory
+#[allow(unused_imports)]
+pub mod researcher;      // WS4-T3: arXiv integration
+#[allow(unused_imports)]
+pub mod monitoring;      // WS4-T5: Anomaly detection
 
 // The WS1 stubs remain available for tests that want a no-op budget or
 // a tool registry without the full catalog. WS2-T1 / WS2-T4 replace them

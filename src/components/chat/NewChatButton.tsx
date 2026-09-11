@@ -1,7 +1,7 @@
 /**
  * chat/NewChatButton.tsx — "+ New" pill that opens a fresh thread.
  *
- * Phase 1 always opens a thread in `mode: "debug"` and pulls the
+ * Phase 1 always opens a thread in `mode: "debugger"` and pulls the
  * endpoint + model from `modelsStore`. Phase 2 will surface the
  * currently-selected Composer mode here.
  */
@@ -24,7 +24,7 @@ export function NewChatButton() {
       config.endpoints[0]?.defaultModel ??
       "fable"
     const thread = createThread({
-      mode: "debug",
+      mode: "debugger",
       endpointId: selectedEndpoint?.id ?? null,
       model: defaultBuiltIn,
     })

@@ -41,24 +41,43 @@ import { useChatsStore } from "../../chats/ChatStoreProvider"
 
 import {
   chatsStore,
-  resolveSendTarget,
   type Attachment,
   type ChatMessage,
 } from "../../chats/ChatStore"
 
 import { useModelsStore, type ModelFamily } from "../../modelsStore"
 
-import { buildApiChatMessage, chatCompletion } from "../../llm/client"
-
-import { buildSystemPrompt } from "../../llm/systemPrompt"
-
-import type { ApiChatMessage } from "../../llm/types"
-
 import { ChatHeader } from "../chat/ChatHeader"
 
 import { ChatThread, type ChatThreadHandle } from "../chat/ChatThread"
 
-import type { ModeId } from "../../chats/types"
+import { toCanonicalModeId, type ModeId } from "../../chats/types"
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/**
+ * Render an AgentEngineResult into user-facing markdown text.
+ * 
+ * The engine returns a discriminated union representing the terminal
+ * state of a run loop: completed (final answer), awaiting approval,
+ * budget exceeded, max iterations hit, or LLM error.
+ */
+function renderEngineResult(result: AgentEngineResult): string {
+  switch (result.type) {
+    case "completed":
+      return result.content
+    case "awaiting_approval":
+      return `🔐 **Approval Required**\n\nTool call: \`${result.toolCallId}\`\n\nReason: ${result.reason}`
+    case "budget_exceeded":
+      return `💰 **Budget Exceeded**\n\nThe workspace budget has been exhausted. No further agent actions can be taken until the budget is increased.`
+    case "max_iterations":
+      return `⏱️ **Max Iterations Reached**\n\nThe agent loop hit the iteration limit without resolving. Consider breaking the task into smaller steps.`
+    case "llm_error":
+      return `⚠️ **LLM Error**\n\n${result.message}`
+    default:
+      return "Unknown engine result type."
+  }
+}
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -123,7 +142,7 @@ function WelcomePanel({
       <Composer
         onSubmit={onStartChat}
         onCancel={undefined}
-        mode="debug"
+        mode="debugger"
         builtinId="fable"
         onModeChange={() => {}}
         onBuiltinChange={() => {}}
@@ -172,7 +191,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
 
   // whenever the user changes the picker.
 
-  const [mode, setMode] = useState<ModeId>("debug")
+  const [mode, setMode] = useState<ModeId>("debugger")
 
   // Use the broader ModelFamily type because the parent's controlled
 
@@ -362,159 +381,141 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
 
     if (!refreshed) return
 
-    sendMessage(refreshed)
+    sendMessage(refreshed, { effectiveModel })
   }
 
-  function sendMessage(thread: NonNullable<typeof activeThread>) {
-    // REVIEW(opus) FINDING 1 [critical]: prior code closed over
-
-    // `activeThread` from the render where the user clicked Send.
-
-    // That value was stale for the *first* message because
-
-    // `createThread` updates `_config.activeThreadId` inside the
-
-    // store and the React re-render only fires on the next microtask.
-
-    // We now require the caller to pass the thread directly so the
-
-    // send path always operates on a fresh reference.
-
+  /**
+   * Submit a user message to the agent engine.
+   *
+   * The engine runs the ReAct loop with the role-specific tool
+   * allowlist, system prompt, and approval gate. Tool calls
+   * (file edits, run_shell, search_arxiv, …) happen server-side;
+   * the renderer only sees the final engine outcome.
+   *
+   * The chat store mirrors the engine result as a single assistant
+   * bubble so the user-visible history still grows normally —
+   * permission to inspect per-tool-call traces lives on the run
+   * surface (where the Inspector's ProposalView can render them).
+   */
+  function sendMessage(
+    thread: NonNullable<typeof activeThread>,
+    /** Selected endpoint + built-in resolved to a concrete model id to
+     *  forward to the Rust engine. Falls back to the thread's stored
+     *  model so existing threads continue to use their pinned model
+     *  even when the user switches the picker in between. */
+    options?: { effectiveModel?: string },
+  ) {
+    // The caller passes the thread directly so the closure value of
+    // `activeThread` doesn't go stale for the first message —
+    // `createThread` updates the store synchronously inside the
+    // same submit handler.
     if (!tryBeginSend(thread.id)) return
-
     const threadId = thread.id
 
-    // REVIEW(opus) F-15 [final]: pass the live endpoints list so
-
-    // resolveSendTarget can honour the thread's stored endpointId
-
-    // (thread reproducibility across preference changes).
-
-    const { endpoint, model } = resolveSendTarget(
-      thread,
-
-      selectedEndpoint,
-
-      config.endpoints,
-    )
-
-    // Deferred mode short-circuit: append a synthetic assistant message
-
-    // that explains the role isn't wired yet, then revert status. No
-
-    // network call. Matches the Composer tooltip copy (line 95-97 in
-
-    // the original Composer.tsx).
-
-    if (thread.mode === "plan" || thread.mode === "research") {
+    if (!workspaceRoot) {
+      // No workspace → can't run the engine. Surface a clear error
+      // rather than silently failing the LLM call.
+      const assistantMsgId = `${Date.now().toString(36)}-nw`
       appendMessage(threadId, {
-        id: `${Date.now().toString(36)}-d`,
-
+        id: assistantMsgId,
         role: "assistant",
-
         content:
-          "This role is in design. Your message is saved to the thread.",
-
+          "Open a workspace before sending agent messages — the agent engine needs a working directory to execute tools and resolve files.",
         ts: Date.now(),
       })
-
-      // REVIEW(opus) FINDING 12 [polish]: inline finishSend — no
-
-      // .finally() runs in this branch.
-
       finishSend(threadId)
-
       return
     }
 
-    // Build the API-bound messages: a system prompt (always prepended)
-
-    // followed by the user+assistant history. System messages in the
-
-    // UI are intentionally NOT forwarded — the system prompt is the
-
-    // single source of truth for assistant identity + behaviour so
-
-    // the model can't get conflicting guidance from per-turn system
-
-    // notes a future feature might insert.
-
-    //
-
-    // Without the system prompt, the first user message is sent with
-
-    // zero context and the model often falls back to a canned
-
-    // greeting ("Hello! How can I help you today?"), which forces the
-
-    // user to ask twice to get a real answer. See `llm/systemPrompt.ts`
-
-    // for the full rationale + content.
-
-    const systemMessage: ApiChatMessage = {
-      role: "system",
-
-      content: buildSystemPrompt(thread.mode),
+    // The chat store appends the user message before calling us, so
+    // the most-recent message is the just-submitted turn.
+    const lastMsg = thread.messages[thread.messages.length - 1]
+    const userMessage = lastMsg?.content ?? ""
+    if (!userMessage) {
+      finishSend(threadId)
+      return
     }
 
-    const historyMessages = thread.messages
+    // The thread's stored `mode` IS the canonical `AgentRole`
+    // (snake_case) — they share the same `MODE_META` enum. Cast
+    // explicitly because TS infers them as separate named types.
+    const role = thread.mode as AgentRole
 
-      .filter((m) => m.role === "user" || m.role === "assistant")
-
-      .map((m) => buildApiChatMessage(m))
-
-    const apiMessages: ApiChatMessage[] = [systemMessage, ...historyMessages]
+    // Resolve the model string: prefer the caller's effective model
+    // (which already prefers the selected endpoint's defaultModel
+    // over the built-in picker), then fall back to the thread's
+    // stored model for backwards compatibility with threads that
+    // were persisted with an explicit model id.
+    const modelId = options?.effectiveModel ?? thread.model
 
     const assistantMsgId = `${Date.now().toString(36)}-r`
 
-    // Append the assistant placeholder immediately so the user sees
-
-    // their turn followed by a Waiting card; the placeholder is patched
-
-    // with content / error once the response arrives.
-
+    // Append a placeholder so the user sees their turn followed by
+    // a waiting card; the engine result patches the content /
+    // error once it returns.
     appendMessage(threadId, {
       id: assistantMsgId,
-
       role: "assistant",
-
       content: "",
-
       ts: Date.now(),
     })
 
-    chatCompletion({
-      // REVIEW(opus) FINDING 3 [high]: when no custom endpoint is
-
-      // selected, `resolveSendTarget` returns endpoint: null. The
-
-      // chat client throws in that case — Phase 1 ships with this
-
-      // limitation: the user must configure an endpoint in
-
-      // Preferences → Models before the first send succeeds. The
-
-      // synthetic v1.1 message above is shown for deferred modes
-
-      // which short-circuit before this branch.
-
-      endpoint,
-
-      model,
-
-      messages: apiMessages,
-
-      signal: getAbortSignal(threadId),
-    })
-
-      .then((res) => {
+    bonafide.agent
+      .sendMessage(workspaceRoot, {
+        threadId,
+        userMessage,
+        role,
+        // CRITICAL FIX (PROD): the configured endpoint + built-in
+        // selection were previously computed but never forwarded to
+        // the engine, so every request hit the Rust-side hardcoded
+        // default model. Wiring it through here restores the
+        // "endpoint picker → that endpoint" contract.
+        modelId,
+        // Forward the full endpoint payload so the Rust side can build
+        // a real OpenAiCompatibleClient instead of always returning
+        // the noop stub. The serialisable form (baseUrl, apiKey,
+        // defaultModel, id, label) mirrors the ModelEndpoint shape
+        // in modelsStore.tsx — no extra schema mapping needed.
+        endpoint: selectedEndpoint
+          ? {
+              id: selectedEndpoint.id,
+              label: selectedEndpoint.label,
+              baseUrl: selectedEndpoint.baseUrl,
+              apiKey: selectedEndpoint.apiKey || null,
+              defaultModel: selectedEndpoint.defaultModel,
+            }
+          : undefined,
+      })
+      .then((output) => {
+        const text = renderEngineResult(output.result)
+        const error =
+          output.result.type === "llm_error"
+            ? output.result.message
+            : undefined
+        // Attach inline tool-call artifacts from the engine trace
+        // so each invocation shows up as a Terminal / File / Tool
+        // card under the assistant message. We map the IPC shape
+        // to the renderer's `Artifact` shape; they're isomorphic
+        // today but kept separate so the renderer doesn't have to
+        // import from the IPC module.
+        const artifacts = (output.toolArtifacts ?? []).map((a) => ({
+          id: a.id,
+          kind: a.kind,
+          name: a.name,
+          displayName: a.displayName,
+          ...(a.target ? { target: a.target } : {}),
+          ...(a.args ? { args: a.args } : {}),
+          ...(a.output ? { output: a.output } : {}),
+          ...(a.resultSummary ? { resultSummary: a.resultSummary } : {}),
+          status: a.status,
+          ts: a.ts,
+        }))
         updateMessage(threadId, assistantMsgId, {
-          content: res.content,
-
-          reasoning: res.reasoning,
+          content: text,
+          ...(error ? { error } : {}),
+          ...(artifacts.length > 0 ? { artifacts } : {}),
         })
       })
-
       .catch((err: unknown) => {
         const message =
           err instanceof DOMException && err.name === "AbortError"
@@ -522,32 +523,37 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
             : err instanceof Error
               ? err.message
               : String(err)
-
         updateMessage(threadId, assistantMsgId, { error: message })
       })
-
       .finally(() => {
-        // REVIEW(opus) PHASE-1.4: finishSend handles:
-
-        //   - AbortController cleanup (no leak across successful sends)
-
-        //   - Status revert to idle
-
-        //   - No-op when thread was deleted mid-flight (FINDING 3)
-
+        // finishSend reverts status to idle and clears the per-thread
+        // AbortController. Safe to call after error paths too.
         finishSend(threadId)
       })
   }
 
   function handleSubmit(text: string, attachments: Attachment[] = []) {
     // REVIEW(opus) FINDING 1 [critical]: pass the thread to sendMessage
-
     // directly so the closure value of `activeThread` doesn't go stale
-
     // for the first message (which is created in the same call).
-
+    //
+    // CRITICAL FIX (PROD): the previous code passed the *local* thread
+    // reference returned by `createThread` straight through to
+    // `sendMessage`. But `createThread` returns a thread snapshot with
+    // `messages: []` — the subsequent `appendMessage` call mutates the
+    // store but does NOT mutate that local reference. So when
+    // `sendMessage` read `thread.messages[length-1]` to extract the
+    // user message, it got `undefined`, hit the early `finishSend`
+    // return, and the first user message was silently dropped (the
+    // user saw their message in the bubble and nothing else).
+    //
+    // The fix: after each `appendMessage`, re-read the thread from the
+    // store via `chatsStore.getThread` and pass THAT reference to
+    // `sendMessage`. We do this for both the new-thread branch (where
+    // it matters most) and the existing-thread branch (defensive — the
+    // local `activeThread` closure may also be stale across re-renders).
     if (!activeThread) {
-      const thread = createThread({
+      const created = createThread({
         mode,
 
         endpointId: selectedEndpoint?.id ?? null,
@@ -557,7 +563,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
         seedTitle: text,
       })
 
-      appendMessage(thread.id, {
+      appendMessage(created.id, {
         id: `${Date.now().toString(36)}-u`,
 
         role: "user",
@@ -569,7 +575,10 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
         ...(attachments.length > 0 ? { attachments } : {}),
       })
 
-      sendMessage(thread)
+      // Re-read the thread so `sendMessage` sees the just-appended
+      // user message in `thread.messages`.
+      const refreshed = chatsStore.getThread(created.id) ?? created
+      sendMessage(refreshed, { effectiveModel })
     } else {
       appendMessage(activeThread.id, {
         id: `${Date.now().toString(36)}-u`,
@@ -583,7 +592,11 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
         ...(attachments.length > 0 ? { attachments } : {}),
       })
 
-      sendMessage(activeThread)
+      // Same defence for the existing-thread branch — the
+      // `activeThread` closure reference may not reflect the freshly
+      // appended message until the React re-render lands.
+      const refreshed = chatsStore.getThread(activeThread.id) ?? activeThread
+      sendMessage(refreshed, { effectiveModel })
     }
   }
 
@@ -594,15 +607,11 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
   // Agent label shown in the Waiting card. Maps mode → human label.
 
   const AGENT_LABEL: Record<ModeId, string> = {
-    debug: "Debugger agent",
-
-    scaffold: "Scaffolder agent",
-
-    plan: "Planner agent",
-
-    research: "Researcher agent",
-
-    multitask: "Multitask agent",
+    debugger: "Debugger agent",
+    scaffolder: "Scaffolder agent",
+    planner: "Planner agent",
+    researcher: "Researcher agent",
+    critic: "Critic agent",
   }
 
   const agentLabel = AGENT_LABEL[activeThread?.mode ?? mode] ?? "Agent"
@@ -644,7 +653,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
           mode={mode}
           builtinId={builtinId}
           onModeChange={(m) => {
-            if (m === "debug" || m === "scaffold") setMode(m)
+            setMode(m)
           }}
           // REVIEW(opus) F-4 [final]: when Composer reports a built-in
 
@@ -855,6 +864,12 @@ function RunSurface({
 }) {
   const workspaceRoot = useWorkspaceRoot()
 
+  // Mirror ChatSurface's hook so we can forward the picked endpoint
+  // to the engine. Without this, the run-investigation surface
+  // always falls through to the Rust noop stub even when the user
+  // has a configured endpoint selected.
+  const { selectedEndpoint } = useModelsStore()
+
   // Generate (or reuse) a thread id for this run. The Rust side stores
   // the row in SQLite keyed by `threadId` so subsequent submits reuse
   // the same conversation.
@@ -998,6 +1013,20 @@ function RunSurface({
         role: "debugger",
 
         runId: run.commit,
+
+        // Forward the configured endpoint so the Rust engine builds
+        // a real OpenAiCompatibleClient instead of the noop stub.
+        // Same shape as ChatSurface uses at line ~479; Option<EndpointPayload>
+        // on the Rust side falls back to the noop when undefined.
+        endpoint: selectedEndpoint
+          ? {
+              id: selectedEndpoint.id,
+              label: selectedEndpoint.label,
+              baseUrl: selectedEndpoint.baseUrl,
+              apiKey: selectedEndpoint.apiKey || null,
+              defaultModel: selectedEndpoint.defaultModel,
+            }
+          : undefined,
       })
 
       setEngineState(output.newState)
@@ -1251,7 +1280,7 @@ function RunSurface({
           onSubmit={handleSubmit}
           onCancel={handleCancel}
           sending={sending}
-          mode="debug"
+          mode="debugger"
           builtinId="fable"
           onModeChange={() => {}}
         />
