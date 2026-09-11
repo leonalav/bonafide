@@ -43,6 +43,8 @@ import type {
   ApiContentPart,
   ChatRequest,
   ChatResponse,
+  ToolCall,
+  ToolDefinition,
 } from "./types"
 
 const DEFAULT_TEMPERATURE = 0.2
@@ -145,8 +147,9 @@ function buildCompletionsUrl(baseUrl: string): string {
 /**
  * Build the request body. We send exactly the fields the OpenAI
  * spec requires (`model`, `messages`, `stream`) plus an optional
- * `temperature`. Future fields (top_p, presence_penalty, tools) are
- * added here when their Phase-N work lands.
+ * `temperature`. The `tools` field is added only when `req.tools` is
+ * truthy — keeping the body small for non-tool-call requests and
+ * avoiding 400 from providers that reject empty `tools`.
  *
  * `req.messages` uses the loose `string | ApiContentPart[]` union
  * per `ApiChatMessage.content`. Most turns are plain strings; turns
@@ -160,12 +163,20 @@ function buildRequestBody(req: ChatRequest): string {
     content: m.content,
   }))
 
-  const payload = {
+  const payload: Record<string, unknown> = {
     model: req.model,
     messages,
     stream: false,
     temperature: req.temperature ?? DEFAULT_TEMPERATURE,
   }
+
+  // Inject tools only when present — mirrors `llm.rs ChatRequest.tools`
+  // serde `skip_serializing_if = Option::is_none` so the key is absent
+  // (not `null`) when None, matching the spec requirement.
+  if (req.tools !== undefined && req.tools.length > 0) {
+    payload.tools = req.tools
+  }
+
   return JSON.stringify(payload)
 }
 
@@ -219,18 +230,18 @@ function buildHeaders(endpoint: ModelEndpoint): Record<string, string> {
 }
 
 /**
- * Extract the content + reasoning from the first choice. If the
- * response carries zero choices we treat it as malformed — that
- * usually means a proxy stripped the body or the model rejected the
- * conversation for policy reasons and returned only an error payload.
+ * Extract content + reasoning + tool_calls from the first choice. If the
+ * response carries zero choices we treat it as malformed — that usually
+ * means a proxy stripped the body or the model rejected the conversation
+ * for policy reasons and returned only an error payload.
+ *
+ * Per `src-tauri/src/agent/llm.rs` section 7.2 step 2: an empty
+ * `tool_calls` array means the model produced a final text answer and
+ * the ReAct loop should terminate.
  */
 function normaliseResponse(res: ApiChatResponse): ChatResponse {
   const first: ApiChoice | undefined = res.choices?.[0]
   if (!first) {
-    // REVIEW(opus) FINDING 9 [low]: a 200 with `choices: []` is often
-    // a provider returning a policy rejection or an error payload
-    // instead of choices. We surface whichever the provider gave us so
-    // the user gets a real reason rather than a generic shape error.
     const errPayload = (res as unknown as {
       error?: { message?: string code?: string }
     }).error
@@ -253,8 +264,26 @@ function normaliseResponse(res: ApiChatResponse): ChatResponse {
       (res as unknown as { reasoning?: string | null }).reasoning,
     )
 
+  // Parse tool_calls from the assistant message. Empty array = final answer.
+  // Mirrors `llm.rs ChatResponse.tool_calls: Vec<ToolCall>`.
+  const tool_calls: ToolCall[] = Array.isArray(message.tool_calls)
+    ? message.tool_calls.map((tc: {
+        id?: string
+        type?: string
+        function?: { name?: string; arguments?: string }
+      }) => ({
+        id: tc.id ?? "",
+        type: tc.type ?? "function",
+        function: {
+          name: tc.function?.name ?? "",
+          arguments: tc.function?.arguments ?? "{}",
+        },
+      }))
+    : []
+
   return {
     content,
+    tool_calls,
     ...(reasoning ? { reasoning } : {}),
     ...(res.usage ? { usage: res.usage } : {}),
   }

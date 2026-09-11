@@ -11,7 +11,24 @@
  * Phase 1 only needs buffered (non-streaming) chat completions. The
  * types are wide enough that Phase 2 can extend `ChatRequest` with
  * `tools: ToolDefinition[]` without breaking the public surface.
+ *
+ * ## Tool-call dual ownership
+ *
+ * `ToolDefinition` and `ToolCall` are owned by both this file and
+ * `src-tauri/src/agent/llm.rs`. Both sides must agree on field names
+ * and JSON shapes exactly. The canonical wire shape lives in Rust's
+ * `llm.rs`; this file mirrors it. `TOOL_CALL_PROTOCOL_VERSION`
+ * tracks the protocol revision so a mismatch can be detected.
  */
+
+// ── Tool-call protocol version ────────────────────────────────────────────────
+
+/**
+ * Current tool-call wire protocol version. Mirrors `TOOL_CALL_PROTOCOL_VERSION`
+ * in `src-tauri/src/agent/llm.rs`. Increment when the `ToolDefinition` or
+ * `ToolCall` shape changes in a backward-incompatible way.
+ */
+export const TOOL_CALL_PROTOCOL_VERSION = "openai/v1"
 
 // ── Chat role + content ──────────────────────────────────────────────────────
 
@@ -83,6 +100,13 @@ export type ChatRequest = {
   signal?: AbortSignal
   /** Optional override for the request temperature. Defaults to 0.2 for stability. */
   temperature?: number
+  /**
+   * Tool definitions offered to the model (Phase 2).
+   * Mirrors `llm.rs ChatRequest.tools` — when `undefined`, the key is
+   * omitted from the serialised JSON body so providers that don't
+   * support the field don't return 400.
+   */
+  tools?: ToolDefinition[]
 }
 
 // ── Response ─────────────────────────────────────────────────────────────────
@@ -130,12 +154,21 @@ export type ApiChatResponse = {
  *
  * `reasoning` is `undefined` when the model doesn't expose its chain
  * of thought — the chat layer then skips the ReasoningArtifact.
+ *
+ * `tool_calls` is populated from `first.message.tool_calls` when the
+ * model requests tool execution. An empty array means the model produced
+ * a final text answer.
  */
 export type ChatResponse = {
   /** Visible assistant reply. Empty string is allowed (degenerate cases). */
   content: string
   /** Reasoning text, if the model returned it in any supported shape. */
   reasoning?: string
+  /**
+   * Tool calls requested by the model. Empty = final answer (per
+   * `src-tauri/src/agent/llm.rs` section 7.2 step 2).
+   */
+  tool_calls: ToolCall[]
   /** Tokens used, when the provider reports them. UI may display this later. */
   usage?: ApiUsage
 }
@@ -151,6 +184,12 @@ export type ToolDefinition = {
   function: {
     name: string
     description: string
+    /**
+     * JSON Schema describing the tool's parameters.
+     * Mirrors `llm.rs ToolFunction.parameters: serde_json::Value`.
+     * Both sides must agree on field names — canonical shape lives in Rust.
+     * Type: `Record<string, unknown>` (re-exported from JSON Schema spec).
+     */
     parameters: Record<string, unknown>
   }
 }
