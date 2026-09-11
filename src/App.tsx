@@ -18,12 +18,7 @@ import { Inspector } from "./components/Inspector"
 
 import { StatusBar } from "./components/StatusBar"
 
-import {
-  PreferencesWindow,
-  type PrefSection,
-} from "./components/preferences/PreferencesWindow"
-
-import { WorkflowPanel } from "./components/agent/WorkflowPanel"
+import { PreferencesWindow, type PrefSection } from "./components/preferences/PreferencesWindow"
 
 import { Panel } from "./components/Panel"
 
@@ -161,8 +156,6 @@ function AppInner() {
   const [inspectorOpen, setInspectorOpen] = useState(false)
 
   const [prefs, setPrefs] = useState<PrefSection | null>(null)
-
-  const [workflowOpen, setWorkflowOpen] = useState(false)
 
   // Resizable panel widths. Persisted in component state for now; if you
 
@@ -717,7 +710,7 @@ function AppInner() {
     if (id === "account") setPrefs("account")
     else if (id === "settings") setPrefs("settings")
     else if (id === "models") setPrefs("models")
-    else if (id === "workflow") setWorkflowOpen((v) => !v)
+    else if (id === "workflow") setInspectorOpen(true)
     else setDock(id)
   }
 
@@ -763,7 +756,7 @@ function AppInner() {
 
         <div className="flex min-h-0 flex-1">
           <UtilityDock
-            active={prefs ? "settings" : workflowOpen ? "workflow" : dock}
+            active={prefs ? "settings" : dock}
             onSelect={onDockSelect}
             signedIn={false}
           />
@@ -815,7 +808,7 @@ function AppInner() {
                 <Inspector
                   width={inspectorWidth}
                   onClose={() => setInspectorOpen(false)}
-                  onOpenWorkflow={() => setWorkflowOpen(true)}
+                  onOpenWorkflow={() => setInspectorOpen(true)}
                   run={inspectorRun}
                 />
               </>
@@ -855,9 +848,6 @@ function AppInner() {
             onTrackerConnected={(kind) => setTrackerKind(kind)}
             onTrackerDisconnected={() => clearTrackerKind()}
           />
-        )}
-        {workflowOpen && (
-          <WorkflowPanel onClose={() => setWorkflowOpen(false)} />
         )}
 
         {/* Command palette (Ctrl+Shift+P) */}

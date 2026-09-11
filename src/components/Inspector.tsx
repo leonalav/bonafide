@@ -6,8 +6,9 @@ import type { Run } from "../data/runs"
 import { AgentContent } from "./agent/AgentContent"
 import { BudgetMeter } from "./ui/BudgetMeter"
 import { RunEmptyState, DiffEmptyState } from "./ui/RunEmptyState"
+import { WorkflowPanel } from "./agent/WorkflowPanel"
 
-const TABS = ["Overview", "Metrics", "Agent", "Config", "Diff"] as const
+const TABS = ["Overview", "Metrics", "Agent", "Workflow", "Experiments", "Artifacts", "Config", "Diff"] as const
 type TabName = typeof TABS[number]
 
 type DiffLine = { sign: " " | "+" | "-" text: string }
@@ -105,6 +106,10 @@ export function Inspector({
             <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-4">
               <AgentContent onOpenWorkflow={onOpenWorkflow} />
             </div>
+          ) : tab === "Workflow" ? (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              <WorkflowPanel onClose={onClose} />
+            </div>
           ) : (
             <RunEmptyState />
           )}
@@ -167,6 +172,11 @@ export function Inspector({
         {tab === "Metrics" && <RunMetrics run={run} />}
         {tab === "Agent" && (
           <AgentContent run={run as Run} onOpenWorkflow={onOpenWorkflow} />
+        )}
+        {tab === "Workflow" && (
+          <div className="flex min-h-0 min-w-0 h-full -m-4 flex-col overflow-hidden">
+            <WorkflowPanel onClose={onClose} />
+          </div>
         )}
         {tab === "Config" && <RunConfig run={run} />}
         {tab === "Diff" && <RunDiff run={run} />}
