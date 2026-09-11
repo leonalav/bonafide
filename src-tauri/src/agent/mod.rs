@@ -9,6 +9,12 @@ pub mod llm;
 #[allow(unused_imports)]
 pub mod migrations;
 #[allow(unused_imports)]
+pub mod approval;
+#[allow(unused_imports)]
+pub mod tools_stub;
+#[allow(unused_imports)]
+pub mod budget_stub;
+#[allow(unused_imports)]
 pub use orchestrator::*;
 #[allow(unused_imports)]
 pub use threads::*;
@@ -18,6 +24,12 @@ pub use engine::*;
 pub use llm::*;
 #[allow(unused_imports)]
 pub use migrations::*;
+#[allow(unused_imports)]
+pub use approval::*;
+#[allow(unused_imports)]
+pub use tools_stub::*;
+#[allow(unused_imports)]
+pub use budget_stub::*;
 
 /// Shared workspace-hash helper. Canonicalizes the path, hashes with SHA-256,
 /// and returns the first 8 bytes as a lowercase hex string.

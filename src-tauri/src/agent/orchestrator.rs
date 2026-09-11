@@ -27,8 +27,8 @@ pub enum ThreadState {
     Stopped,
 }
 
-/// The active role of the agent handling this thread.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Convert an `AgentRole` enum to its snake_case wire string.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRole {
     Debugger,
@@ -36,6 +36,18 @@ pub enum AgentRole {
     Planner,
     Researcher,
     Critic,
+}
+
+/// Convert a snake-case role string back to an `AgentRole`.
+pub fn agent_role_from_str(s: &str) -> Option<AgentRole> {
+    Some(match s {
+        "debugger" => AgentRole::Debugger,
+        "scaffolder" => AgentRole::Scaffolder,
+        "planner" => AgentRole::Planner,
+        "researcher" => AgentRole::Researcher,
+        "critic" => AgentRole::Critic,
+        _ => return None,
+    })
 }
 
 // ── Budget tracking ─────────────────────────────────────────────────────────
