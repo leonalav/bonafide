@@ -27,6 +27,7 @@ import type { ChatMessage } from "../../chats/ChatStore"
 import { InlineContent } from "./UserMessage"
 import { ReasoningArtifact } from "./ReasoningArtifact"
 import { ToolArtifact } from "./ToolArtifact"
+import { ApprovalArtifact } from "./ApprovalArtifact"
 
 /** Per-frame reveal cadence. Lower = faster; tuned for "fast" feel. */
 const TYPEWRITER_BASE_DELAY_MS = 10
@@ -52,15 +53,35 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
       ) : null}
       {/* Inline tool artifacts — each card lives below the
           reasoning / body and reflects the tool's lifecycle
-          (pending → running → completed / failed). */}
+          (pending → running → completed / failed). Approval
+          artifacts render via a separate component so they can
+          host Approve / Reject affordances without inheriting
+          ToolArtifact's expand/collapse chrome. */}
       {hasArtifacts ? (
         <div
           className="flex flex-col gap-1.5"
           aria-label="Tool calls"
         >
-          {message.artifacts!.map((a) => (
-            <ToolArtifact key={a.id} artifact={a} />
-          ))}
+          {message.artifacts!.map((a) =>
+            a.kind === "approval" ? (
+              <ApprovalArtifact
+                key={a.id}
+                artifact={a}
+                onApprove={
+                  message.onApproveArtifact
+                    ? () => message.onApproveArtifact?.(a.id)
+                    : undefined
+                }
+                onReject={
+                  message.onRejectArtifact
+                    ? () => message.onRejectArtifact?.(a.id)
+                    : undefined
+                }
+              />
+            ) : (
+              <ToolArtifact key={a.id} artifact={a} />
+            ),
+          )}
         </div>
       ) : null}
       {message.error ? (

@@ -41,6 +41,7 @@ import { useChatsStore } from "../../chats/ChatStoreProvider"
 
 import {
   chatsStore,
+  type Artifact,
   type Attachment,
   type ChatMessage,
 } from "../../chats/ChatStore"
@@ -498,22 +499,123 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
         // to the renderer's `Artifact` shape; they're isomorphic
         // today but kept separate so the renderer doesn't have to
         // import from the IPC module.
-        const artifacts = (output.toolArtifacts ?? []).map((a) => ({
-          id: a.id,
-          kind: a.kind,
-          name: a.name,
-          displayName: a.displayName,
-          ...(a.target ? { target: a.target } : {}),
-          ...(a.args ? { args: a.args } : {}),
-          ...(a.output ? { output: a.output } : {}),
-          ...(a.resultSummary ? { resultSummary: a.resultSummary } : {}),
-          status: a.status,
-          ts: a.ts,
-        }))
+        const toolArtifacts: Artifact[] = (output.toolArtifacts ?? []).map(
+          (a) => ({
+            id: a.id,
+            kind: a.kind,
+            name: a.name,
+            displayName: a.displayName,
+            ...(a.target ? { target: a.target } : {}),
+            ...(a.args ? { args: a.args } : {}),
+            ...(a.output ? { output: a.output } : {}),
+            ...(a.resultSummary ? { resultSummary: a.resultSummary } : {}),
+            status: a.status,
+            ts: a.ts,
+          }),
+        )
+
+        // If the engine paused for human approval, synthesize a
+        // dedicated approval artifact and wire Approve / Reject
+        // callbacks onto the message. The callbacks live on the
+        // message (rather than at the surface level) so they
+        // survive the assistant message being re-rendered with
+        // its updated artifacts list.
+        const approvalArtifact: Artifact | null =
+          output.result.type === "awaiting_approval"
+            ? {
+                id: output.result.toolCallId,
+                kind: "approval",
+                // The engine doesn't include the tool name in the
+                // awaiting_approval result; the friendly label is
+                // carried by `reason` (e.g. "Tool 'apply_patch'
+                // requires human approval."). We keep the toolCallId
+                // as `name` so debug logs make the link explicit.
+                name: output.result.toolCallId,
+                displayName: "Tool approval requested",
+                approvalReason: output.result.reason,
+                status: "pending",
+                ts: Date.now(),
+              }
+            : null
+
+        const artifacts = approvalArtifact
+          ? [...toolArtifacts, approvalArtifact]
+          : toolArtifacts
+
+        const onApproveArtifact =
+          approvalArtifact &&
+          ((artifactId: string) => {
+            // Patch the artifact's status in-place. We re-read
+            // the thread from the store so we mutate the live
+            // state without depending on a possibly-stale
+            // closure reference.
+            const thread = chatsStore.getThread(threadId)
+            if (!thread) return
+            const message = thread.messages.find((m) => m.id === assistantMsgId)
+            if (!message || !message.artifacts) return
+            const nextArtifacts = message.artifacts.map((a) =>
+              a.id === artifactId
+                ? {
+                    ...a,
+                    status: "completed" as const,
+                    decision: "approved" as const,
+                  }
+                : a,
+            )
+            chatsStore.updateMessage(threadId, assistantMsgId, {
+              artifacts: nextArtifacts,
+            })
+            // Hand off to the engine so the loop can resume. The
+            // IPC is fire-and-forget — we don't surface the
+            // result because the user already saw the resolved
+            // approval state in the artifact card.
+            if (workspaceRoot) {
+              void bonafide.agent
+                .approveAction(workspaceRoot, {
+                  threadId,
+                  toolCallId: artifactId,
+                  decision: "approve",
+                })
+                .catch(() => undefined)
+            }
+          })
+
+        const onRejectArtifact =
+          approvalArtifact &&
+          ((artifactId: string) => {
+            const thread = chatsStore.getThread(threadId)
+            if (!thread) return
+            const message = thread.messages.find((m) => m.id === assistantMsgId)
+            if (!message || !message.artifacts) return
+            const nextArtifacts = message.artifacts.map((a) =>
+              a.id === artifactId
+                ? {
+                    ...a,
+                    status: "failed" as const,
+                    decision: "rejected" as const,
+                  }
+                : a,
+            )
+            chatsStore.updateMessage(threadId, assistantMsgId, {
+              artifacts: nextArtifacts,
+            })
+            if (workspaceRoot) {
+              void bonafide.agent
+                .rejectAction(workspaceRoot, {
+                  threadId,
+                  toolCallId: artifactId,
+                  decision: "reject",
+                })
+                .catch(() => undefined)
+            }
+          })
+
         updateMessage(threadId, assistantMsgId, {
           content: text,
           ...(error ? { error } : {}),
           ...(artifacts.length > 0 ? { artifacts } : {}),
+          ...(onApproveArtifact ? { onApproveArtifact } : {}),
+          ...(onRejectArtifact ? { onRejectArtifact } : {}),
         })
       })
       .catch((err: unknown) => {

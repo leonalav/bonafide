@@ -367,22 +367,28 @@ impl OpenAiCompatibleClient {
     /// directly so the Rust side never needs to read `settings.json` to
     /// discover the endpoint — a simpler architecture with no shared schema.
     ///
-    /// If `payload.base_url` already ends with `/v1` or `/v1/chat/completions`
-    /// we strip the suffix so the client's `build_url()` (which appends
-    /// `/chat/completions`) produces a correct URL.
+    /// If `payload.base_url` accidentally ends with `/chat/completions`
+    /// (because the user pasted the full completions URL), we strip that
+    /// suffix so the client's `build_url()` produces a clean URL without
+    /// duplication. Any other path segment — including a required `/v1`
+    /// for OpenAI-compatible providers — is preserved verbatim, matching
+    /// the renderer-side normalisation in `src/llm/client.ts`
+    /// `buildCompletionsUrl`.
     ///
     /// Returns `LlmError::NoEndpoint` when the payload is `None`.
     pub fn from_endpoint(payload: EndpointPayload) -> Result<Self, LlmError> {
         let base_url = payload.base_url;
 
-        // Normalise the base URL: strip any `/v1` or `/v1/chat/completions`
-        // suffix the user may have included so the client's `build_url()`
-        // appends the correct path without duplication.
+        // Normalise the base URL: trim trailing slashes and strip a
+        // trailing `/chat/completions` if the user pasted the full
+        // completions URL. We intentionally do NOT strip `/v1` —
+        // OpenAI-compatible providers (OpenAI, LM Studio, vLLM, …)
+        // require it, and dropping it silently breaks agent chat while
+        // the Preferences → Models "Test" button (which uses the
+        // renderer-side `buildCompletionsUrl`) keeps working.
         let normalise_url = |url: &str| -> String {
             let url = url.trim_end_matches('/');
-            let url = url.strip_suffix("/v1/chat/completions").unwrap_or(url);
-            let url = url.strip_suffix("/v1").unwrap_or(url);
-            url.to_string()
+            url.strip_suffix("/chat/completions").unwrap_or(url).to_string()
         };
 
         let base_url = normalise_url(&base_url);
@@ -739,9 +745,12 @@ mod tests {
     }
 
     /// `from_endpoint_roundtrip_with_v1_suffix`:
-    /// When the renderer sends `baseUrl` with a trailing `/v1` or
-    /// `/v1/chat/completions`, `from_endpoint` normalises it so the
-    /// client's `build_url()` produces a clean URL without duplication.
+    /// When the renderer sends `baseUrl` containing the required `/v1`
+    /// path segment (or even the full `/v1/chat/completions` URL), the
+    /// segment is preserved verbatim. The only suffix we strip is a
+    /// accidental trailing `/chat/completions` — anything else must
+    /// round-trip unchanged so the URL the agent hits matches the URL
+    /// the Preferences → Models "Test" button hits.
     #[test]
     fn from_endpoint_roundtrip_with_v1_suffix() {
         let payload = EndpointPayload {
@@ -755,13 +764,19 @@ mod tests {
         let client = OpenAiCompatibleClient::from_endpoint(payload).unwrap();
 
         // The client should have stored the normalised base URL.
-        assert_eq!(client.base_url, "https://api.openai.com");
+        // `/v1` is preserved; the accidental `/chat/completions` suffix
+        // is the only thing stripped.
+        assert_eq!(client.base_url, "https://api.openai.com/v1");
         // build_url() appends /chat/completions, so we check it ends correctly.
-        assert_eq!(client.build_url(), "https://api.openai.com/chat/completions");
+        assert_eq!(client.build_url(), "https://api.openai.com/v1/chat/completions");
     }
 
     /// `from_endpoint_roundtrip_without_v1_suffix`:
-    /// A base URL without `/v1` passes through unchanged.
+    /// A base URL containing `/v1` passes through unchanged. The
+    /// normalisation must not silently drop path segments — doing so
+    /// would make the agent chat hit a different URL than the working
+    /// Preferences → Models "Test" button (which uses the renderer-side
+    /// `buildCompletionsUrl`).
     #[test]
     fn from_endpoint_roundtrip_without_v1_suffix() {
         let payload = EndpointPayload {
@@ -774,8 +789,8 @@ mod tests {
 
         let client = OpenAiCompatibleClient::from_endpoint(payload).unwrap();
 
-        assert_eq!(client.base_url, "http://localhost:1234");
-        assert_eq!(client.build_url(), "http://localhost:1234/chat/completions");
+        assert_eq!(client.base_url, "http://localhost:1234/v1");
+        assert_eq!(client.build_url(), "http://localhost:1234/v1/chat/completions");
     }
 
     /// `from_endpoint_serialises_camelcase`:

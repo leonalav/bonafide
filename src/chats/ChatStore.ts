@@ -99,6 +99,21 @@ export type ChatMessage = {
    * Stored on the message so reloads keep the artifact context.
    */
   artifacts?: Artifact[]
+  /**
+   * Per-artifact decision callbacks wired by the parent
+   * (`AgentContent` for `ChatSurface`). Only present on the
+   * *live* in-memory message that the user is currently viewing
+   * — not persisted, since decisions are resolved at click time
+   * and never need to survive a reload.
+   *
+   * The callbacks take the artifact's id so the parent can
+   * locate the matching `Artifact` in its own `artifacts` array
+   * and dispatch the IPC call (approve / reject). They're
+   * optional because non-ChatSurface contexts (WelcomePanel,
+   * thread replay) may pass messages without approval wiring.
+   */
+  onApproveArtifact?: (artifactId: string) => void
+  onRejectArtifact?: (artifactId: string) => void
 }
 
 /**
@@ -119,7 +134,7 @@ export type ChatMessage = {
  * to the generic Tool card. The renderer never has to inspect
  * `name` to decide the layout — `kind` is canonical.
  */
-export type ArtifactKind = "terminal" | "file" | "tool"
+export type ArtifactKind = "terminal" | "file" | "tool" | "approval"
 
 export type ArtifactStatus = "pending" | "running" | "completed" | "failed"
 
@@ -140,6 +155,18 @@ export type Artifact = {
   output?: string
   /** Result summary for `file` artifacts (file path + bytes). */
   resultSummary?: string
+  /**
+   * Approval-specific: the engine-supplied reason the tool call
+   * needs human sign-off (e.g. "Tool 'apply_patch' requires human
+   * approval."). Rendered as the card body for `approval` artifacts.
+   */
+  approvalReason?: string
+  /**
+   * Approval-specific: terminal-state label shown after the user
+   * acts ("Approved" / "Rejected"). Lives next to the buttons while
+   * the artifact is in flight, then replaces them once resolved.
+   */
+  decision?: "approved" | "rejected"
   /** Lifecycle status. */
   status: ArtifactStatus
   /** Milliseconds since epoch. */

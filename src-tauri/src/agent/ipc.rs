@@ -507,11 +507,21 @@ fn load_or_init_thread(
     let event_log_path = bonafide_dir()
         .join(&hash)
         .join(format!("threads/{}.jsonl", input.thread_id));
-    Ok(Thread::new(input.thread_id.clone(), role, input.run_id.clone(), event_log_path))
+    let mut thread = Thread::new(
+        input.thread_id.clone(),
+        role,
+        input.run_id.clone(),
+        event_log_path,
+    );
+    // Ground the system prompt in the actual workspace root so
+    // the LLM doesn't fabricate placeholder paths like
+    // `/home/user` when calling filesystem tools.
+    thread.set_workspace_root(root);
+    Ok(thread)
 }
 
 /// Convert a `ThreadRow` (DB shape) into an in-memory `Thread` (engine shape).
-fn row_to_thread(row: &ThreadRow, _root: &std::path::Path, _tool_registry: Arc<ToolRegistry>) -> Result<Thread, String> {
+fn row_to_thread(row: &ThreadRow, root: &std::path::Path, _tool_registry: Arc<ToolRegistry>) -> Result<Thread, String> {
     let role = crate::agent::orchestrator::agent_role_from_str(&row.role)
         .ok_or_else(|| format!("Unknown role: {}", row.role))?;
     let state = parse_thread_state(&row.state);
@@ -522,6 +532,13 @@ fn row_to_thread(row: &ThreadRow, _root: &std::path::Path, _tool_registry: Arc<T
 
     // Replay the JSONL event log to restore messages + trace.
     let mut thread = Thread::new(row.id.clone(), role, None, event_log_path);
+    // The DB row already pins the workspace via `workspace_hash`,
+    // but we keep the absolute path on the in-memory thread too
+    // so the system prompt can show it verbatim. Falls back to
+    // an empty path when the caller didn't supply a real root —
+    // that signals "unknown workspace" in the prompt and the
+    // LLM is told to ask rather than guess.
+    thread.set_workspace_root(root.to_path_buf());
     thread.state = state;
     thread.budget.spent_dollars = row.budget_spent_dollars;
     thread.budget.spent_gpu_hours = row.budget_spent_gpu_hours;

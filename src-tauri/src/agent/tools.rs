@@ -128,9 +128,9 @@ fn build_tool_catalog() -> HashMap<&'static str, Tool> {
         parameters: json!({
             "type": "object",
             "properties": {
-                "path": { "type": "string", "description": "Absolute path of the directory to list." }
+                "path": { "type": "string", "description": "Optional: workspace-relative directory (e.g. `src`). Defaults to workspace root when omitted or empty. Do NOT pass POSIX defaults like `/home/user` — they will fail on Windows hosts." }
             },
-            "required": ["path"]
+            "required": []
         }),
         safety: SafetyLevel::Read,
         estimated_cost: 0.0,
@@ -1002,7 +1002,7 @@ impl ToolRegistry {
         match name.as_str() {
             // ── Filesystem ─────────────────────────────────────────────────
             "read_file" => handle_read_file(&self.workspace_root, &args),
-            "read_directory" => handle_read_directory(&args),
+            "read_directory" => handle_read_directory(&self.workspace_root, &args),
             "search_files" => handle_search_files(&self.workspace_root, &args),
             "write_file" => handle_write_file(&self.workspace_root, &args),
             "create_file" => handle_create_file(&args),
@@ -1105,18 +1105,57 @@ fn require_i64_field(args: &JsonValue, key: &str) -> Result<i64, String> {
     get_i64_field(args, key).ok_or_else(|| format!("missing or non-integer field: {key}"))
 }
 
+/// Resolve a user-supplied `path` argument against the workspace
+/// root. This is the single chokepoint every filesystem tool runs
+/// through so the agent is always path-aware and never has to
+/// guess whether to join with `workspace_root` or trust the
+/// supplied string verbatim.
+///
+/// Rules (intentionally simple, deliberately documented):
+/// 1. Empty / missing / whitespace-only → workspace root.
+/// 2. Absolute → used as-is. The caller is responsible for
+///    surfacing a helpful error if the absolute path doesn't
+///    exist (Windows hosts will reject POSIX defaults like
+///    `/home/user`).
+/// 3. Relative → joined with `workspace_root`. Normalised via
+///    `Path::join` so `..` is collapsed correctly.
+///
+/// The returned path is the canonical truth — every filesystem
+/// tool that takes a path argument should compute the operation
+/// against the value returned here and surface the resolved
+/// string in its result message so the LLM sees what was actually
+/// used.
+fn resolve_workspace_path(
+    workspace_root: &std::path::Path,
+    supplied: Option<&str>,
+) -> std::path::PathBuf {
+    match supplied.map(str::trim).filter(|s| !s.is_empty()) {
+        None => workspace_root.to_path_buf(),
+        Some(p) if std::path::Path::new(p).is_absolute() => std::path::PathBuf::from(p),
+        Some(p) => workspace_root.join(p),
+    }
+}
+
 // ── Filesystem handlers ─────────────────────────────────────────────────────
 
 fn handle_read_file(workspace_root: &std::path::Path, args: &JsonValue) -> ToolResult {
-    let path = match require_str_field(args, "path") {
-        Ok(p) => p,
-        Err(e) => return ToolResult::err(e),
-    };
+    let supplied = get_str_field(args, "path");
+    let resolved = resolve_workspace_path(workspace_root, supplied.as_deref());
+    let resolved_display = resolved.display().to_string();
+
+    if !resolved.exists() {
+        return ToolResult::err(format!(
+            "path not found: {resolved_display}. The workspace root is \
+             {ws} — pass a workspace-relative path like `src/foo.py` or \
+             omit `path` and re-call.",
+            ws = workspace_root.display(),
+        ));
+    }
+
     let start = get_i64_field(args, "start_line").map(|v| v as usize);
     let end = get_i64_field(args, "end_line").map(|v| v as usize);
 
-    let full = workspace_root.join(&path);
-    let content = match std::fs::read_to_string(&full) {
+    let content = match std::fs::read_to_string(&resolved) {
         Ok(c) => c,
         Err(e) => return ToolResult::err(format!("read failed: {e}")),
     };
@@ -1131,21 +1170,25 @@ fn handle_read_file(workspace_root: &std::path::Path, args: &JsonValue) -> ToolR
 
     let lines_count = slice.lines().count();
     let preview = if slice.len() > 500 { &slice[..500] } else { &slice };
-    ToolResult::ok(format!("{lines_count} lines from {path}: {preview}"))
+    ToolResult::ok(format!("{lines_count} lines from {resolved_display}: {preview}"))
 }
 
-fn handle_read_directory(args: &JsonValue) -> ToolResult {
-    let path = match require_str_field(args, "path") {
-        Ok(p) => p,
-        Err(e) => return ToolResult::err(e),
-    };
-    let p = std::path::PathBuf::from(&path);
-    let entries = match std::fs::read_dir(&p) {
+fn handle_read_directory(workspace_root: &std::path::Path, args: &JsonValue) -> ToolResult {
+    let supplied = get_str_field(args, "path");
+    let resolved = resolve_workspace_path(workspace_root, supplied.as_deref());
+    let resolved_display = resolved.display().to_string();
+    let entries = match std::fs::read_dir(&resolved) {
         Ok(e) => e,
-        Err(e) => return ToolResult::err(format!("read_dir failed: {e}")),
+        Err(e) => return ToolResult::err(format!(
+            "read_dir failed for {resolved_display}: {e}. \
+             Hint: omit `path` to list the workspace root, or pass a \
+             workspace-relative path like `src`. The workspace root \
+             is {ws}.",
+            ws = workspace_root.display(),
+        )),
     };
     let count = entries.count();
-    ToolResult::ok(format!("{count} entries in {path}"))
+    ToolResult::ok(format!("{count} entries in {resolved_display} (workspace: {ws})", ws = workspace_root.display()))
 }
 
 fn handle_search_files(workspace_root: &std::path::Path, args: &JsonValue) -> ToolResult {
@@ -1153,27 +1196,32 @@ fn handle_search_files(workspace_root: &std::path::Path, args: &JsonValue) -> To
         Ok(p) => p,
         Err(e) => return ToolResult::err(e),
     };
-    let search_path = get_str_field(args, "path")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| workspace_root.to_path_buf());
+    let supplied = get_str_field(args, "path");
+    let search_path = resolve_workspace_path(workspace_root, supplied.as_deref());
 
     let matches = grep::search(&search_path, &pattern).unwrap_or_default();
     let count = matches.len();
     let preview = matches.iter().take(10).cloned().collect::<Vec<_>>().join("; ");
-    ToolResult::ok(format!("{count} matches for '{pattern}': {preview}"))
+    ToolResult::ok(format!(
+        "{count} matches for '{pattern}' in {resolved}: {preview}",
+        resolved = search_path.display(),
+    ))
 }
 
 fn handle_write_file(workspace_root: &std::path::Path, args: &JsonValue) -> ToolResult {
-    let path = match require_str_field(args, "path") {
-        Ok(p) => p,
-        Err(e) => return ToolResult::err(e),
+    let supplied = get_str_field(args, "path");
+    let path = match supplied {
+        Some(p) if !p.trim().is_empty() => p,
+        _ => return ToolResult::err(
+            "write_file requires a non-empty `path` (workspace-relative, e.g. `src/foo.py`).".to_string(),
+        ),
     };
     let content = match require_str_field(args, "content") {
         Ok(c) => c,
         Err(e) => return ToolResult::err(e),
     };
 
-    let full = workspace_root.join(&path);
+    let full = resolve_workspace_path(workspace_root, Some(&path));
     if let Some(parent) = full.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -2053,6 +2101,77 @@ mod tests {
         let msg = ToolRegistry::tool_result_message(&tc, &result);
         assert_eq!(msg.role, Role::Tool);
         assert_eq!(msg.tool_call_id.as_deref(), Some("call_test"));
+    }
+
+    // ── path-awareness regression tests ─────────────────────────────────
+    // The agent must NEVER fabricate POSIX defaults like `/home/user`
+    // on Windows hosts. These tests pin the resolver + handler
+    // behaviour so a future refactor can't silently regress the
+    // workspace-relative path contract.
+
+    #[test]
+    fn resolve_workspace_path_handles_missing_relative_and_absolute() {
+        let root = std::path::Path::new("/workspace");
+        // Missing → workspace root.
+        assert_eq!(resolve_workspace_path(root, None), root);
+        assert_eq!(resolve_workspace_path(root, Some("")), root);
+        assert_eq!(resolve_workspace_path(root, Some("   ")), root);
+        // Relative → joined with root.
+        assert_eq!(
+            resolve_workspace_path(root, Some("src/foo.py")),
+            root.join("src/foo.py"),
+        );
+        // Absolute → used verbatim (caller surfaces helpful error).
+        assert_eq!(
+            resolve_workspace_path(root, Some("/etc/hosts")),
+            std::path::PathBuf::from("/etc/hosts"),
+        );
+    }
+
+    #[test]
+    fn read_directory_omitted_path_lists_workspace_root() {
+        // This is the fix for the `/home/user` regression: omitting
+        // `path` should default to the workspace root, never fail.
+        let tmp = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({});
+        let result = handle_read_directory(tmp.path(), &args);
+        assert!(result.is_ok(), "omitted `path` must succeed: {result:?}");
+        let summary = result.summary();
+        assert!(summary.contains("workspace:"));
+        assert!(summary.contains(&*tmp.path().to_string_lossy()));
+    }
+
+    #[test]
+    fn read_directory_relative_path_is_resolved_against_workspace() {
+        // `src` should resolve to `<workspace>/src`, not CWD or `/src`.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("src")).unwrap();
+        let args = serde_json::json!({ "path": "src" });
+        let result = handle_read_directory(tmp.path(), &args);
+        assert!(result.is_ok(), "relative `path` must succeed: {result:?}");
+        // The summary must mention the resolved absolute path so the
+        // LLM sees what was actually used.
+        assert!(result.summary().contains("src"));
+    }
+
+    #[test]
+    fn read_directory_bogus_absolute_path_returns_helpful_error() {
+        // POSIX default on a Windows host: must fail with a hint,
+        // not a bare OS error. This is the exact `/home/user`
+        // case the user reported.
+        let tmp = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({ "path": "/home/user/does-not-exist" });
+        let result = handle_read_directory(tmp.path(), &args);
+        assert!(!result.is_ok(), "bogus absolute path must fail");
+        let summary = result.summary();
+        assert!(
+            summary.contains("workspace"),
+            "error must mention the workspace root so the LLM knows where to look, got: {summary}",
+        );
+        assert!(
+            summary.contains("Hint"),
+            "error must include a hint for the next call, got: {summary}",
+        );
     }
 
     #[test]

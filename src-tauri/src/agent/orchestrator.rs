@@ -139,6 +139,19 @@ pub struct Thread {
     pub proposed_patch: Option<Patch>,
     pub budget: Budget,
     pub event_log_path: PathBuf,
+    /// Absolute path of the workspace this thread belongs to.
+    /// Used by the system prompt's RUNTIME CONTEXT block so the
+    /// LLM knows the real workspace root instead of fabricating
+    /// placeholder paths like `/home/user` when invoking
+    /// filesystem tools (`read_directory`, `read_file`, …).
+    ///
+    /// Defaults to an empty path so legacy threads persist
+    /// cleanly — old threads fall through the system prompt's
+    /// "no workspace" branch and the LLM is told to ask for the
+    /// path rather than guessing. New threads always have this
+    /// populated by `load_or_init_thread`.
+    #[serde(default)]
+    pub workspace_root: PathBuf,
     /// Number of hypothesis iterations consumed in this thread.
     /// The Debugger increments this each time a `## Hypothesis`
     /// marker is detected while in `Investigating` state. When
@@ -176,6 +189,13 @@ pub struct Thread {
 
 impl Thread {
     /// Construct a new Thread with the given id, role, run_id, and event log path.
+    ///
+    /// `workspace_root` defaults to an empty path — callers that
+    /// know the workspace (the IPC layer always does) populate it
+    /// via `set_workspace_root` immediately after construction.
+    /// Keeping it out of the `new` signature avoids breaking the
+    /// 30+ test fixtures that already pass four positional
+    /// arguments.
     pub fn new(
         id: String,
         role: AgentRole,
@@ -194,6 +214,7 @@ impl Thread {
             proposed_patch: None,
             budget: Budget::default(),
             event_log_path,
+            workspace_root: PathBuf::new(),
             hypothesis_iterations: 0,
             patch_revisions: 0,
             tool_artifacts: Vec::new(),
@@ -209,6 +230,16 @@ impl Thread {
     pub fn reset_iteration_counters(&mut self) {
         self.hypothesis_iterations = 0;
         self.patch_revisions = 0;
+    }
+
+    /// Set the workspace root for this thread. Called by
+    /// `load_or_init_thread` and `row_to_thread` after the
+    /// `Thread::new` constructor so we don't have to thread a
+    /// fifth parameter through every test fixture. The system
+    /// prompt reads this to ground the LLM's filesystem tool
+    /// calls in the real workspace path.
+    pub fn set_workspace_root(&mut self, root: PathBuf) {
+        self.workspace_root = root;
     }
 }
 

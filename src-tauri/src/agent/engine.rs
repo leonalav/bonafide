@@ -882,6 +882,35 @@ impl AgentEngine {
             mode.investigation_protocol_steps().join(" → "),
         ));
 
+        // Workspace root — surfaces the absolute path the agent is
+        // operating in so filesystem tool calls (`read_file`,
+        // `read_directory`, …) use the real workspace path instead
+        // of fabricating placeholders like `/home/user`. An empty
+        // path means the thread predates the workspace_root field
+        // (legacy replay) or the caller didn't supply a workspace —
+        // tell the LLM to ask rather than guess.
+        let workspace_path = thread.workspace_root.to_string_lossy();
+        if workspace_path.trim().is_empty() {
+            ctx.push_str(
+                "Workspace: <unknown> — no workspace path on this thread. \
+                 Ask the user for the working directory before invoking \
+                 filesystem tools.\n",
+            );
+        } else {
+            ctx.push_str(&format!(
+                "Workspace: {} (filesystem tool `path` arguments are \
+                 RELATIVE to this root — omit `path` to use the workspace root)\n",
+                workspace_path,
+            ));
+            ctx.push_str(
+                "Path rule: NEVER fabricate absolute paths. POSIX defaults \
+                 like `/home/user`, `/Users/me`, or `~/work` will fail on \
+                 this host. When unsure of a sub-path, list the parent \
+                 directory first with `read_directory(path=\"<parent>\")` \
+                 or call the tool with no `path` argument.\n",
+            );
+        }
+
         // Thread state machine position.
         ctx.push_str(&format!(
             "Thread state: {} (hypothesis_iterations: {}, patch_revisions: {})\n",
@@ -1147,7 +1176,31 @@ what worked, what didn't, and what to try next.
 track your progress.
 10. If the protocol forbids an action (e.g. patch before \
 hypothesis), the engine will block it. Form the prerequisite \
-state first.";
+state first.
+11. After every tool call, emit a brief textual response \
+acknowledging what you learned before deciding the next action. \
+A turn that ends with tool calls but no text leaves the user \
+staring at a silent artifact stack and looks like a stuck agent. \
+Special cases for empty / error / placeholder returns — these \
+are the patterns that produce the silent stacks:
+    - Empty result (0 matches, empty directory, \"no runs \
+      found\"): do NOT repeat the same tool with a marginally-\
+      different argument. State the empty result in one sentence, \
+      then pivot to a different tool or to synthesizing what you \
+      already know.
+    - Tool error (path not found, permission denied, parse \
+      failure): acknowledge the error explicitly — the user may \
+      need to fix a workspace setting or grant access. Don't \
+      paper over it by re-issuing the same call.
+    - Placeholder result (\"wired in WSx-Tx\", \"not yet \
+      implemented\", a stub string): treat it as a capability \
+      gap, not an instruction to retry. Tell the user the tool \
+      isn't wired up yet and either propose a workaround or ask \
+      what they want to do.
+    - Final answer: if you already have enough information to \
+      answer the user, answer them. Do not call another tool \
+      \"just to be sure\" — that wastes budget and clutters the \
+      thread.";
 
 /// Map an `EscalationLevel` to a human-readable label for the
 /// system prompt's context block.
@@ -2021,8 +2074,8 @@ mod tests {
         let mut thread = make_thread(AgentRole::Researcher, ThreadState::Investigating);
         let prompt = engine.build_system_prompt(&thread);
 
-        // Must include every behavioural rule (1-10).
-        for i in 1..=10 {
+        // Must include every behavioural rule (1-11).
+        for i in 1..=11 {
             assert!(
                 prompt.contains(&format!("{}. ", i)),
                 "Behavioural rule {} must be present in system prompt",

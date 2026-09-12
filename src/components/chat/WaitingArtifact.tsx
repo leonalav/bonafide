@@ -1,20 +1,29 @@
 /**
  * chat/WaitingArtifact.tsx — The "Sent + waiting for model" card.
  *
- * Direct port of the "User Message + Waiting State" sticker from
- * `agent-reasoning-designs.html` lines 2922-2990. Three visual layers:
+ * Per `agent-reasoning-designs.html` lines 3010-3040 ("Compact
+ * Waiting Pill") — a single horizontal row, ~28px tall, that
+ * shows the spinner + status text + Esc hint inline. Replaces the
+ * older halo+shimmer card (lines 2922-2990 in the same file)
+ * which dominated the thread visually for what is essentially a
+ * passive "request is in flight" state.
  *
- *   1. Halo frame — 32px rounded square with a primary/10 fill and a
- *      primary/30 ring. Sits the loadingicon.gif in a centered well.
- *   2. Info column — "Waiting…" title with animated dots + a
- *      subtitle naming the destination agent ("Debugger agent").
- *   3. Progress shimmer — 2px tall, absolute-positioned at the
- *      bottom of the card. Sliding gradient gives an indeterminate
- *      progress feel.
+ * Why we don't use `loadingicon.gif`:
+ *   - The GIF is a raster asset that doesn't scale with the
+ *     surrounding text size and adds a chunky pixel-art look
+ *     that fights the design system's "Soft-Technical" tone.
+ *   - A pure CSS spinner uses one of the existing
+ *     `Icon` paths (`refresh`) and inherits `currentColor`, so
+ *     it adapts to any surrounding tint without a new asset.
+ *   - The `animate-sync-spin` keyframes already ship in the
+ *     design system (see `agent-sticker-sheet.html`'s
+ *     `.animate-sync-spin`), so no new motion is introduced.
  *
- * The Esc-to-cancel meta line is below the card; the cancel button
- * itself lives in the ChatHeader (sub-phase 1.3) because the cancel
- * action is global to the thread.
+ * The card carries no chrome (no border, no shadow, no halo,
+ * no shimmer strip) — just a subtle primary-tinted background
+ * with the spinner + label inline. The Esc hint sits on the
+ * right edge of the same row so the user can read everything
+ * in a single glance.
  */
 
 import { Icon } from "../ui/Icon"
@@ -22,86 +31,52 @@ import { Icon } from "../ui/Icon"
 export function WaitingArtifact({
   agentLabel,
   onCancel,
-  /** Display name of the agent/mode we're waiting on, e.g. "Debugger agent". */
-  /** Called when the user hits Esc or clicks the inline cancel link. */
 }: {
   agentLabel: string
   onCancel?: () => void
 }) {
   return (
-    <div className="flex min-w-0 max-w-full animate-fade-in flex-col items-start gap-1">
-      <div className="relative flex w-full max-w-full min-w-0 items-center gap-3 overflow-hidden rounded-lg border border-outline-variant bg-surface-container-low px-3 py-2.5">
-        {/* Halo + loadingicon.gif */}
-        <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 ring-1 ring-primary/30">
-          <img
-            src="/loadingicon.gif"
-            alt=""
-            className="h-5 w-5"
-            aria-hidden="true"
-          />
-        </div>
+    <div
+      role="status"
+      aria-live="polite"
+      className="flex min-w-0 max-w-full animate-fade-in items-center gap-2 rounded border border-primary/20 bg-primary/5 px-2.5 py-1.5"
+    >
+      {/* CSS spinner — `refresh` Icon path with `animate-sync-spin`
+          (defined in the design system's keyframes). `text-primary`
+          keeps it consistent with the rest of the active-state
+          affordances. */}
+      <span
+        className="flex h-3.5 w-3.5 shrink-0 items-center justify-center text-primary animate-sync-spin"
+        aria-hidden="true"
+      >
+        <Icon name="refresh" size={14} />
+      </span>
 
-        {/* Info column */}
-        <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <div className="flex items-center gap-1.5 font-sans text-[13px] font-medium text-on-surface">
-            Waiting…
-            <span
-              className="inline-flex items-center gap-0.5"
-              aria-hidden="true"
-            >
-              {/* REVIEW(opus) FINDING 5 [high]: spec uses 4px dots, not 3px */}
-              <span className="h-1 w-1 animate-pulse rounded-full bg-primary [animation-delay:0ms]" />
-              <span className="h-1 w-1 animate-pulse rounded-full bg-primary [animation-delay:200ms]" />
-              <span className="h-1 w-1 animate-pulse rounded-full bg-primary [animation-delay:400ms]" />
-            </span>
-          </div>
-          <div className="flex flex-wrap items-center gap-1 font-sans text-[11px] text-outline">
-            <span>
-              Sending request to{" "}
-              <strong className="font-medium text-secondary">
-                {agentLabel}
-              </strong>
-            </span>
-            <span>·</span>
-            <span className="flex items-center gap-0.5 text-primary">
-              <Icon name="check" size={9} strokeWidth={2.5} />
-              delivered
-            </span>
-          </div>
-        </div>
+      {/* Status text — single-line, ellipsises when the agent label
+          is unusually long so the row never wraps onto a second
+          line and pushes the Esc hint off-screen. */}
+      <span className="min-w-0 flex-1 truncate font-sans text-[12px] text-on-surface">
+        Sending to{" "}
+        <strong className="font-medium text-secondary">{agentLabel}</strong>
+      </span>
 
-        {/* Bottom progress shimmer — absolute, sits at card bottom */}
-        {/* REVIEW(opus) FINDING 12 [low]: pointer-events-none on a 2px
-            decorative strip is redundant; dropping it. */}
-        <div
-          className="absolute inset-x-[3px] bottom-0 h-[2px] overflow-hidden bg-surface-container-high"
-          aria-hidden="true"
+      {/* Esc hint — same row, right-aligned. When the parent wires
+          `onCancel` we render a button so clicking cancels the
+          request; otherwise we show a static `<kbd>` so the hint
+          is still discoverable but inert. */}
+      {onCancel ? (
+        <button
+          onClick={onCancel}
+          aria-label="Cancel request"
+          className="flex items-center gap-1 rounded border border-outline-variant/60 bg-surface-container-low px-1 font-mono text-[9px] text-outline hover:text-on-surface"
         >
-          <div
-            className="absolute inset-y-0 w-1/3 bg-gradient-to-r from-transparent via-primary to-transparent"
-            style={{ animation: "waiting-shimmer 1.6s ease-in-out infinite" }}
-          />
-        </div>
-      </div>
-
-      <div className="flex items-center gap-1.5 pl-1 font-sans text-[10px] text-outline">
-        <span>Just now</span>
-        <span>·</span>
-        {onCancel ? (
-          <button
-            onClick={onCancel}
-            className="flex items-center gap-1 rounded border border-outline-variant/60 bg-surface-container-low px-1 font-mono text-[9px] text-outline hover:text-on-surface"
-            aria-label="Cancel request"
-          >
-            Esc
-          </button>
-        ) : (
-          <kbd className="rounded border border-outline-variant bg-surface-container-high px-1 font-mono text-[9px]">
-            Esc
-          </kbd>
-        )}
-        <span>to cancel</span>
-      </div>
+          Esc
+        </button>
+      ) : (
+        <kbd className="rounded border border-outline-variant bg-surface-container-high px-1 font-mono text-[9px] text-outline">
+          Esc
+        </kbd>
+      )}
     </div>
   )
 }

@@ -38,12 +38,16 @@ export function formatTime(ts: number): string {
 /**
  * Render plain text with very lightweight inline markup:
  *   - Backtick-wrapped text becomes a styled `<code>` span
+ *   - `**bold**` becomes a `<strong>` span
+ *   - `*italic*` becomes an `<em>` span
  *   - Long unbroken strings wrap via `break-words`
  *   - Newlines are preserved as separate paragraphs
  *
  * Phase 1 deliberately avoids pulling in a full Markdown parser.
- * Code spans are the only inline affordance users actually need
- * for chat-style exchanges.
+ * Code spans, bold, and italic are the inline affordances users
+ * actually need for chat-style exchanges. Backticks take precedence
+ * over `*` so JSON inside `code` (e.g. `"name": "*foo*"`) renders
+ * verbatim without accidentally italicising.
  */
 export function InlineContent({ text }: { text: string }) {
   const lines = text.split(/(\n)/)
@@ -51,27 +55,142 @@ export function InlineContent({ text }: { text: string }) {
     <>
       {lines.map((line, i) => {
         if (line === "\n") return <br key={i} />
-        const chunks = line.split(/(`[^`]+`)/g)
-        return chunks.map((c, j) => {
-          if (c.startsWith("`") && c.endsWith("`") && c.length >= 2) {
-            return (
-              <code
-                key={`${i}-${j}`}
-                className="rounded-sm bg-surface-container-high px-1 py-0.5 font-mono text-[12px] text-on-surface"
-              >
-                {c.slice(1, -1)}
-              </code>
-            )
-          }
-          return (
-            <span key={`${i}-${j}`} className="break-words">
-              {c}
-            </span>
-          )
-        })
+        const nodes = parseInline(line)
+        return (
+          <span key={i} className="break-words">
+            {nodes.map((n, j) => renderToken(n, `${i}-${j}`))}
+          </span>
+        )
       })}
     </>
   )
+}
+
+/**
+ * One token in the lightweight inline parser. `text` is rendered
+ * as plain runs; `code`, `bold`, and `italic` get their wrappers.
+ */
+type InlineToken =
+  | { kind: "text"; value: string }
+  | { kind: "code"; value: string }
+  | { kind: "bold"; value: string }
+  | { kind: "italic"; value: string }
+
+/**
+ * Tokenise one line (no newlines) into inline tokens. Order of
+ * precedence:
+ *
+ *   1. Backtick span (`` `…` ``) — wins over `*` so JSON keys
+ *      inside `code` don't get italicised.
+ *   2. `**…**` — bold (two-char opener is checked before single `*`).
+ *   3. `*…*` — italic.
+ *   4. Plain run up to the next special character.
+ *
+ * If an opener has no matching closer (e.g. a stray `` ` `` or `*`)
+ * we emit the opener as plain text and keep parsing — this avoids
+ * silently dropping characters when the user mistypes a closing
+ * delimiter.
+ */
+function parseInline(line: string): InlineToken[] {
+  const tokens: InlineToken[] = []
+  let i = 0
+  while (i < line.length) {
+    // ── 1. Code span ────────────────────────────────────────────────
+    if (line[i] === "`") {
+      const close = line.indexOf("`", i + 1)
+      if (close !== -1 && close > i + 1) {
+        tokens.push({ kind: "code", value: line.slice(i + 1, close) })
+        i = close + 1
+        continue
+      }
+      // No closer → emit the backtick as text and keep scanning.
+      tokens.push({ kind: "text", value: "`" })
+      i += 1
+      continue
+    }
+    // ── 2. Bold (`**…**`) — checked BEFORE italic so `**` wins ─────
+    if (line[i] === "*" && line[i + 1] === "*") {
+      const close = line.indexOf("**", i + 2)
+      if (close !== -1 && close > i + 2) {
+        tokens.push({ kind: "bold", value: line.slice(i + 2, close) })
+        i = close + 2
+        continue
+      }
+      // No closer — treat the two asterisks as literal text so the
+      // rest of the line still parses for italic / plain runs.
+      tokens.push({ kind: "text", value: "**" })
+      i += 2
+      continue
+    }
+    // ── 3. Italic (`*…*`) ──────────────────────────────────────────
+    if (line[i] === "*") {
+      const close = line.indexOf("*", i + 1)
+      if (close !== -1 && close > i + 1) {
+        tokens.push({ kind: "italic", value: line.slice(i + 1, close) })
+        i = close + 1
+        continue
+      }
+      tokens.push({ kind: "text", value: "*" })
+      i += 1
+      continue
+    }
+    // ── 4. Plain run up to the next special character ──────────────
+    const special = findSpecialIndex(line, i + 1)
+    tokens.push({ kind: "text", value: line.slice(i, special) })
+    i = special
+  }
+  return tokens
+}
+
+/**
+ * Locate the next `` ` `` or `*` starting at `from`. Returns
+ * `line.length` when no special character remains, so the caller
+ * can take the rest of the line as a plain run.
+ */
+function findSpecialIndex(line: string, from: number): number {
+  for (let i = from; i < line.length; i++) {
+    const c = line[i]
+    if (c === "`" || c === "*") return i
+  }
+  return line.length
+}
+
+/**
+ * Render one inline token. Nested markup is intentionally NOT
+ * supported — `**bold *with italic* inside**` will parse as
+ * `**bold ` + `*with italic*` + ` inside**`, leaving the trailing
+ * ` inside**` as plain text. Keeping the parser single-pass makes
+ * the failure modes obvious instead of silently mangling content.
+ */
+function renderToken(token: InlineToken, key: string) {
+  switch (token.kind) {
+    case "code":
+      return (
+        <code
+          key={key}
+          className="rounded-sm bg-surface-container-high px-1 py-0.5 font-mono text-[12px] text-on-surface"
+        >
+          {token.value}
+        </code>
+      )
+    case "bold":
+      return (
+        <strong key={key} className="font-sans font-semibold text-on-surface">
+          {token.value}
+        </strong>
+      )
+    case "italic":
+      return (
+        <em
+          key={key}
+          className="font-body italic text-on-surface"
+        >
+          {token.value}
+        </em>
+      )
+    case "text":
+      return <span key={key}>{token.value}</span>
+  }
 }
 
 export function UserMessage({
