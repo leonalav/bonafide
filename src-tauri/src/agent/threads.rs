@@ -616,7 +616,13 @@ pub fn replay_thread(
 
         match event {
             ThreadEvent::Message { id, role, content, ts, .. } => {
-                thread.messages.push(Message { id, role, content, ts });
+                thread.messages.push(Message {
+                    id,
+                    role,
+                    content,
+                    tool_call_id: None,
+                    ts,
+                });
             }
             ThreadEvent::StateTransition { from, to, ts, .. } => {
                 if let Some(new_state) = thread_state_from_str(&to) {

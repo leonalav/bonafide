@@ -31,7 +31,7 @@ use crate::agent::orchestrator::AgentRole;
 
 /// Result of a tool execution. Replaces the stub's `ToolResult` with the
 /// same variant set so the engine's call sites compile unchanged.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub enum ToolResult {
     Ok { summary: String },
     Skipped { reason: String },

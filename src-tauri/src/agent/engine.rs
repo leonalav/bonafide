@@ -455,6 +455,13 @@ impl AgentEngine {
                         "request_approval invoked",
                     );
                     self.emit_tool_call_event(thread, tool_call);
+                    // Remember which tool_call paused the loop
+                    // so `agent_approve_action` can execute it
+                    // directly on resume. Without this, the
+                    // engine would re-prompt the LLM and the
+                    // LLM would re-issue the same call,
+                    // producing another approval request.
+                    thread.pending_tool_call = Some(tool_call.clone());
                     return EngineResult::AwaitingApproval {
                         tool_call_id: tool_call.id.clone(),
                         reason: question,
@@ -491,6 +498,16 @@ impl AgentEngine {
                             ThreadState::AwaitingApproval,
                             &format!("approval required for {}", tool_call.function.name),
                         );
+                        // Remember which tool_call paused the
+                        // loop so `agent_approve_action` can
+                        // execute it directly on resume.
+                        // Without this, the engine would
+                        // re-prompt the LLM and the LLM would
+                        // re-issue the same call, producing
+                        // another approval request — exactly
+                        // the "click approve → nothing
+                        // happens" bug we're fixing.
+                        thread.pending_tool_call = Some(tool_call.clone());
                         return EngineResult::AwaitingApproval {
                             tool_call_id: tool_call.id.clone(),
                             reason: format!(
@@ -712,6 +729,11 @@ impl AgentEngine {
                                         ThreadState::AwaitingApproval,
                                         "critic revision budget exhausted",
                                     );
+                                    // Remember which tool_call
+                                    // paused the loop so the
+                                    // IPC handler can execute
+                                    // it directly on resume.
+                                    thread.pending_tool_call = Some(tool_call.clone());
                                     return EngineResult::AwaitingApproval {
                                         tool_call_id: tool_call.id.clone(),
                                         reason: format!(
@@ -1783,6 +1805,7 @@ mod tests {
                 id: format!("m{}", i),
                 role: "user".to_string(),
                 content: "x".repeat(500),
+                tool_call_id: None,
                 ts: i as i64,
             });
         }
@@ -2216,6 +2239,7 @@ mod tests {
             id: "m1".to_string(),
             role: "user".to_string(),
             content: "Why is run a3f9c12 diverging?".to_string(),
+            tool_call_id: None,
             ts: 0,
         });
         thread.hypothesis = Some(crate::agent::orchestrator::Hypothesis {

@@ -69,12 +69,25 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
                 artifact={a}
                 onApprove={
                   message.onApproveArtifact
-                    ? () => message.onApproveArtifact?.(a.id)
+                    // CRITICAL FIX (PROD): forward `a.name`
+                    // (the engine-supplied `toolCallId`) rather
+                    // than `a.id` (the React key, which is
+                    // sometimes a synthetic fallback like
+                    // `awaiting-approval-{msgId}` when the LLM
+                    // didn't populate the tool_call id). The
+                    // backend uses this id to locate the
+                    // pending tool_call in `llm_history` —
+                    // passing a synthetic id results in
+                    // "tool_call not found" and the tool
+                    // never executes, which is exactly why
+                    // clicking APPROVE on a patch felt like
+                    // "nothing happens" in the bug screenshot.
+                    ? () => message.onApproveArtifact?.(a.name ?? a.id)
                     : undefined
                 }
                 onReject={
                   message.onRejectArtifact
-                    ? () => message.onRejectArtifact?.(a.id)
+                    ? () => message.onRejectArtifact?.(a.name ?? a.id)
                     : undefined
                 }
               />

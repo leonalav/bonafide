@@ -313,6 +313,7 @@ pub async fn agent_send_message(
         id: uuid::Uuid::new_v4().to_string(),
         role: "user".to_string(),
         content: input.user_message.clone(),
+        tool_call_id: None,
         ts: chrono_millis(),
     };
     thread.messages.push(user_msg);
@@ -416,7 +417,58 @@ pub async fn agent_approve_action(
         Err(e) => return Err(format!("Failed to rehydrate thread: {e}")),
     };    let (accepted, new_state) = match input.decision.as_str() {
         "approve" => {
-            // Resume the loop — the engine will execute the approved tool.
+            // Smart resume: the engine paused with a pending
+            // tool_call (stored on the thread by the approval
+            // gate). Resume by (1) executing that pending call
+            // directly via the tool registry, (2) recording the
+            // result back on the thread, (3) clearing the
+            // pending slot, and (4) only THEN asking the
+            // engine to continue. This avoids the classic
+            // "approve → engine re-prompts LLM → LLM re-issues
+            // the same tool_call → another approval request"
+            // infinite loop that would otherwise happen
+            // because the LLM-facing history has no record of
+            // the approval decision.
+            //
+            // If no pending call is on the thread (renderer
+            // restart, or the LLM already produced text after
+            // approval was given), fall back to the old
+            // "just resume" path so the model can react to
+            // the human's decision with *some* output.
+            if let Some(pending) = thread.pending_tool_call.take() {
+                // Pop the synthetic "paused" tool message if
+                // it's still the most recent entry.
+                if let Some(last) = thread.messages.last() {
+                    if last.role == "tool"
+                        && last.tool_call_id.as_deref() == Some(pending.id.as_str())
+                    {
+                        thread.messages.pop();
+                    }
+                }
+
+                // Execute directly via the registry.
+                let result = ws_state.tool_registry.execute(&pending).await;
+
+                // Record the real result back on the thread
+                // so the LLM can see it on the next iteration.
+                thread.messages.push(Message {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    role: "tool".to_string(),
+                    content: serde_json::to_string(&result)
+                        .unwrap_or_else(|_| format!("{:?}", result)),
+                    tool_call_id: Some(pending.id.clone()),
+                    ts: chrono_millis(),
+                });
+            } else {
+                log::info!(
+                    "[agent_ipc] approve: thread {} had no \
+                     pending tool_call stored (renderer \
+                     restart?); resuming engine without \
+                     direct execute",
+                    thread.id,
+                );
+            }
+
             thread.state = ThreadState::Investigating;
             let engine = ws_state.build_engine(None);
             let _ = engine.run(&mut thread).await;
@@ -428,6 +480,7 @@ pub async fn agent_approve_action(
                 id: uuid::Uuid::new_v4().to_string(),
                 role: "system".to_string(),
                 content: "The user requested a revision. Please propose an alternative approach.".to_string(),
+                tool_call_id: None,
                 ts: chrono_millis(),
             });
             thread.state = ThreadState::Investigating;

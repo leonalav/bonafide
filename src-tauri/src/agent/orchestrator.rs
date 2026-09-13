@@ -84,6 +84,17 @@ pub struct Message {
     pub id: String,
     pub role: String,
     pub content: String,
+    /// `tool_call_id` of the originating `tool_calls[i]` when
+    /// this message is a tool result. `None` for system /
+    /// user / assistant messages.
+    ///
+    /// Used by the IPC handler to identify which synthetic
+    /// "paused" tool message corresponds to which pending
+    /// `tool_call` when the user approves, and lets the
+    /// engine pair `tool_result` messages with their calls
+    /// when reconstructing paired LLM-facing history.
+    #[serde(default)]
+    pub tool_call_id: Option<String>,
     pub ts: i64,
 }
 
@@ -185,6 +196,23 @@ pub struct Thread {
     /// owning struct to mutate.
     #[serde(default)]
     pub tool_artifacts: Vec<crate::agent::engine::ToolArtifact>,
+    /// The tool call that caused the engine to pause in
+    /// `AwaitingApproval`. When the user clicks APPROVE, the
+    /// IPC handler reads this field, executes the pending
+    /// call directly via the tool registry, pushes the real
+    /// result back on `messages`, clears this slot, and only
+    /// THEN asks the engine to continue. Without this
+    /// memory, the engine would re-prompt the LLM, the LLM
+    /// would re-issue the same `apply_patch`, and the user
+    /// would see another approval request — exactly the
+    /// "click approve → nothing happens → stuck on approval"
+    /// bug the renderer-side fix targeted.
+    ///
+    /// `None` at all other times. Not persisted with the
+    /// SQLite row because a renderer restart can fall back
+    /// to the legacy "just resume the engine" path.
+    #[serde(default)]
+    pub pending_tool_call: Option<crate::agent::llm::ToolCall>,
 }
 
 impl Thread {
@@ -218,6 +246,7 @@ impl Thread {
             hypothesis_iterations: 0,
             patch_revisions: 0,
             tool_artifacts: Vec::new(),
+            pending_tool_call: None,
         }
     }
 
