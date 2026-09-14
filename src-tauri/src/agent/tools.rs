@@ -1330,12 +1330,18 @@ fn handle_apply_patch(workspace_root: &std::path::Path, args: &JsonValue) -> Too
         return ToolResult::err(format!("backup write failed: {e}"));
     }
 
-    match apply_diff(&original, &patch) {
-        Ok(patched) => match std::fs::write(&full, &patched) {
-            Ok(()) => ToolResult::ok(format!("patch applied to {path}, backup at {path}.bak")),
-            Err(e) => ToolResult::err(format!("write after patch failed: {e}")),
-        },
-        Err(e) => ToolResult::err(format!("patch parse/apply failed: {e}")),
+    let patched = match apply_diff(&original, &patch) {
+        Ok(p) => p,
+        Err(e) => return ToolResult::err(format!("patch parse/apply failed: {e}")),
+    };
+    let preview = diff_preview(&original, &patched);
+    match std::fs::write(&full, &patched) {
+        Ok(()) => ToolResult::ok(format!(
+            "patch applied to {path} ({} change{})",
+            preview.lines_changed,
+            if preview.lines_changed == 1 { "" } else { "s" },
+        )),
+        Err(e) => ToolResult::err(format!("write after patch failed: {e}")),
     }
 }
 
@@ -1729,6 +1735,33 @@ fn apply_diff(original: &str, patch: &str) -> Result<String, String> {
 }
 
 // ── arXiv handlers ───────────────────────────────────────────────────────────
+
+/// Compute the number of changed lines between `before` and
+/// `after`. Used by `handle_apply_patch` to surface a useful one-line
+/// summary (e.g. "patch applied to foo.rs (3 changes)") instead of
+/// leaking the backup-file path into the user-facing artifact.
+///
+/// Counts both additions and removals; if a line appears on both
+/// sides it isn't counted. Operates on line-level equality only —
+/// fine for a status line, not for diff content (the full patch is
+/// already returned to the renderer via the artifact `args`).
+struct DiffPreview {
+    lines_changed: usize,
+}
+
+fn diff_preview(before: &str, after: &str) -> DiffPreview {
+    let before_lines: std::collections::HashSet<&str> =
+        before.lines().collect();
+    let after_lines: std::collections::HashSet<&str> =
+        after.lines().collect();
+    // Additions + removals, deduplicated by line content. A line
+    // appearing only on one side counts once.
+    let added = after_lines.difference(&before_lines).count();
+    let removed = before_lines.difference(&after_lines).count();
+    DiffPreview {
+        lines_changed: added + removed,
+    }
+}
 
 async fn search_arxiv(args: &JsonValue) -> ToolResult {
     let query = match require_str_field(args, "query") {
@@ -2172,6 +2205,24 @@ mod tests {
             summary.contains("Hint"),
             "error must include a hint for the next call, got: {summary}",
         );
+    }
+
+    /// `diff_preview` should count distinct lines on each side —
+    /// i.e. additions + removals — for the user-facing summary.
+    /// `b→B` is one removal + one addition (2 changes); `+d` is
+    /// one addition (1 change); total = 3.
+    #[test]
+    fn diff_preview_counts_changes() {
+        let before = "a\nb\nc\n";
+        let after = "a\nB\nc\nd\n";
+        assert_eq!(diff_preview(before, after).lines_changed, 3);
+    }
+
+    /// `diff_preview` returns 0 for identical inputs.
+    #[test]
+    fn diff_preview_zero_for_no_changes() {
+        let s = "a\nb\nc\n";
+        assert_eq!(diff_preview(s, s).lines_changed, 0);
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 import { Icon } from "../ui/Icon"
 import {
@@ -11,6 +11,14 @@ import { MODE_META, toCanonicalModeId } from "../../chats/types"
 import type { Attachment } from "../../chats/ChatStore"
 import { useWorkspaceRoot } from "../../ide/hooks"
 import { bonafide, type BudgetStatus } from "../../ipc/tauri"
+import {
+  MentionMenu,
+  computeCaretAnchor,
+  filterMentionEntries,
+  findActiveMention,
+  useWorkspaceMentionEntries,
+  type MentionEntry,
+} from "../chat/MentionMenu"
 
 // The mode picker surfaces the five canonical agent roles. The
 // identifier (`id`) is the snake_case `AgentRole` value the Rust
@@ -258,6 +266,32 @@ export function Composer({
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [menu, setMenu] = useState<"mode" | "model" | null>(null)
 
+  // @-mention menu state. The menu opens whenever the user's caret
+  // sits inside an active `@`-reference (handled by `findActiveMention`)
+  // and closes whenever they type whitespace or move the caret out.
+  const allEntries = useWorkspaceMentionEntries()
+  const [mentionOpen, setMentionOpen] = useState(false)
+  const [mentionQuery, setMentionQuery] = useState("")
+  const [mentionStart, setMentionStart] = useState(-1)
+  const [mentionHighlight, setMentionHighlight] = useState(0)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const [mentionAnchor, setMentionAnchor] =
+    useState<ReturnType<typeof computeCaretAnchor>>(null)
+
+  // Filtered + ranked entries for the current query.
+  const mentionEntries = useMemo<MentionEntry[]>(
+    () => filterMentionEntries(allEntries, mentionQuery).slice(0, 50),
+    [allEntries, mentionQuery],
+  )
+
+  // Whenever the entry list shrinks below the highlighted index,
+  // clamp the highlight so the cursor doesn't sit on a phantom row.
+  useEffect(() => {
+    if (mentionHighlight >= mentionEntries.length) {
+      setMentionHighlight(0)
+    }
+  }, [mentionHighlight, mentionEntries.length])
+
   // Controlled mode: parent owns the state, we just call onModeChange.
   // Uncontrolled mode: own state internally.
   const [internalMode, setInternalMode] =
@@ -452,6 +486,78 @@ export function Composer({
     onSubmit?.(trimmed, snapshot)
     setText("")
     setAttachments([])
+    setMentionOpen(false)
+    setMentionQuery("")
+    setMentionStart(-1)
+  }
+
+  // Refresh the active-mention state from the textarea. Called on
+  // every change / selection / focus event so the menu tracks the
+  // user's caret as they type. We deliberately re-read the
+  // textarea's DOM (selectionStart, getBoundingClientRect) rather
+  // than tracking caret via React state — selection changes can
+  // happen via keyboard / mouse without an onChange fire.
+  function refreshMentionFromCaret() {
+    const el = textareaRef.current
+    if (!el || sending) {
+      if (mentionOpen) {
+        setMentionOpen(false)
+        setMentionQuery("")
+        setMentionStart(-1)
+      }
+      return
+    }
+    const caret = el.selectionStart ?? 0
+    const active = findActiveMention(text, caret)
+    if (active) {
+      setMentionOpen(true)
+      setMentionQuery(active.query)
+      setMentionStart(active.start)
+      // Anchor the menu to the caret position (not the textarea
+      // bounding rect). The mirror-element technique in
+      // `computeCaretAnchor` measures the caret's true viewport
+      // position, which keeps the menu glued to the `@` token even
+      // on a multi-line composer where the textarea top is far
+      // above the caret. Falls back to the textarea rect when the
+      // textarea isn't laid out yet (e.g. first render after
+      // opening the panel).
+      const caretAnchor = computeCaretAnchor(el, active.start + 1)
+      setMentionAnchor(caretAnchor ?? el.getBoundingClientRect())
+      // Reset highlight when the query changes so the first match
+      // is always the one Enter picks by default.
+      setMentionHighlight(0)
+    } else if (mentionOpen) {
+      setMentionOpen(false)
+      setMentionQuery("")
+      setMentionStart(-1)
+    }
+  }
+
+  // Insert a chosen entry's chip token at the active mention
+  // position. Replaces the partial query text with the full
+  // reference (so the user doesn't have to delete the partial
+  // string themselves) and adds a trailing space so the next
+  // keystroke doesn't run into the chip.
+  function insertMention(entry: MentionEntry) {
+    const el = textareaRef.current
+    if (mentionStart < 0) return
+    const caret = el?.selectionStart ?? mentionStart + 1 + mentionQuery.length
+    const before = text.slice(0, mentionStart)
+    const after = text.slice(caret)
+    const inserted = `@${entry.relativePath} `
+    const next = before + inserted + after
+    setText(next)
+    setMentionOpen(false)
+    setMentionQuery("")
+    setMentionStart(-1)
+    // Place the caret right after the inserted chip so the user
+    // can keep typing without having to reposition the cursor.
+    requestAnimationFrame(() => {
+      if (!textareaRef.current) return
+      const pos = before.length + inserted.length
+      textareaRef.current.focus()
+      textareaRef.current.setSelectionRange(pos, pos)
+    })
   }
 
   return (
@@ -681,9 +787,69 @@ export function Composer({
         ) : null}
 
         <textarea
+          ref={textareaRef}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value)
+            // Defer to a microtask so the controlled value has
+            // landed in the DOM before `findActiveMention` reads
+            // selectionStart.
+            queueMicrotask(refreshMentionFromCaret)
+          }}
+          onSelect={refreshMentionFromCaret}
+          onFocus={refreshMentionFromCaret}
+          onBlur={() => {
+            // Delay closing so a click on a menu row (which fires
+            // mousedown on the row, not the textarea) still has a
+            // chance to insert the chip before the menu disappears.
+            setTimeout(() => {
+              if (
+                document.activeElement &&
+                document.activeElement.closest("[data-mention-menu]")
+              ) {
+                return
+              }
+              setMentionOpen(false)
+              setMentionQuery("")
+              setMentionStart(-1)
+            }, 80)
+          }}
           onKeyDown={(e) => {
+            // Mention-menu keys: when the menu is open, hijack
+            // ArrowUp/ArrowDown/Enter/Escape to drive selection
+            // before they fall through to the textarea.
+            if (mentionOpen && mentionEntries.length > 0) {
+              if (e.key === "ArrowDown") {
+                e.preventDefault()
+                setMentionHighlight((h) =>
+                  (h + 1) % mentionEntries.length,
+                )
+                return
+              }
+              if (e.key === "ArrowUp") {
+                e.preventDefault()
+                setMentionHighlight((h) =>
+                  (h - 1 + mentionEntries.length) %
+                    mentionEntries.length,
+                )
+                return
+              }
+              if (e.key === "Enter" && !e.shiftKey && !e.altKey) {
+                e.preventDefault()
+                const entry = mentionEntries[mentionHighlight]
+                if (entry) {
+                  insertMention(entry)
+                }
+                return
+              }
+              if (e.key === "Escape") {
+                e.preventDefault()
+                setMentionOpen(false)
+                setMentionQuery("")
+                setMentionStart(-1)
+                return
+              }
+            }
             // Enter sends; Shift+Enter (or Alt+Enter for Windows
             // users without an easy Shift modifier — a common
             // ergonomic ask) inserts a new line. We deliberately
@@ -708,6 +874,29 @@ export function Composer({
           placeholder={text || attachments.length > 0 ? "" : HINTS[safeMode]}
           className="w-full resize-none bg-transparent px-3 pb-9 pt-2 font-body text-[13px] leading-[19px] text-on-surface placeholder:text-outline focus:outline-none disabled:opacity-60"
         />
+
+        {/* @-mention menu — anchored to the textarea's bottom edge
+            so it floats directly underneath (or above, when there's
+            no room below). The `data-mention-menu` attribute is
+            checked in the textarea's onBlur to keep the menu alive
+            long enough for row clicks to fire. */}
+        {mentionOpen ? (
+          <div data-mention-menu>
+            <MentionMenu
+              anchor={mentionAnchor}
+              query={mentionQuery}
+              highlighted={mentionHighlight}
+              entries={mentionEntries}
+              onSelect={insertMention}
+              onHighlight={setMentionHighlight}
+              onClose={() => {
+                setMentionOpen(false)
+                setMentionQuery("")
+                setMentionStart(-1)
+              }}
+            />
+          </div>
+        ) : null}
 
         {/* Hidden file inputs — the visible buttons below click these
             programmatically. We keep `accept` narrow so the picker

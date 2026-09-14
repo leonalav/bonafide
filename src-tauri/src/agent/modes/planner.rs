@@ -10,9 +10,8 @@
 //!
 //! ## Behaviour knobs
 //!
-//! - `max_hypothesis_iterations = 1` — Planners propose; they don't
-//!   iterate hypotheses. Once a plan is presented, humans gate
-//!   execution.
+//! - `max_hypothesis_iterations = u32::MAX` — no cap; model runs until done or user stops.
+//!   Planners propose once; humans gate execution.
 //! - `min_confidence_to_propose_patch = 0.0` — Planners always
 //!   propose (the human is the gate, not the agent).
 
@@ -182,9 +181,8 @@ impl Mode for PlannerMode {
     }
 
     fn max_hypothesis_iterations(&self) -> u32 {
-        // Planners propose once; humans gate. Iteration belongs to
-        // the Debugger, not the Planner.
-        1
+        // Iteration cap removed — the model runs until it completes or the user stops it.
+        u32::MAX
     }
 
     fn min_confidence_to_propose_patch(&self) -> f32 {
@@ -237,13 +235,12 @@ mod tests {
         assert_eq!(steps.len(), 4);
     }
 
-    /// `planner_does_not_iterate_hypotheses`: max_hypothesis_iterations
-    /// is 1 — the Planner proposes once and lets the human gate.
-    /// Iteration is the Debugger's job, not the Planner's.
+    /// `planner_iteration_cap_removed`: max_hypothesis_iterations
+    /// is u32::MAX — iteration cap removed per user request.
     #[test]
-    fn planner_does_not_iterate_hypotheses() {
+    fn planner_iteration_cap_removed() {
         let mode = PlannerMode;
-        assert_eq!(mode.max_hypothesis_iterations(), 1);
+        assert_eq!(mode.max_hypothesis_iterations(), u32::MAX);
     }
 
     /// `planner_always_proposes`: min_confidence_to_propose_patch

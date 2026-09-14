@@ -100,6 +100,18 @@ export type ChatMessage = {
    */
   artifacts?: Artifact[]
   /**
+   * `true` when this assistant turn is currently mid-flight. Used
+   * by the renderer to render the `ReasoningArtifact` in its
+   * streaming state (animated dots, no confidence bar) so the user
+   * sees "thinking…" the moment the request is sent instead of
+   * waiting for the full engine result to land.
+   *
+   * Cleared by the renderer (or `updateMessage`) once the engine
+   * returns. Not persisted — replays of a finished conversation
+   * have `streaming === undefined`.
+   */
+  streaming?: boolean
+  /**
    * Per-artifact decision callbacks wired by the parent
    * (`AgentContent` for `ChatSurface`). Only present on the
    * *live* in-memory message that the user is currently viewing
@@ -296,7 +308,16 @@ function isValidMessage(m: unknown): m is ChatMessage {
     typeof o.content === "string" &&
     typeof o.ts === "number" &&
     attOk &&
-    artifactOk
+    artifactOk &&
+    // `streaming` is optional and untyped at runtime — we don't
+    // want a malformed entry to fail validation just because the
+    // renderer left a stale flag lying around. Accept anything
+    // truthy (boolean) or undefined; coerce anything else to false
+    // so `updateMessage` never produces an unusable message.
+    (o.streaming === undefined ||
+      typeof o.streaming === "boolean" ||
+      o.streaming === null ||
+      o.streaming === false)
   )
 }
 

@@ -95,6 +95,32 @@ pub struct Message {
     /// when reconstructing paired LLM-facing history.
     #[serde(default)]
     pub tool_call_id: Option<String>,
+    /// `tool_calls` issued by the assistant when this is an
+    /// assistant message that called tools. Each entry
+    /// carries an `id` that a subsequent `role: "tool"`
+    /// message references via its `tool_call_id` field, so
+    /// the LLM can attribute the tool result to the
+    /// originating call.
+    ///
+    /// Required by OpenAI-compatible providers (the
+    /// `tool_calls` field of an assistant message must pair
+    /// with the next message's `tool_call_id`) and by
+    /// Anthropic-style `tool_use` blocks. Without this
+    /// field, the LLM-facing history the engine sends
+    /// resumes as a bare assistant text message followed by
+    /// an "orphan" tool result — the LLM typically
+    /// re-issues the same tool_call (visible in the user
+    /// log as a second "awaiting_approval" card), which is
+    /// the loop that motivated adding the field.
+    ///
+    /// `None` for user / system / tool-result messages and
+    /// for assistant messages that did not call tools.
+    /// Pre-v3 logs (which predate this field) replay with
+    /// `tool_calls: None` — historical replays will see the
+    /// malformed pairing once, but new logs from this build
+    /// onward carry the field and the LLM loop is gone.
+    #[serde(default)]
+    pub tool_calls: Option<Vec<crate::agent::llm::ToolCall>>,
     pub ts: i64,
 }
 

@@ -60,9 +60,11 @@ pub enum ApprovalPolicy {
     /// Block anything not explicitly listed in the safe set (same as
     /// `DenyAll` for our use case; kept as a separate variant so
     /// future tuning can be policy-driven without changing callers).
+    #[allow(dead_code, reason = "future policy-driven tuning (WS2-T3+); not yet constructed outside tests")]
     AllowList(Vec<String>),
     /// Auto-approve everything. Use with care — only legitimate for
     /// fully-autonomous opt-in modes.
+    #[allow(dead_code, reason = "future fully-autonomous opt-in mode; not yet constructed outside tests")]
     AllowAll,
 }
 
@@ -229,6 +231,7 @@ impl ApprovalGate {
     ///
     /// Used by tests and by future WS2-T3 work that lets the user
     /// customise the matrix per workspace.
+    #[allow(dead_code, reason = "public API for tests and future per-workspace customisation (WS2-T3)")]
     pub fn new(
         safe: HashSet<String>,
         auto: HashMap<AgentRole, HashSet<String>>,
@@ -242,22 +245,38 @@ impl ApprovalGate {
         }
     }
 
+    /// Builder: replace the fallback policy used for tools that
+    /// aren't matched by the safe set, the per-role allowlist,
+    /// or the per-role approval list. The default builder always
+    /// uses `DenyAll`; this is the only path to opt into
+    /// `AllowList` or `AllowAll` and exists for future tuning of
+    /// the matrix without changing callers.
+    #[allow(dead_code, reason = "public API for tests and future policy-driven tuning (WS2-T3+)")]
+    pub fn with_policy(mut self, policy: ApprovalPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
     /// Look up the policy.
+    #[allow(dead_code, reason = "exposed for UI rendering of the matrix and for telemetry")]
     pub fn policy(&self) -> &ApprovalPolicy {
         &self.policy
     }
 
     /// Direct read-only access to the safe set.
+    #[allow(dead_code, reason = "exposed for UI rendering of the matrix")]
     pub fn safe_tools(&self) -> &HashSet<String> {
         &self.safe
     }
 
     /// Direct read-only access to a role's allowlist.
+    #[allow(dead_code, reason = "exposed for UI rendering of the per-role matrix")]
     pub fn auto_tools_for(&self, role: AgentRole) -> Option<&HashSet<String>> {
         self.tool_allowlist_per_mode.get(&role)
     }
 
     /// Direct read-only access to a role's approval list.
+    #[allow(dead_code, reason = "exposed for UI rendering of the per-role matrix")]
     pub fn approval_tools_for(&self, role: AgentRole) -> Option<&HashSet<String>> {
         self.tool_approval_per_mode.get(&role)
     }
@@ -308,6 +327,7 @@ impl ApprovalGate {
     }
 
     /// Convenience: returns `true` when `check` returns `Blocked`.
+    #[allow(dead_code, reason = "public convenience wrapper, pair of is_auto_approved and needs_approval which are used in tools.rs")]
     pub fn is_blocked(&self, role: AgentRole, tool_name: &str) -> bool {
         matches!(self.check(role, tool_name), Approval::Blocked)
     }
@@ -647,5 +667,422 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── WS3-T7 — surface coverage for unused policy variants and accessors ─────
+    //
+    // The remaining tests pin every public surface of `ApprovalGate`
+    // so the compiler can no longer emit "unused" warnings without
+    // the surface actually being silent. The intent: if a future
+    // change drops a variant or accessor, this block breaks loudly.
+
+    /// Builder equality: `default()` and a `new()` constructed from
+    /// the same safe/auto/approve triples must classify tools
+    /// identically. The `DenyAll` policy is the implicit default of
+    /// both constructors.
+    #[test]
+    fn new_construction_matches_default_classification() {
+        // Build a fresh gate from the same matrix that `default()`
+        // would use. The classification must match for the complete
+        // cross-product of (role, tool). This pins that
+        // `ApprovalGate::new` is structurally equivalent to
+        // `ApprovalGate::with_section_12_2_matrix` and to
+        // `ApprovalGate::default`.
+        let safe: HashSet<String> = [
+            "read_file",
+            "read_directory",
+            "search_files",
+            "list_runs",
+            "get_run",
+            "get_metric_series",
+            "get_run_config",
+            "list_artifacts",
+            "compare_runs",
+            "query_run_graph",
+            "query_code_graph",
+            "get_metric_summary",
+            "git_status",
+            "git_diff",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        let mut auto = HashMap::new();
+        auto.insert(AgentRole::Debugger, {
+            let mut s = HashSet::new();
+            s.insert("write_project_memory".to_string());
+            s
+        });
+        auto.insert(AgentRole::Scaffolder, {
+            let mut s = HashSet::new();
+            for t in [
+                "write_file",
+                "create_file",
+                "create_folder",
+                "rename_path",
+                "git_add",
+                "git_commit",
+                "run_smoke_test",
+            ] {
+                s.insert(t.to_string());
+            }
+            s
+        });
+        auto.insert(AgentRole::Planner, HashSet::new());
+        auto.insert(AgentRole::Researcher, {
+            let mut s = HashSet::new();
+            for t in ["search_arxiv", "read_paper", "query_project_memory"] {
+                s.insert(t.to_string());
+            }
+            s
+        });
+        auto.insert(AgentRole::Critic, {
+            let mut s = HashSet::new();
+            s.insert("query_project_memory".to_string());
+            s
+        });
+
+        let mut approve = HashMap::new();
+        approve.insert(AgentRole::Debugger, {
+            let mut s = HashSet::new();
+            for t in ["apply_patch", "run_smoke_test", "run_shell"] {
+                s.insert(t.to_string());
+            }
+            s
+        });
+        approve.insert(AgentRole::Scaffolder, {
+            let mut s = HashSet::new();
+            for t in ["run_shell", "pip_install"] {
+                s.insert(t.to_string());
+            }
+            s
+        });
+        approve.insert(
+            AgentRole::Planner,
+            ["launch_experiment_run", "create_experiment"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        );
+        approve.insert(AgentRole::Researcher, HashSet::new());
+        approve.insert(AgentRole::Critic, {
+            let mut s = HashSet::new();
+            s.insert("git_discard".to_string());
+            s
+        });
+
+        let explicit = ApprovalGate::new(safe, auto, approve);
+        let implicit = ApprovalGate::default();
+
+        let sampled_tools = [
+            "read_file",
+            "write_file",
+            "apply_patch",
+            "run_shell",
+            "git_discard",
+            "totally_unknown_tool",
+        ];
+        for role in [
+            AgentRole::Debugger,
+            AgentRole::Scaffolder,
+            AgentRole::Planner,
+            AgentRole::Researcher,
+            AgentRole::Critic,
+        ] {
+            for tool in sampled_tools {
+                assert_eq!(
+                    explicit.check(role, tool),
+                    implicit.check(role, tool),
+                    "explicit-new vs default mismatch for {role:?} {tool:?}",
+                );
+            }
+        }
+    }
+
+    /// `policy()` accessor: the default-constructed gate must
+    /// expose `ApprovalPolicy::DenyAll`. The variant is the strict
+    /// safety default; flipping it is a deliberate configuration
+    /// step (`new`/`builder`) rather than something an end user
+    /// can change at runtime in this codebase.
+    #[test]
+    fn policy_accessor_returns_deny_all_by_default() {
+        let gate = ApprovalGate::default();
+        assert!(
+            matches!(gate.policy(), ApprovalPolicy::DenyAll),
+            "the default policy must be DenyAll (unsafe variants are opt-in)"
+        );
+    }
+
+    /// `safe_tools()` accessor: the exposed read-only view of the
+    /// safe set must contain every tool documented in section 12.2
+    /// as "safe" (read-only introspection), and must not contain
+    /// any role-specific auto-approved tool such as the Debugger's
+    /// `write_project_memory` (which sits in the role map, not in
+    /// the cross-role safe set).
+    #[test]
+    fn safe_tools_accessor_exposes_section_12_2_safe_set() {
+        let gate = ApprovalGate::default();
+        let safe = gate.safe_tools();
+
+        // Must contain every "safe" tool from the spec table.
+        for tool in [
+            "read_file",
+            "read_directory",
+            "search_files",
+            "list_runs",
+            "get_run",
+            "get_metric_series",
+            "get_run_config",
+            "list_artifacts",
+            "compare_runs",
+            "query_run_graph",
+            "query_code_graph",
+            "get_metric_summary",
+            "git_status",
+            "git_diff",
+        ] {
+            assert!(safe.contains(tool), "safe set must contain {tool}");
+        }
+
+        // Must NOT contain role-specific auto-approved tools — those
+        // live in `auto_tools_for(role)`, not in the cross-role
+        // safe set. If `write_project_memory` ever leaks into the
+        // safe set, *every* role would gain write access to memory,
+        // which is a hard privilege-escalation bug.
+        assert!(
+            !safe.contains("write_project_memory"),
+            "Debugger's write_project_memory must NOT be in the cross-role safe set",
+        );
+        assert!(
+            !safe.contains("write_file"),
+            "Scaffolder's write_file must NOT be in the cross-role safe set",
+        );
+    }
+
+    /// `auto_tools_for()` accessor: for every role, the per-role
+    /// allowlist view must reflect the section-12.2 row exactly.
+    /// The accessor is a leaky abstraction on purpose — callers
+    /// that need to render the matrix in the UI use it.
+    #[test]
+    fn auto_tools_for_matches_section_12_2_per_role_allowlist() {
+        let gate = ApprovalGate::default();
+
+        let debugger = gate.auto_tools_for(AgentRole::Debugger).expect("Debugger allowlist exists");
+        assert!(debugger.contains("write_project_memory"));
+
+        let scaffolder = gate
+            .auto_tools_for(AgentRole::Scaffolder)
+            .expect("Scaffolder allowlist exists");
+        for tool in [
+            "write_file",
+            "create_file",
+            "create_folder",
+            "rename_path",
+            "git_add",
+            "git_commit",
+            "run_smoke_test",
+        ] {
+            assert!(scaffolder.contains(tool), "Scaffolder auto-approves {tool}");
+        }
+
+        let planner = gate
+            .auto_tools_for(AgentRole::Planner)
+            .expect("Planner allowlist exists");
+        assert!(planner.is_empty(), "Planner has no per-role auto-approved tools");
+
+        let researcher = gate
+            .auto_tools_for(AgentRole::Researcher)
+            .expect("Researcher allowlist exists");
+        for tool in ["search_arxiv", "read_paper", "query_project_memory"] {
+            assert!(researcher.contains(tool), "Researcher auto-approves {tool}");
+        }
+
+        let critic = gate
+            .auto_tools_for(AgentRole::Critic)
+            .expect("Critic allowlist exists");
+        assert!(critic.contains("query_project_memory"));
+    }
+
+    /// `approval_tools_for()` accessor: per-role approval-required
+    /// view. Researcher has no approval-required tools; the
+    /// accessor must return an empty set (not `None`).
+    #[test]
+    fn approval_tools_for_matches_section_12_2_per_role_approval_list() {
+        let gate = ApprovalGate::default();
+
+        let debugger = gate
+            .approval_tools_for(AgentRole::Debugger)
+            .expect("Debugger approval list exists");
+        for tool in ["apply_patch", "run_smoke_test", "run_shell"] {
+            assert!(
+                debugger.contains(tool),
+                "Debugger must require approval for {tool}"
+            );
+        }
+
+        let researcher = gate
+            .approval_tools_for(AgentRole::Researcher)
+            .expect("Researcher approval list exists (empty)");
+        assert!(
+            researcher.is_empty(),
+            "Researcher (read-only role) has no approval-required tools"
+        );
+
+        let planner = gate
+            .approval_tools_for(AgentRole::Planner)
+            .expect("Planner approval list exists");
+        for tool in ["launch_experiment_run", "create_experiment"] {
+            assert!(
+                planner.contains(tool),
+                "Planner must require approval for {tool}"
+            );
+        }
+
+        let critic = gate
+            .approval_tools_for(AgentRole::Critic)
+            .expect("Critic approval list exists");
+        assert!(critic.contains("git_discard"));
+    }
+
+    /// `is_auto_approved()`, `needs_approval()`, `is_blocked()`
+    /// convenience wrappers: each must return `true` for exactly
+    /// one of the three buckets, and `false` for the other two,
+    /// per the section-12.2 matrix cell. The combination of the
+    /// three wrappers is a behavioural contract that downstream
+    /// engine code relies on (see `engine.rs` switch on the
+    /// `Approval` enum).
+    #[test]
+    fn convenience_wrappers_partition_each_tool_into_exactly_one_bucket() {
+        let gate = ApprovalGate::default();
+
+        // Spot-check a tool from each bucket per role.
+        let cases: &[(AgentRole, &str, Approval)] = &[
+            (AgentRole::Debugger, "read_file", Approval::AutoApprove),
+            (AgentRole::Debugger, "apply_patch", Approval::NeedApproval),
+            (AgentRole::Debugger, "write_file", Approval::Blocked),
+            (AgentRole::Scaffolder, "write_file", Approval::AutoApprove),
+            (AgentRole::Scaffolder, "run_shell", Approval::NeedApproval),
+            (AgentRole::Scaffolder, "apply_patch", Approval::Blocked),
+            (AgentRole::Planner, "create_experiment", Approval::NeedApproval),
+            (AgentRole::Planner, "run_shell", Approval::Blocked),
+            (AgentRole::Researcher, "search_arxiv", Approval::AutoApprove),
+            (AgentRole::Researcher, "run_shell", Approval::Blocked),
+            (AgentRole::Critic, "query_project_memory", Approval::AutoApprove),
+            (AgentRole::Critic, "git_discard", Approval::NeedApproval),
+        ];
+
+        for (role, tool, expected) in cases {
+            // The wrapper under test must report `true` for the
+            // expected bucket and `false` for the other two.
+            assert_eq!(
+                gate.is_auto_approved(*role, tool),
+                matches!(expected, Approval::AutoApprove),
+                "is_auto_approved mismatch for {role:?} {tool:?}",
+            );
+            assert_eq!(
+                gate.needs_approval(*role, tool),
+                matches!(expected, Approval::NeedApproval),
+                "needs_approval mismatch for {role:?} {tool:?}",
+            );
+            assert_eq!(
+                gate.is_blocked(*role, tool),
+                matches!(expected, Approval::Blocked),
+                "is_blocked mismatch for {role:?} {tool:?}",
+            );
+
+            // Exactly one wrapper must report `true` per (role, tool).
+            let truth_count = [
+                gate.is_auto_approved(*role, tool),
+                gate.needs_approval(*role, tool),
+                gate.is_blocked(*role, tool),
+            ]
+            .iter()
+            .filter(|b| **b)
+            .count();
+            assert_eq!(
+                truth_count, 1,
+                "{role:?} {tool:?}: exactly one convenience wrapper must report true (got {truth_count})",
+            );
+        }
+    }
+
+    /// `ApprovalPolicy::AllowAll`: every tool — including ones not
+    /// in any allowlist — becomes `AutoApprove`. This is the
+    /// fully-autonomous opt-in mode and is intentionally
+    /// unreachable from the default builder.
+    #[test]
+    fn allow_all_policy_auto_approves_every_tool() {
+        // Configure an `AllowAll` gate on top of the default
+        // section-12.2 matrix. Result: every tool — including ones
+        // the matrix blocks — must be auto-approved.
+        let gate = ApprovalGate::default().with_policy(ApprovalPolicy::AllowAll);
+
+        assert_eq!(
+            gate.check(AgentRole::Researcher, "run_shell"),
+            Approval::AutoApprove,
+            "AllowAll must auto-approve run_shell for Researcher (normally Blocked)",
+        );
+        assert_eq!(
+            gate.check(AgentRole::Debugger, "create_experiment"),
+            Approval::AutoApprove,
+            "AllowAll must auto-approve create_experiment for Debugger (normally Blocked)",
+        );
+        assert_eq!(
+            gate.check(AgentRole::Critic, "delete_path"),
+            Approval::AutoApprove,
+            "AllowAll must auto-approve delete_path for Critic (normally Blocked)",
+        );
+        // The safe set is still consulted first, but with AllowAll
+        // the fallback also returns AutoApprove — so the overall
+        // answer is still AutoApprove.
+        assert_eq!(
+            gate.check(AgentRole::Planner, "read_file"),
+            Approval::AutoApprove,
+        );
+    }
+
+    /// `ApprovalPolicy::AllowList`: an explicit override list of
+    /// tools auto-approved for any role when they aren't matched
+    /// by the per-role map. Tools not in the list still fall
+    /// through to `Blocked`. This variant exists so future tuning
+    /// can be policy-driven without changing callers.
+    #[test]
+    fn allow_list_policy_auto_approves_listed_tools_only() {
+        // Add two experimental tools to the override list. The
+        // section-12.2 matrix remains intact underneath.
+        let gate = ApprovalGate::default().with_policy(ApprovalPolicy::AllowList(vec![
+            "experimental_tool_alpha".to_string(),
+            "experimental_tool_beta".to_string(),
+        ]));
+
+        // Listed tools: AutoApprove, even for roles that would
+        // normally Block them.
+        assert_eq!(
+            gate.check(AgentRole::Researcher, "experimental_tool_alpha"),
+            Approval::AutoApprove,
+            "AllowList entry must be auto-approved for every role",
+        );
+        assert_eq!(
+            gate.check(AgentRole::Critic, "experimental_tool_beta"),
+            Approval::AutoApprove,
+        );
+
+        // Non-listed, non-safe, non-role-approved tools: still
+        // Blocked.
+        assert_eq!(
+            gate.check(AgentRole::Debugger, "totally_unknown_tool"),
+            Approval::Blocked,
+            "AllowList fallback to Blocked for unlisted tools must hold",
+        );
+
+        // Safe-set membership still wins; AllowList does not
+        // override a tool that already auto-approved through the
+        // safe set, but the answer stays `AutoApprove` either way.
+        assert_eq!(
+            gate.check(AgentRole::Researcher, "search_arxiv"),
+            Approval::AutoApprove,
+            "safe-set membership + per-role allowlist must still yield AutoApprove",
+        );
     }
 }

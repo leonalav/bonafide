@@ -9,7 +9,7 @@
 //!
 //! ## Behaviour knobs
 //!
-//! - `max_hypothesis_iterations = 3` — escalate after three failed hypothesis revisions.
+//! - `max_hypothesis_iterations = u32::MAX` — no cap; model runs until done or user stops.
 //! - `min_confidence_to_propose_patch = 0.5` — below 50% confidence the agent must keep gathering.
 //! - `behavior_marker_resolved = "## Resolved"` — drives the → Resolved state transition.
 
@@ -192,7 +192,8 @@ impl Mode for DebuggerMode {
     }
 
     fn max_hypothesis_iterations(&self) -> u32 {
-        3
+        // Iteration cap removed — the model runs until it completes or the user stops it.
+        u32::MAX
     }
 
     fn min_confidence_to_propose_patch(&self) -> f32 {
@@ -238,14 +239,13 @@ mod tests {
     }
 
     /// `hypothesis_thresholds_match_section_5_2`: the Debugger
-    /// escalates after three failed revisions and refuses to
-    /// propose a patch below 50% confidence. Pin these so future
+    /// uses u32::MAX for hypothesis iterations (no cap). Pin these so future
     /// refactors don't drift away from the spec's escape-hatch
     /// language.
     #[test]
     fn hypothesis_thresholds_match_section_5_2() {
         let mode = DebuggerMode;
-        assert_eq!(mode.max_hypothesis_iterations(), 3);
+        assert_eq!(mode.max_hypothesis_iterations(), u32::MAX);
         assert!((mode.min_confidence_to_propose_patch() - 0.5).abs() < f32::EPSILON);
     }
 

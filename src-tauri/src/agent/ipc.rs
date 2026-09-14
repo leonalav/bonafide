@@ -42,7 +42,7 @@ use crate::agent::orchestrator::{
     AgentRole, Budget, Message, Thread, ThreadState,
 };
 use crate::agent::threads::{
-    get_thread, list_threads, upsert_thread, ThreadRow,
+    append_thread_event, get_thread, list_threads, upsert_thread, ThreadEvent, ThreadRow,
 };
 use crate::agent::tools::ToolRegistry;
 
@@ -248,7 +248,7 @@ pub struct StopThreadOutput {
     pub stopped: bool,
 }
 
-/// Input for `agent_approve_action`.
+/// Input for `agent_approve_action` / `agent_reject_action`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApproveActionInput {
@@ -256,6 +256,21 @@ pub struct ApproveActionInput {
     pub tool_call_id: String,
     /// "approve" | "revise" | "reject"
     pub decision: String,
+    /// The fully-configured endpoint the renderer selected.
+    /// `None` when the user has not configured any endpoint (the
+    /// engine will return `EngineResult::LlmError` with the standard
+    /// "not configured" message).
+    ///
+    /// CRITICAL FIX (PROD): the renderer previously only forwarded
+    /// the endpoint on `agent_send_message`. When the user clicked
+    /// APPROVE on a tool, the resume engine.run was built with
+    /// `build_engine(None)` and silently fell back to the
+    /// `NoopLlmClientForIpc` — surfacing a misleading "Agent
+    /// endpoint not configured" error even though the endpoint was
+    /// perfectly fine moments earlier. Forwarding it here restores
+    /// the original LLM client on resume.
+    #[serde(default)]
+    pub endpoint: Option<EndpointPayload>,
 }
 
 /// Output for `agent_approve_action` / `agent_reject_action`.
@@ -265,6 +280,30 @@ pub struct ApprovalDecisionOutput {
     pub thread_id: String,
     pub accepted: bool,
     pub new_state: ThreadState,
+    /// Engine result from the resume after the user's decision.
+    /// `None` for `"reject"` because the engine does not re-run after
+    /// rejection (the thread is moved to `Rejected` and that's the end
+    /// of the loop). For `"approve"` and `"revise"`, this is whatever
+    /// `engine.run` produced on the next iteration: `Completed`,
+    /// `AwaitingApproval` (a second tool needs approval), `BudgetExceeded`,
+    /// or `LlmError`.
+    ///
+    /// CRITICAL FIX (PROD): without this field the renderer couldn't
+    /// see what the engine did after the approval. `onApproveArtifact`
+    /// in the chat surface was fire-and-forget on the original
+    /// `(threadId, accepted, newState)` payload, so the body text
+    /// stayed as the stale "🔐 Approval Required / Tool call: ..."
+    /// markdown even after the engine had successfully resumed and
+    /// produced a final answer. Surfacing the result here lets the
+    /// renderer patch the chat the same way `agent_send_message`
+    /// already does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub result: Option<EngineResult>,
+    /// Structured tool-call records produced during the resume.
+    /// Empty for `"reject"`. The renderer turns each entry into an
+    /// inline `ToolArtifact` card under the assistant message.
+    #[serde(default)]
+    pub tool_artifacts: Vec<ToolArtifact>,
 }
 
 // ── IPC commands ─────────────────────────────────────────────────────────────
@@ -309,13 +348,25 @@ pub async fn agent_send_message(
     }
 
     // 2. Append the user message.
+    //
+    // CRITICAL FIX (PROD): also persist the message to the JSONL
+    // event log so `engine.run()`'s `replay_thread` call
+    // rehydrates it on the next iteration. Without this, the
+    // in-memory push is silently overwritten by replay — the LLM
+    // sees no user message, ignores the prompt, and emits
+    // arbitrary tool calls or generic responses.
     let user_msg = Message {
         id: uuid::Uuid::new_v4().to_string(),
         role: "user".to_string(),
         content: input.user_message.clone(),
         tool_call_id: None,
+        tool_calls: None,
         ts: chrono_millis(),
     };
+    let _ = append_thread_event(
+        &thread.event_log_path,
+        &ThreadEvent::from_message(&user_msg),
+    );
     thread.messages.push(user_msg);
 
     // 3. Build the engine and run.
@@ -415,7 +466,9 @@ pub async fn agent_approve_action(
     let mut thread = match row_to_thread(&row, &workspace_root_buf, ws_state.tool_registry.clone()) {
         Ok(t) => t,
         Err(e) => return Err(format!("Failed to rehydrate thread: {e}")),
-    };    let (accepted, new_state) = match input.decision.as_str() {
+    };
+
+    let (accepted, new_state, result, tool_artifacts) = match input.decision.as_str() {
         "approve" => {
             // Smart resume: the engine paused with a pending
             // tool_call (stored on the thread by the approval
@@ -451,46 +504,116 @@ pub async fn agent_approve_action(
 
                 // Record the real result back on the thread
                 // so the LLM can see it on the next iteration.
-                thread.messages.push(Message {
+                //
+                // CRITICAL FIX (PROD): the engine's `run()` calls
+                // `replay_thread()` on every invocation, which
+                // **overwrites** `thread.messages` from the JSONL
+                // event log. Before this fix, the just-pushed tool
+                // message was discarded on the next `engine.run`,
+                // so the LLM never saw the `apply_patch` result,
+                // re-issued the same tool_call, and the loop
+                // re-prompted the user with another approval card.
+                // The fix is two-fold: (1) push the Message into
+                // `thread.messages` (already done), AND (2) append
+                // the same Message to the JSONL event log so
+                // `replay_thread` rehydrates it. Without (2), the
+                // in-memory push is silently dropped.
+                let tool_msg = Message {
                     id: uuid::Uuid::new_v4().to_string(),
                     role: "tool".to_string(),
                     content: serde_json::to_string(&result)
                         .unwrap_or_else(|_| format!("{:?}", result)),
                     tool_call_id: Some(pending.id.clone()),
+                    tool_calls: None,
                     ts: chrono_millis(),
-                });
+                };
+                let _ = append_thread_event(
+                    &thread.event_log_path,
+                    &ThreadEvent::from_message(&tool_msg),
+                );
+                thread.messages.push(tool_msg);
+
+                // CRITICAL FIX: emit a `StateTransition` to
+                // `Investigating` so the JSONL event log records
+                // that this approval was processed. Without this,
+                // `replay_thread` on the next reload would still
+                // see the thread in `AwaitingApproval` AND would
+                // re-set `thread.pending_tool_call` from the
+                // previously-persisted `PendingApproval` event —
+                // re-executing the same tool_call on the *next*
+                // user click. The state-transition event tells
+                // replay "the pending approval is resolved; clear
+                // it", which the `StateTransition` arm in
+                // `replay_thread` does by setting
+                // `pending_tool_call = None` whenever the new
+                // state is not `AwaitingApproval`.
+                let _ = append_thread_event(
+                    &thread.event_log_path,
+                    &ThreadEvent::state_transition(
+                        ThreadState::AwaitingApproval,
+                        ThreadState::Investigating,
+                        chrono_millis(),
+                    ),
+                );
             } else {
                 log::info!(
                     "[agent_ipc] approve: thread {} had no \
                      pending tool_call stored (renderer \
-                     restart?); resuming engine without \
-                     direct execute",
+                     restart on a pre-WS2-T7 log?); resuming \
+                     engine without direct execute",
                     thread.id,
                 );
             }
 
             thread.state = ThreadState::Investigating;
-            let engine = ws_state.build_engine(None);
-            let _ = engine.run(&mut thread).await;
-            (true, thread.state)
+            let engine = ws_state.build_engine(input.endpoint.as_ref());
+            let result = engine.run(&mut thread).await;
+            let result = sanitise_llm_error(result);
+            // Hand the engine's tool-artifact trail back to the renderer
+            // so it can refresh the inline cards in the assistant message.
+            // This is the same shape `agent_send_message` returns, so the
+            // renderer can reuse the same update path.
+            let tool_artifacts = std::mem::take(&mut thread.tool_artifacts);
+            (true, thread.state, Some(result), tool_artifacts)
         }
         "revise" => {
             // Inject a system message asking the LLM to revise its proposal.
-            thread.messages.push(Message {
+            //
+            // CRITICAL: also persist to the JSONL event log so the
+            // engine's `replay_thread` on the next `engine.run`
+            // rehydrates the message. Without this, the in-memory
+            // push is silently overwritten by replay and the LLM
+            // never sees the revision request.
+            let revise_msg = Message {
                 id: uuid::Uuid::new_v4().to_string(),
                 role: "system".to_string(),
                 content: "The user requested a revision. Please propose an alternative approach.".to_string(),
                 tool_call_id: None,
+                tool_calls: None,
                 ts: chrono_millis(),
-            });
+            };
+            let _ = append_thread_event(
+                &thread.event_log_path,
+                &ThreadEvent::from_message(&revise_msg),
+            );
+            thread.messages.push(revise_msg);
             thread.state = ThreadState::Investigating;
-            let engine = ws_state.build_engine(None);
-            let _ = engine.run(&mut thread).await;
-            (true, thread.state)
+            let engine = ws_state.build_engine(input.endpoint.as_ref());
+            let result = engine.run(&mut thread).await;
+            let result = sanitise_llm_error(result);
+            let tool_artifacts = std::mem::take(&mut thread.tool_artifacts);
+            (true, thread.state, Some(result), tool_artifacts)
         }
         "reject" => {
+            // Refuse the tool call: mark the thread `Rejected` and signal
+            // the renderer to clear the body / mark the approval artifact
+            // failed. We intentionally do NOT re-run the engine here —
+            // there's no work to resume after a refusal.
+            //
+            // `result = None` tells the renderer "no engine output to
+            // surface" so it can short-circuit the body update path.
             thread.state = ThreadState::Rejected;
-            (false, ThreadState::Rejected)
+            (false, ThreadState::Rejected, None, Vec::new())
         }
         other => return Err(format!("Unknown decision: {other}")),
     };
@@ -504,6 +627,8 @@ pub async fn agent_approve_action(
         thread_id: input.thread_id,
         accepted,
         new_state,
+        result,
+        tool_artifacts,
     })
 }
 
@@ -596,6 +721,25 @@ fn row_to_thread(row: &ThreadRow, root: &std::path::Path, _tool_registry: Arc<To
     thread.budget.spent_dollars = row.budget_spent_dollars;
     thread.budget.spent_gpu_hours = row.budget_spent_gpu_hours;
 
+    // Restore the persisted `model_id` so the rehydrated thread
+    // carries the user's selection across renderer restarts. The
+    // IPC `agent_send_message` override still wins when the
+    // renderer re-sends `modelId`, so this is purely a fallback
+    // for the case where the renderer omits the field (e.g. a
+    // future surface that forgets, or the `agent_approve_action`
+    // resume path which currently also re-forwards `modelId`).
+    //
+    // Pre-v3 rows have `model_id: None` — the field is nullable
+    // and the migration is additive, so existing rows rehydrate
+    // unchanged. The first send after the migration writes the
+    // column and subsequent rehydrates pick it up.
+    if let Some(persisted) = row.model_id.as_ref() {
+        let trimmed = persisted.trim();
+        if !trimmed.is_empty() {
+            thread.model_id = persisted.clone();
+        }
+    }
+
     if let Ok(replayed) = crate::agent::threads::replay_thread(
         &thread.event_log_path,
         row.id.clone(),
@@ -607,6 +751,21 @@ fn row_to_thread(row: &ThreadRow, root: &std::path::Path, _tool_registry: Arc<To
         // replay_thread may have set a more recent state — prefer
         // whatever the event log says, falling back to the DB row.
         thread.state = replayed.state;
+        // CRITICAL FIX (PROD): also copy `pending_tool_call`
+        // from the replayed thread. `replay_thread` correctly
+        // rehydrates this field from the `PendingApproval`
+        // event in the JSONL log (the in-memory field is NOT
+        // stored in the SQLite row because a renderer restart
+        // is recovered via the event log). Without this copy,
+        // the IPC `agent_approve_action` handler couldn't
+        // execute the pending call after a renderer restart —
+        // it fell into the "had no pending tool_call stored"
+        // branch, called `engine.run` without first executing
+        // the tool, and the engine looped back to
+        // `AwaitingApproval` forever ("click APPROVE → nothing
+        // happens → click again → another approval card"). This
+        // is the exact bug the user hit 8 times in a row.
+        thread.pending_tool_call = replayed.pending_tool_call;
     }
 
     Ok(thread)
@@ -666,6 +825,20 @@ fn persist_thread(thread: &Thread, workspace_root: &str) -> Result<(), String> {
         hypothesis,
         patch_diff,
         smoke_result: None,
+        // Persist the model the user picked so rehydrating after a
+        // renderer restart does not silently fall back to the
+        // hardcoded `Thread::new` seed (`"claude-sonnet-4"`). Empty
+        // strings are stored as `None` so a future caller that
+        // accidentally sets `model_id = ""` cannot reintroduce the
+        // seed value on the next rehydrate.
+        model_id: {
+            let trimmed = thread.model_id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(thread.model_id.clone())
+            }
+        },
     };
 
     upsert_thread(&conn, &row).map_err(|e| format!("upsert_thread: {e}"))

@@ -251,10 +251,8 @@ impl Mode for CriticMode {
     }
 
     fn max_hypothesis_iterations(&self) -> u32 {
-        // Max revisions before giving up on a patch (section 5.6
-        // implies the Critic can be called up to 3 times before
-        // the engine should stop retrying).
-        3
+        // Iteration cap removed — the model runs until it completes or the user stops it.
+        u32::MAX
     }
 
     fn min_confidence_to_propose_patch(&self) -> f32 {
@@ -450,11 +448,12 @@ mod tests {
     /// `critic_never_proposes_patches`: the invariant is encoded
     /// as `min_confidence_to_propose_patch == 0.0` so a future
     /// refactor can't accidentally let the Critic ship a patch.
+    /// Iteration cap is u32::MAX (no cap).
     #[test]
     fn critic_never_proposes_patches() {
         let mode = CriticMode;
         assert_eq!(mode.min_confidence_to_propose_patch(), 0.0);
-        assert_eq!(mode.max_hypothesis_iterations(), 3);
+        assert_eq!(mode.max_hypothesis_iterations(), u32::MAX);
     }
 
     /// `review_proposal_presentable_path`: a well-formed patch +

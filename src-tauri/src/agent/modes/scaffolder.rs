@@ -184,7 +184,8 @@ impl Mode for ScaffolderMode {
     }
 
     fn max_hypothesis_iterations(&self) -> u32 {
-        3
+        // Iteration cap removed — the model runs until it completes or the user stops it.
+        u32::MAX
     }
 
     fn min_confidence_to_propose_patch(&self) -> f32 {

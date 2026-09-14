@@ -13,13 +13,29 @@
 //! ALTER TABLE threads ADD COLUMN smoke_result TEXT;      -- smoke test outcome
 //! ```
 //!
+//! The v3 schema adds one column to remember the model the user
+//! selected for the thread:
+//!
+//! ```sql
+//! ALTER TABLE threads ADD COLUMN model_id TEXT;
+//! ```
+//!
+//! Without this, `row_to_thread` always rehydrates with the
+//! hardcoded `"claude-sonnet-4"` seed from `Thread::new` and the
+//! renderer has to re-send `modelId` on every submit. With the
+//! column present, the persisted value becomes the authoritative
+//! fallback when the renderer omits the field (defense in depth
+//! against the bug that motivated it: RunSurface used to forget
+//! to forward `modelId`, so the override never ran).
+//!
 //! ## Idempotency
 //!
-//! `ensure_v2_columns` is safe to call on every workspace open. We
-//! check `pragma_table_info('threads')` for each column and only run
-//! the `ALTER TABLE` when it's missing. This means:
+//! `ensure_v2_columns` and `ensure_model_id_column` are safe to call
+//! on every workspace open. We check `pragma_table_info('threads')`
+//! for each column and only run the `ALTER TABLE` when it's missing.
+//! This means:
 //!
-//! - Fresh workspaces get the v2 columns applied once.
+//! - Fresh workspaces get the columns applied once.
 //! - Existing workspaces get the columns added on first open after upgrade.
 //! - Subsequent opens see all columns present and skip the `ALTER`.
 //!
@@ -95,6 +111,24 @@ pub fn ensure_v2_columns(conn: &Connection) -> Result<usize> {
     }
 
     Ok(added)
+}
+
+/// Ensure the v3 `model_id` column is present on the `threads` table.
+///
+/// Idempotent. Safe to call on every workspace open. The column
+/// stores the model the user selected for the thread (the
+/// endpoint's `defaultModel` or the built-in picker). Rehydrating
+/// from this column restores the thread's `model_id` after a
+/// renderer restart so the next engine run does not silently fall
+/// back to the `Thread::new` seed value.
+///
+/// Pre-existing rows (where the column lands as `NULL`) keep
+/// working — `row_to_thread` treats `NULL` as "use whatever the
+/// renderer sends, or the seed default", which matches the
+/// pre-v3 behaviour exactly. The first send after the migration
+/// will populate the column via `upsert_thread`.
+pub fn ensure_model_id_column(conn: &Connection) -> Result<bool> {
+    add_column_if_missing(conn, "model_id", "model_id TEXT")
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -218,5 +252,39 @@ mod tests {
                 "column {col} should be present after migration"
             );
         }
+    }
+
+    /// `ensure_model_id_column_is_idempotent`: calling the v3
+    /// migration twice must not error, and the second call must be
+    /// a no-op. This is the same idempotency contract as v2 — the
+    /// migration runs on every workspace open.
+    #[test]
+    fn ensure_model_id_column_is_idempotent() {
+        let conn = fresh_threads_db();
+        ensure_v2_columns(&conn).unwrap();
+
+        // First call: adds the column.
+        let added_first = ensure_model_id_column(&conn).unwrap();
+        assert!(added_first, "first call must add the model_id column");
+        assert!(column_exists(&conn, "model_id").unwrap());
+
+        // Second call: column already present, no error, no change.
+        let added_second = ensure_model_id_column(&conn).unwrap();
+        assert!(
+            !added_second,
+            "second call must be a no-op (column already present)"
+        );
+    }
+
+    /// `ensure_model_id_column_works_alone`: the v3 migration must
+    /// be runnable on a freshly-created threads table that has not
+    /// had v2 applied yet — the helpers are independent.
+    #[test]
+    fn ensure_model_id_column_works_alone() {
+        let conn = fresh_threads_db();
+
+        let added = ensure_model_id_column(&conn).unwrap();
+        assert!(added, "must add model_id to a fresh table");
+        assert!(column_exists(&conn, "model_id").unwrap());
     }
 }

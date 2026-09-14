@@ -24,7 +24,7 @@
  * with a new artifact list as the engine progresses.
  */
 
-import { useState } from "react"
+import { useMemo, useState } from "react"
 import { Icon } from "../ui/Icon"
 import type { Artifact, ArtifactKind, ArtifactStatus } from "../../chats/ChatStore"
 
@@ -128,10 +128,222 @@ export function ToolArtifact({ artifact }: { artifact: Artifact }) {
           output={output}
           resultSummary={resultSummary}
           target={target}
+          name={artifact.name}
         />
       ) : null}
     </div>
   )
+}
+
+/**
+ * Render the body of an `apply_patch` artifact. The args JSON
+ * looks like `{"path": "src/foo.py", "patch": "@@ -1 +1 @@\n-old\n+new"}`
+ * — we extract the patch text and render it as a parsed diff
+ * (added/removed/context lines) using the same line-level styling
+ * as `agent-sticker-sheet.html` lines 1656-1700 (`.patch-viewer`).
+ *
+ * If args don't parse as JSON (e.g. mid-stream before the engine
+ * flushed the body), we fall back to a generic `file` body so the
+ * card still surfaces something useful. The fallback is a one-line
+ * `<pre>` that puts the raw patch text in monospace — same as the
+ * pre-existing file layout, kept here so a single component owns
+ * every apply_patch rendering path.
+ */
+function PatchBody({ args, target }: { args?: string; target?: string }) {
+  const parsed = useMemo(() => parseApplyPatchArgs(args), [args])
+  const hunks = useMemo(
+    () => (parsed.patch ? parseUnifiedDiff(parsed.patch) : []),
+    [parsed.patch],
+  )
+  const stats = useMemo(
+    () => ({
+      added: hunks.reduce((n, h) => n + h.added.length, 0),
+      removed: hunks.reduce((n, h) => n + h.removed.length, 0),
+    }),
+    [hunks],
+  )
+
+  if (!parsed.patch || hunks.length === 0) {
+    return (
+      <div className="border-t border-outline-variant/50 bg-surface-container-lowest px-3 py-2 font-mono text-[11px] leading-[16px] text-on-surface-variant">
+        {target ? (
+          <div className="mb-1 truncate text-primary/80">{target}</div>
+        ) : null}
+        {parsed.patch ? (
+          <pre className="max-h-[240px] overflow-auto whitespace-pre-wrap break-words">
+            {parsed.patch}
+          </pre>
+        ) : (
+          <span className="text-outline">No patch content.</span>
+        )}
+      </div>
+    )
+  }
+
+  return (
+    <div className="border-t border-outline-variant/50 bg-surface-container-lowest">
+      {/* Header — file path + added / removed line counts. The
+          `+N / -N` suffix matches the example rendered in the
+          user's reference (e.g. "approvals.rs +1"). */}
+      <div className="flex items-center justify-between gap-2 border-b border-outline-variant/40 bg-surface-container-low px-3 py-1 font-mono text-[10px] text-on-surface-variant">
+        <span className="truncate text-primary/80">{target ?? parsed.path ?? "patch"}</span>
+        <span className="shrink-0 font-sans text-[10px] uppercase tracking-[0.04em]">
+          <span className="text-primary">+{stats.added}</span>
+          <span className="px-0.5 text-outline">/</span>
+          <span className="text-error">-{stats.removed}</span>
+        </span>
+      </div>
+      {/* Diff body — one row per source line, prefixed with `+` /
+          `-` / space. Backgrounds per `agent-sticker-sheet.html`
+          `.patch-line.added` / `.patch-line.removed` so the
+          visual encoding survives light custom theming. */}
+      <div className="max-h-[280px] overflow-auto px-0 py-1 font-mono text-[11px] leading-[18px]">
+        {hunks.map((h, hi) => (
+          <div key={hi} className="flex flex-col">
+            {h.header ? (
+              <div className="flex bg-surface-container/60 px-3 py-0.5 text-outline">
+                <span className="w-4 shrink-0 text-center text-outline">
+                  ⋮
+                </span>
+                <span className="truncate">{h.header}</span>
+              </div>
+            ) : null}
+            {h.context.map((line, li) => (
+              <PatchLine key={`c-${hi}-${li}`} kind="context" text={line} />
+            ))}
+            {h.removed.map((line, li) => (
+              <PatchLine key={`r-${hi}-${li}`} kind="removed" text={line} />
+            ))}
+            {h.added.map((line, li) => (
+              <PatchLine key={`a-${hi}-${li}`} kind="added" text={line} />
+            ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+/** One line in the parsed diff — coloured by kind. */
+function PatchLine({
+  kind,
+  text,
+}: {
+  kind: "added" | "removed" | "context"
+  text: string
+}) {
+  const sign = kind === "added" ? "+" : kind === "removed" ? "-" : " "
+  const bg =
+    kind === "added"
+      ? "bg-primary/10 text-primary"
+      : kind === "removed"
+        ? "bg-error/10 text-error"
+        : "text-on-surface-variant"
+  return (
+    <div className={`flex whitespace-pre ${bg}`}>
+      <span className="w-4 shrink-0 select-none text-center">{sign}</span>
+      <span className="min-w-0 break-words">{text}</span>
+    </div>
+  )
+}
+
+/** Best-effort parse of the engine-supplied apply_patch args JSON. */
+function parseApplyPatchArgs(args: string | undefined): {
+  path?: string
+  patch?: string
+} {
+  if (!args) return {}
+  try {
+    const v = JSON.parse(args)
+    if (v && typeof v === "object") {
+      return {
+        path: typeof v.path === "string" ? v.path : undefined,
+        patch: typeof v.patch === "string" ? v.patch : undefined,
+      }
+    }
+  } catch {
+    // Engine may surface the patch as raw text in some failure
+    // paths (e.g. JSON truncated mid-stream). Treat the raw args
+    // as the patch content so the card still renders.
+    return { patch: args }
+  }
+  return {}
+}
+
+/** One hunk in a unified diff. Lines are stripped of their
+ *  leading `+` / `-` / ` ` prefix before being stored. */
+type DiffHunk = {
+  header: string
+  context: string[]
+  added: string[]
+  removed: string[]
+}
+
+/**
+ * Parse a unified diff into renderable hunks. We tolerate the
+ * `--- a/foo` / `+++ b/foo` header lines (and skip them) and split
+ * at each `@@` hunk header. Inside a hunk, lines starting with `+`
+ * are added, `-` are removed, and everything else is context
+ * (including lines that just happen to begin with `+`/`-` in the
+ * original file — those would need a leading space per the spec,
+ * which we don't enforce here; the engine emits well-formed diffs).
+ */
+function parseUnifiedDiff(patch: string): DiffHunk[] {
+  const lines = patch.split(/\r?\n/)
+  const hunks: DiffHunk[] = []
+  let current: DiffHunk | null = null
+
+  for (const line of lines) {
+    if (line.startsWith("--- ") || line.startsWith("+++ ")) {
+      // File header — skip; the card already shows the path on its
+      // own header row. Some diffs emit `Only in …:` or `Binary
+      // files … differ` — we ignore those silently rather than
+      // polluting the rendered body.
+      continue
+    }
+    if (line.startsWith("@@")) {
+      if (current) hunks.push(current)
+      const headerEnd = line.indexOf(" @@", 2)
+      current = {
+        header:
+          headerEnd === -1
+            ? line
+            : line.slice(0, headerEnd + 3),
+        context: [],
+        added: [],
+        removed: [],
+      }
+      continue
+    }
+    if (!current) {
+      // Diff text without a leading `@@` hunk header — collect as
+      // a single context-only hunk so the body never silently drops
+      // the user's patch.
+      current = {
+        header: "",
+        context: [],
+        added: [],
+        removed: [],
+      }
+    }
+    if (line.startsWith("+")) {
+      current.added.push(line.slice(1))
+    } else if (line.startsWith("-")) {
+      current.removed.push(line.slice(1))
+    } else if (line.startsWith(" ")) {
+      current.context.push(line.slice(1))
+    } else if (line === "") {
+      // Blank line — preserve as a context row so empty lines in
+      // the diff don't visually disappear.
+      current.context.push("")
+    } else {
+      // Line without any prefix (e.g. malformed diff). Treat as
+      // context to be safe.
+      current.context.push(line)
+    }
+  }
+  if (current) hunks.push(current)
+  return hunks
 }
 
 /**
@@ -147,6 +359,7 @@ function ArtifactBody({
   output,
   resultSummary,
   target,
+  name,
 }: {
   kind: ArtifactKind
   status: ArtifactStatus
@@ -154,7 +367,14 @@ function ArtifactBody({
   output?: string
   resultSummary?: string
   target?: string
+  /** Original tool name — lets the file body special-case
+   *  `apply_patch` to render the unified diff with line-level
+   *  highlighting instead of dumping raw args. */
+  name?: string
 }) {
+  if (kind === "file" && name === "apply_patch") {
+    return <PatchBody args={args} target={target} />
+  }
   if (kind === "terminal") {
     return (
       <div className="border-t border-outline-variant/50 bg-surface-container-lowest px-3 py-2 font-mono text-[11px] leading-[16px] text-on-surface-variant">

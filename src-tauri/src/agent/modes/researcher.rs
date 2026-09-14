@@ -10,8 +10,7 @@
 //!
 //! ## Behaviour knobs
 //!
-//! - `max_hypothesis_iterations = 1` — Researchers present a
-//!   synthesis once. Iteration is the Debugger's domain.
+//! - `max_hypothesis_iterations = u32::MAX` — no cap; model runs until done or user stops.
 //! - `min_confidence_to_propose_patch = 0.0` — never proposes
 //!   patches (read-only). The 0.0 sentinel makes the read-only
 //!   invariant machine-checkable.
@@ -153,7 +152,8 @@ impl Mode for ResearcherMode {
     }
 
     fn max_hypothesis_iterations(&self) -> u32 {
-        1
+        // Iteration cap removed — the model runs until it completes or the user stops it.
+        u32::MAX
     }
 
     fn min_confidence_to_propose_patch(&self) -> f32 {
@@ -206,14 +206,13 @@ mod tests {
         assert_eq!(steps.len(), 4);
     }
 
-    /// `researcher_is_read_only_invariant`: min_confidence is 0.0
-    /// and max_iterations is 1 — the Researcher is a single-pass
-    /// synthesis role. Together these make the "never proposes
-    /// patches" invariant explicit in code.
+    /// `researcher_read_only_invariant`: min_confidence is 0.0
+    /// and max_iterations is u32::MAX (no cap) — the Researcher is a
+    /// synthesis role that never proposes patches.
     #[test]
-    fn researcher_is_read_only_invariant() {
+    fn researcher_read_only_invariant() {
         let mode = ResearcherMode;
-        assert_eq!(mode.max_hypothesis_iterations(), 1);
+        assert_eq!(mode.max_hypothesis_iterations(), u32::MAX);
         assert_eq!(mode.min_confidence_to_propose_patch(), 0.0);
     }
 

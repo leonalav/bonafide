@@ -484,12 +484,21 @@ async fn open_workspace(
     // `upsert_thread` / `list_threads` calls. Errors bubble up so a
     // corrupted database surfaces as a clear failure instead of being
     // masked by a later `INSERT` error.
+    //
+    // WS3-T3 (model persistence): also run the v3 migration that
+    // adds the `model_id TEXT` column. Without this, `row_to_thread`
+    // always rehydrates with the hardcoded `"claude-sonnet-4"` seed
+    // from `Thread::new` and the renderer has to re-send `modelId`
+    // on every submit. The v3 column makes the persisted value the
+    // authoritative fallback when the renderer omits the field.
     let root_for_migration = PathBuf::from(&path);
     let _ = tokio::task::block_in_place(move || -> Result<(), String> {
         let (conn, _hash) = graph::storage::open_workspace_db(&root_for_migration)
             .map_err(|e| format!("Failed to open workspace DB for v2 migration: {e}"))?;
         agent::migrations::ensure_v2_columns(&conn)
             .map_err(|e| format!("Failed to apply v2 thread migration: {e}"))?;
+        agent::migrations::ensure_model_id_column(&conn)
+            .map_err(|e| format!("Failed to apply v3 model_id migration: {e}"))?;
         Ok(())
     })?;
 

@@ -19,6 +19,7 @@
 import { useState } from "react"
 import { Icon } from "../ui/Icon"
 import type { ChatMessage } from "../../chats/ChatStore"
+import { parseMentionTokens } from "./MentionMenu"
 
 export function formatTime(ts: number): string {
   // REVIEW(opus) FINDING 10 [medium]: `hour12: false` alone isn't
@@ -193,6 +194,61 @@ function renderToken(token: InlineToken, key: string) {
   }
 }
 
+/**
+ * Render a message body that may contain `@`-references. Plain
+ * text runs go through `InlineContent` (backticks, bold, italic);
+ * `@path/to/file` runs render as inline reference chips so the
+ * user can see what they referenced at a glance. The token grammar
+ * lives in `MentionMenu.tsx` — this component is purely a
+ * renderer.
+ *
+ * Per `agent-sticker-sheet.html`, the chip family uses the same
+ * surface + border + radius as other inline affordances. We bind
+ * the `@`-prefix to the chip itself rather than splitting it off
+ * so the chip is visually a single atomic unit.
+ */
+export function MentionInlineBody({ text }: { text: string }) {
+  const tokens = parseMentionTokens(text)
+  return (
+    <>
+      {tokens.map((t, i) =>
+        t.kind === "ref" ? (
+          <MentionChip key={`ref-${i}`} path={t.path} />
+        ) : (
+          <InlineContent key={`text-${i}`} text={t.value} />
+        ),
+      )}
+    </>
+  )
+}
+
+/**
+ * One inline reference chip. Click is a no-op for now — the chip
+ * is purely visual affordance (a reminder that "this message
+ * referenced this file"). A future revision can wire it to open
+ * the file in the Editor pane; we'd add a route + onClick here
+ * without touching the rest of the body.
+ */
+function MentionChip({ path }: { path: string }) {
+  const segments = path.split("/")
+  const file = segments[segments.length - 1] ?? path
+  const isFolder = !file.includes(".")
+  return (
+    <span
+      data-mention-chip
+      title={`@${path}`}
+      className="mx-0.5 inline-flex max-w-full cursor-default items-center gap-1 align-baseline rounded-sm border border-outline-variant/60 bg-surface-container-high px-1 py-px font-mono text-[12px] text-on-surface transition-colors hover:border-primary/40 hover:bg-surface-container-highest"
+    >
+      <Icon
+        name={isFolder ? "folder" : "file"}
+        size={10}
+        className="shrink-0 text-on-surface-variant"
+      />
+      <span className="truncate">@{path}</span>
+    </span>
+  )
+}
+
 export function UserMessage({
   message,
   onReturn,
@@ -348,7 +404,7 @@ export function UserMessage({
           </div>
         ) : (
           <div className="w-full whitespace-pre-wrap break-words text-right font-body text-[13px] leading-[20px] text-on-surface">
-            <InlineContent text={message.content} />
+            <MentionInlineBody text={message.content} />
           </div>
         )}
 

@@ -13,25 +13,26 @@
  * `ErrorBubble` instead of the normal body so the failure is
  * impossible to miss without taking over the whole thread.
  *
- * Generative text effect: on first render, the body plays a fast
- * character-reveal animation (see `TypewriterText`). The animation
- * is fire-and-forget — when the user scrolls, clicks, or types
- * anywhere, the reveal snaps to the final text. Reasoning and
- * errors are never typewritten (they're either pre-rendered
- * reasoning dumps or failures the user needs to read immediately).
+ * Body rendering: the assistant's reply is rendered through
+ * `MarkdownContent`, which parses block-level Markdown (headings,
+ * tables, separators, lists, code blocks) into the matching UI
+ * elements. The previous typewriter-style character reveal
+ * (`TypewriterText`) only tokenised backtick spans and `**bold**`,
+ * which left every other Markdown construct — including the
+ * `###` / `|...|` / `---` / `- item` patterns that the model
+ * emits most often — visible as raw text.
+ *
+ * Reasoning and errors are never typewritten (they're either
+ * pre-rendered reasoning dumps or failures the user needs to read
+ * immediately).
  */
 
-import { useEffect, useRef, useState } from "react"
 import { Icon } from "../ui/Icon"
 import type { ChatMessage } from "../../chats/ChatStore"
-import { InlineContent } from "./UserMessage"
-import { ReasoningArtifact } from "./ReasoningArtifact"
+import { MarkdownContent } from "./MarkdownContent"
+import { ReasoningSection } from "./ReasoningArtifact"
 import { ToolArtifact } from "./ToolArtifact"
 import { ApprovalArtifact } from "./ApprovalArtifact"
-
-/** Per-frame reveal cadence. Lower = faster; tuned for "fast" feel. */
-const TYPEWRITER_BASE_DELAY_MS = 10
-const TYPEWRITER_PER_CHAR_DELAY_MS = 4
 
 export function AssistantMessage({ message }: { message: ChatMessage }) {
   const hasArtifacts =
@@ -48,8 +49,16 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
           {formatMessageTime(message.ts)}
         </span>
       </header>
-      {message.reasoning ? (
-        <ReasoningArtifact reasoning={message.reasoning} />
+      {/* Inline reasoning — appears immediately on request receipt
+          (even before the engine returns) so the user gets feedback
+          the moment Send lands. Replaced the full "ReasoningArtifact"
+          card with a lightweight collapsible section so thinking
+          text flows naturally in the chat without dominating it. */}
+      {message.reasoning || message.streaming ? (
+        <ReasoningSection
+          reasoning={message.reasoning ?? ""}
+          streaming={!!message.streaming}
+        />
       ) : null}
       {/* Inline tool artifacts — each card lives below the
           reasoning / body and reflects the tool's lifecycle
@@ -100,103 +109,14 @@ export function AssistantMessage({ message }: { message: ChatMessage }) {
       {message.error ? (
         <ErrorBubble error={message.error} />
       ) : (
-        <TypewriterText text={message.content} />
+        // Markdown/GFM body. The previous typewriter-only renderer
+        // dumped the model reply as raw text, which left headings,
+        // tables, separators, lists, and code blocks showing as
+        // literal `###` / `|...|` / `---` / `- ` / ```` ``` ````.
+        // MarkdownContent parses those into their corresponding UI
+        // blocks so replies look the way the model intended.
+        <MarkdownContent text={message.content} />
       )}
-    </div>
-  )
-}
-
-/**
- * Fast generative-text reveal.
- *
- * Animates `text` from empty to fully revealed character-by-character
- * over a short window. Uses `requestAnimationFrame` so the cadence
- * is GPU-friendly and cancels cleanly when the component unmounts.
- *
- * The animation is cancellable by any user input:
- *   - any mousedown anywhere snaps to the end
- *   - any keydown anywhere snaps to the end
- *   - any scroll on any ancestor snaps to the end
- * This matches the "fast" requirement — we don't trap the user
- * behind a long animation; they can always read the full text
- * immediately on demand.
- */
-function TypewriterText({ text }: { text: string }) {
-  const [revealedCount, setRevealedCount] = useState<number>(0)
-  const rafRef = useRef<number | null>(null)
-  const lastTickRef = useRef<number>(0)
-
-  // Skip animation entirely for empty content and for previously-
-  // revealed content (e.g. a re-render after navigation).
-  // We also skip when the user has already moved past the message
-  // (Phase 3 streaming — not wired yet).
-
-  useEffect(() => {
-    if (revealedCount >= text.length) return
-    function snap() {
-      setRevealedCount(text.length)
-    }
-    document.addEventListener("mousedown", snap, { once: true })
-    document.addEventListener("keydown", snap, { once: true })
-    document.addEventListener("scroll", snap, {
-      once: true,
-      capture: true,
-    } as AddEventListenerOptions)
-    return () => {
-      document.removeEventListener("mousedown", snap)
-      document.removeEventListener("keydown", snap)
-      document.removeEventListener("scroll", snap, {
-        capture: true,
-      } as EventListenerOptions)
-    }
-  }, [text, revealedCount])
-
-  useEffect(() => {
-    // Empty text or already revealed: nothing to animate.
-    if (text.length === 0 || revealedCount >= text.length) return
-
-    function step(timestamp: number) {
-      if (!lastTickRef.current) lastTickRef.current = timestamp
-      const delta = timestamp - lastTickRef.current
-      // Reveal multiple characters per frame based on elapsed time
-      // — keeps the perceived speed constant on high-refresh displays
-      // and avoids dropping to 1 char/frame on slow ones.
-      if (delta >= TYPEWRITER_BASE_DELAY_MS) {
-        const charsThisTick = Math.max(
-          1,
-          Math.floor(delta / TYPEWRITER_PER_CHAR_DELAY_MS),
-        )
-        setRevealedCount((c) => Math.min(text.length, c + charsThisTick))
-        lastTickRef.current = timestamp
-      }
-      rafRef.current = requestAnimationFrame(step)
-    }
-    rafRef.current = requestAnimationFrame(step)
-    return () => {
-      if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
-      rafRef.current = null
-      lastTickRef.current = 0
-    }
-  }, [text, revealedCount])
-
-  // When the text changes mid-stream (Phase 3 / future streaming),
-  // the new `text` may have grown; reveal from the previous length
-  // so we don't replay characters the user already saw. Today the
-  // message is delivered whole so this branch fires once on mount.
-  const isComplete = revealedCount >= text.length
-  const visibleText = isComplete ? text : text.slice(0, revealedCount)
-
-  return (
-    <div className="font-body text-[13px] leading-[20px] text-on-surface">
-      <InlineContent text={visibleText} />
-      {!isComplete ? (
-        // A blinking caret during reveal — communicates "still
-        // streaming" without blocking the read.
-        <span
-          aria-hidden="true"
-          className="ml-[1px] inline-block h-[14px] w-[5px] -mb-[2px] animate-caret-blink bg-primary align-baseline"
-        />
-      ) : null}
     </div>
   )
 }

@@ -1107,13 +1107,50 @@ export interface AgentApprovalInput {
   toolCallId: string
   /** "approve" | "revise" | "reject" */
   decision: "approve" | "revise" | "reject"
+  /**
+   * Optional endpoint payload, mirroring `AgentSendMessageInput.endpoint`.
+   *
+   * CRITICAL FIX (PROD): the previous contract only forwarded the
+   * endpoint on `agentSendMessage`. When the user clicked APPROVE on
+   * a tool, the resume engine.run was built with `None` for the
+   * endpoint and silently fell back to `NoopLlmClientForIpc`,
+   * surfacing a misleading "Agent endpoint not configured" error
+   * even though the endpoint was perfectly fine moments earlier.
+   * Forwarding it here restores the original LLM client on resume.
+   */
+  endpoint?: EndpointPayload | null
 }
 
-/** Output for the approval / rejection commands. */
+/**
+ * Output for the approval / rejection commands.
+ *
+ * CRITICAL FIX (PROD): extended with `result` and `toolArtifacts` so
+ * the renderer can update the assistant message body + artifacts after
+ * the user's decision. Without these fields, `onApproveArtifact` was
+ * fire-and-forget on the previous `(threadId, accepted, newState)`
+ * payload, leaving the chat showing the stale
+ * "🔐 Approval Required / Tool call: ..." markdown even after the
+ * engine successfully resumed.
+ */
 export interface AgentApprovalOutput {
   threadId: string
   accepted: boolean
   newState: ThreadState
+  /**
+   * Engine result from the resume after the user's decision.
+   * `null` for `"reject"` because the engine does not re-run after
+   * rejection. For `"approve"` and `"revise"`, this is whatever
+   * `engine.run` produced on the next iteration: `Completed`,
+   * `AwaitingApproval` (a second tool needs approval), `BudgetExceeded`,
+   * `MaxIterations`, or `LlmError`.
+   */
+  result: AgentEngineResult | null
+  /**
+   * Structured tool-call records produced during the resume. The
+   * renderer turns each entry into an inline `ToolArtifact` card.
+   * Empty for `"reject"`.
+   */
+  toolArtifacts: AgentToolArtifact[]
 }
 
 /**

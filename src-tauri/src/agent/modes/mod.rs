@@ -80,10 +80,10 @@ pub trait Mode: Send + Sync {
     fn investigation_protocol_steps(&self) -> &'static [&'static str];
 
     /// Maximum number of hypothesis iterations before the agent
-    /// escalates (section 5.2 — "if you're stuck after 3 hypothesis
-    /// iterations, escalate").
+    /// escalates. Set to `u32::MAX` (no cap) — iteration cap removed
+    /// per user request.
     fn max_hypothesis_iterations(&self) -> u32 {
-        3
+        u32::MAX
     }
 
     /// Minimum confidence level at which the agent may propose a
@@ -273,7 +273,7 @@ mod tests {
         }
 
         let m = MinimalMode;
-        assert_eq!(m.max_hypothesis_iterations(), 3);
+        assert_eq!(m.max_hypothesis_iterations(), u32::MAX);
         assert!((m.min_confidence_to_propose_patch() - 0.5).abs() < f32::EPSILON);
         assert_eq!(m.behavior_marker_hypothesis(), "## Hypothesis");
         assert_eq!(m.behavior_marker_patch(), "## Patch");

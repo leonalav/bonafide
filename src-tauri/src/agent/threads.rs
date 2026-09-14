@@ -114,6 +114,14 @@ fn agent_role_from_str(s: &str) -> Option<AgentRole> {
 /// The v2 fields are all `Option`/`f32` with default `0.0` for the
 /// numeric columns, so v1 rows (before the migration) deserialize
 /// cleanly.
+///
+/// The v3 `model_id` field stores the model the user selected for
+/// the thread (the endpoint's `defaultModel` or the built-in picker
+/// fallback). Persisting it makes rehydration authoritative — without
+/// it, every rehydrate lands back at the `Thread::new` seed default
+/// (`"claude-sonnet-4"`) and the renderer has to re-send `modelId`
+/// on every submit. Pre-v3 rows store `NULL` and the engine falls
+/// back to the seed until the first send writes the column.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ThreadRow {
@@ -146,6 +154,13 @@ pub struct ThreadRow {
     /// Smoke test outcome string (verdict + metrics summary).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub smoke_result: Option<String>,
+
+    // ── v3 columns (model persistence) ───────────────────────────────────
+    /// Model the user picked for this thread — restored on rehydrate
+    /// so the next engine run does not silently fall back to the
+    /// hardcoded `Thread::new` seed value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<String>,
 }
 
 impl ThreadRow {
@@ -155,6 +170,13 @@ impl ThreadRow {
     /// The `band` field is renderer-managed (it controls the inbox
     /// column grouping) and is not derivable from `Thread`, so it's
     /// passed through.
+    ///
+    /// `model_id` is copied from the thread's `model_id` so the next
+    /// rehydrate restores the user's selection instead of falling
+    /// back to the hardcoded seed in `Thread::new`. An empty string
+    /// (which can happen if a future caller sets `model_id = ""`
+    /// accidentally) is stored as `None` to keep the column nullable
+    /// and prevent the seed value from sneaking back in.
     pub fn from_thread(
         thread: &Thread,
         workspace_hash: String,
@@ -167,6 +189,14 @@ impl ThreadRow {
             .as_ref()
             .and_then(|h| serde_json::to_string(h).ok());
         let patch_diff = thread.proposed_patch.as_ref().map(|p| p.diff.clone());
+        let model_id = {
+            let trimmed = thread.model_id.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(thread.model_id.clone())
+            }
+        };
 
         Self {
             id: thread.id.clone(),
@@ -185,6 +215,7 @@ impl ThreadRow {
             hypothesis,
             patch_diff,
             smoke_result: None,
+            model_id,
         }
     }
 }
@@ -199,12 +230,26 @@ impl ThreadRow {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ThreadEvent {
-    /// A user or assistant message.
+    /// A user, assistant, or tool message.
+    ///
+    /// `tool_call_id` is populated when this is a tool result
+    /// message (the LLM-facing `role: "tool"` entry that pairs a
+    /// `tool_calls[i]` from the previous assistant message). It
+    /// is `None` for user / assistant / system / trace messages.
+    ///
+    /// The field defaults on read so v2 logs (which predate this
+    /// field) still replay cleanly — older tool messages come back
+    /// with `tool_call_id: None` and the engine's `build_messages`
+    /// falls back to a generic user-role placeholder. New logs
+    /// written by `agent_approve_action` and the engine itself
+    /// carry the field so the round-trip is lossless.
     Message {
         v: u32,
         id: String,
         role: String,
         content: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_call_id: Option<String>,
         ts: i64,
     },
     /// A state-machine transition.
@@ -258,6 +303,28 @@ pub enum ThreadEvent {
         to: String,
         ts: i64,
     },
+    /// A tool call awaiting human approval. Persisted so the IPC
+    /// `approve_action` handler can recover the call after a
+    /// renderer restart — without this, the in-memory
+    /// `thread.pending_tool_call` field was lost on every reload
+    /// and the engine looped back to `AwaitingApproval` forever
+    /// (the bug this variant was added to fix).
+    ///
+    /// Wire version 1 (no bump — additive variant). Older builds
+    /// that don't know this variant skip it via the
+    /// "unknown variant" recovery in `replay_thread`.
+    ///
+    /// Cleared on the next `StateTransition` event whose `to`
+    /// state is not `AwaitingApproval` — i.e. on every successful
+    /// approval, rejection, timeout, or escalation.
+    PendingApproval {
+        v: u32,
+        id: String,
+        name: String,
+        args_json: String,
+        reason: String,
+        ts: i64,
+    },
 }
 
 impl ThreadEvent {
@@ -267,7 +334,25 @@ impl ThreadEvent {
     /// (v1 only) replay cleanly because the unknown-variant handling
     /// in `replay_thread` swallows unrecognised types without
     /// failing the entire log.
-    const WIRE_VERSION: u32 = 2;
+    ///
+    /// v2 → v3: added an optional `tool_call_id` field to the
+    /// `Message` variant so tool result messages can round-trip
+    /// through the JSONL event log. Reads are backward-compatible
+    /// via `#[serde(default)]`; v2 logs replay with `tool_call_id:
+    /// None` for tool messages, which is harmless because every
+    /// prior tool result lives in `ToolResult` summary events too
+    /// (used as trace observations). New logs written by
+    /// `agent_approve_action` and the engine carry the field.
+    const WIRE_VERSION: u32 = 3;
+
+    /// Public accessor for `WIRE_VERSION`. Use this when emitting
+    /// legacy JSON (the `append_event_log` path) so the line is
+    /// parseable by `replay_thread`. Without this, legacy lines
+    /// fail to deserialize with "missing field `v`" because
+    /// `WIRE_VERSION` is `const` (private).
+    pub fn wire_version() -> u32 {
+        Self::WIRE_VERSION
+    }
 
     /// Convert a `Message` into a `ThreadEvent::Message` with the current
     /// wire version.
@@ -277,6 +362,7 @@ impl ThreadEvent {
             id: msg.id.clone(),
             role: msg.role.clone(),
             content: msg.content.clone(),
+            tool_call_id: msg.tool_call_id.clone(),
             ts: msg.ts,
         }
     }
@@ -289,6 +375,7 @@ impl ThreadEvent {
             id: format!("trace-{}", step.step),
             role: "trace".to_string(),
             content: step.content.clone(),
+            tool_call_id: None,
             ts: step.ts,
         }
     }
@@ -337,6 +424,31 @@ impl ThreadEvent {
             ts,
         }
     }
+
+    /// Construct a `PendingApproval` event from a `ToolCall` and a
+    /// human-readable reason. Persisted by the engine at every
+    /// site that pauses for approval (the `request_approval` tool,
+    /// the structural approval gate, and critic-rejection
+    /// escalation) so the IPC `approve_action` handler can recover
+    /// the call after a renderer restart.
+    ///
+    /// `replay_thread` populates `thread.pending_tool_call` from
+    /// this event and clears it on the next state transition away
+    /// from `AwaitingApproval`.
+    pub fn pending_approval(
+        tool_call: &crate::agent::llm::ToolCall,
+        reason: impl Into<String>,
+        ts: i64,
+    ) -> Self {
+        Self::PendingApproval {
+            v: 1,
+            id: tool_call.id.clone(),
+            name: tool_call.function.name.clone(),
+            args_json: tool_call.function.arguments.clone(),
+            reason: reason.into(),
+            ts,
+        }
+    }
 }
 
 // ── ReplayError ──────────────────────────────────────────────────────────────
@@ -366,17 +478,20 @@ pub enum ReplayError {
 ///
 /// v2 columns are included in both the INSERT and the ON CONFLICT
 /// UPDATE clauses so a partial Phase-0 row gets the new fields set on
-/// the next write.
+/// the next write. v3 adds `model_id` so the user's endpoint
+/// selection survives rehydration.
 pub fn upsert_thread(conn: &Connection, row: &ThreadRow) -> Result<()> {
     conn.execute(
         r#"
         INSERT INTO threads (
             id, workspace_hash, role, title, summary, state, detail, band, system, updated_at,
             experiment_id, budget_spent_dollars, budget_spent_gpu_hours,
-            hypothesis, patch_diff, smoke_result
+            hypothesis, patch_diff, smoke_result,
+            model_id
         )
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                ?11, ?12, ?13, ?14, ?15, ?16)
+                ?11, ?12, ?13, ?14, ?15, ?16,
+                ?17)
         ON CONFLICT(id) DO UPDATE SET
             workspace_hash         = excluded.workspace_hash,
             role                   = excluded.role,
@@ -392,7 +507,8 @@ pub fn upsert_thread(conn: &Connection, row: &ThreadRow) -> Result<()> {
             budget_spent_gpu_hours = excluded.budget_spent_gpu_hours,
             hypothesis             = excluded.hypothesis,
             patch_diff             = excluded.patch_diff,
-            smoke_result           = excluded.smoke_result
+            smoke_result           = excluded.smoke_result,
+            model_id               = excluded.model_id
         "#,
         params![
             row.id,
@@ -411,6 +527,7 @@ pub fn upsert_thread(conn: &Connection, row: &ThreadRow) -> Result<()> {
             row.hypothesis,
             row.patch_diff,
             row.smoke_result,
+            row.model_id,
         ],
     )?;
     Ok(())
@@ -424,7 +541,8 @@ pub fn get_thread(conn: &Connection, id: &str) -> Result<Option<ThreadRow>> {
     let mut stmt = conn.prepare(
         "SELECT id, workspace_hash, role, title, summary, state, detail, band, system, updated_at,
                 experiment_id, budget_spent_dollars, budget_spent_gpu_hours,
-                hypothesis, patch_diff, smoke_result
+                hypothesis, patch_diff, smoke_result,
+                model_id
            FROM threads WHERE id = ?1",
     )?;
 
@@ -452,7 +570,8 @@ pub fn list_threads(
         let mut stmt = conn.prepare(
             "SELECT id, workspace_hash, role, title, summary, state, detail, band, system, updated_at,
                     experiment_id, budget_spent_dollars, budget_spent_gpu_hours,
-                    hypothesis, patch_diff, smoke_result
+                    hypothesis, patch_diff, smoke_result,
+                    model_id
                FROM threads
               WHERE workspace_hash = ?1 AND state = ?2
               ORDER BY updated_at DESC",
@@ -465,7 +584,8 @@ pub fn list_threads(
         let mut stmt = conn.prepare(
             "SELECT id, workspace_hash, role, title, summary, state, detail, band, system, updated_at,
                     experiment_id, budget_spent_dollars, budget_spent_gpu_hours,
-                    hypothesis, patch_diff, smoke_result
+                    hypothesis, patch_diff, smoke_result,
+                    model_id
                FROM threads
               WHERE workspace_hash = ?1
               ORDER BY updated_at DESC",
@@ -615,12 +735,13 @@ pub fn replay_thread(
         };
 
         match event {
-            ThreadEvent::Message { id, role, content, ts, .. } => {
+            ThreadEvent::Message { id, role, content, tool_call_id, ts, .. } => {
                 thread.messages.push(Message {
                     id,
                     role,
                     content,
-                    tool_call_id: None,
+                    tool_call_id,
+                    tool_calls: None,
                     ts,
                 });
             }
@@ -632,6 +753,18 @@ pub fn replay_thread(
                         ts,
                     };
                     thread.trace.push(step);
+                    // Any state transition away from `AwaitingApproval`
+                    // resolves the pending approval — covers the IPC
+                    // `approve_action` path (which transitions to
+                    // `Investigating`) as well as timeouts and
+                    // escalations. Without this clear, a renderer
+                    // restart after a successful approval would
+                    // re-set `pending_tool_call` from the previous
+                    // `PendingApproval` event and re-execute the same
+                    // tool_call.
+                    if new_state != ThreadState::AwaitingApproval {
+                        thread.pending_tool_call = None;
+                    }
                     thread.state = new_state;
                 }
                 // If `from` references a known state, ignore (we only
@@ -698,6 +831,35 @@ pub fn replay_thread(
                 thread.trace.push(step);
                 let _ = from; // referenced for audit; new_role already used.
             }
+            ThreadEvent::PendingApproval { id, name, args_json, reason, ts, .. } => {
+                // Rebuild the in-memory `pending_tool_call` so the IPC
+                // `approve_action` handler can find it after a
+                // renderer restart. Without this rehydration, the
+                // engine would loop back to `AwaitingApproval`
+                // forever because the in-memory field is not
+                // persisted to the SQLite row.
+                //
+                // The state-transition arm above clears this slot
+                // whenever the thread leaves `AwaitingApproval`, so
+                // a `PendingApproval` event is only "active" until
+                // the next state transition — matching the in-memory
+                // semantics of `thread.pending_tool_call`.
+                thread.pending_tool_call = Some(crate::agent::llm::ToolCall {
+                    id,
+                    tool_type: "function".to_string(),
+                    function: crate::agent::llm::ToolFunctionCall {
+                        name,
+                        arguments: args_json,
+                    },
+                });
+                let step = TraceStep {
+                    step: (thread.trace.len() as u32) + 1,
+                    content: format!("AwaitingApproval: {reason}"),
+                    ts,
+                };
+                thread.trace.push(step);
+                let _ = reason; // surfaced via the trace step above.
+            }
         }
     }
 
@@ -709,7 +871,9 @@ pub fn replay_thread(
 /// Convert a `row` produced by the threads SELECT into a `ThreadRow`.
 ///
 /// Centralises the column-index mapping so the upsert/list/get paths
-/// stay consistent.
+/// stay consistent. The index ordering MUST match the SELECT lists
+/// in `get_thread` and `list_threads` — adding a new column means
+/// bumping both ends in lockstep.
 fn row_to_thread_row(row: &rusqlite::Row) -> Result<ThreadRow> {
     Ok(ThreadRow {
         id: row.get(0)?,
@@ -728,6 +892,7 @@ fn row_to_thread_row(row: &rusqlite::Row) -> Result<ThreadRow> {
         hypothesis: row.get(13)?,
         patch_diff: row.get(14)?,
         smoke_result: row.get(15)?,
+        model_id: row.get(16)?,
     })
 }
 
@@ -769,7 +934,8 @@ mod tests {
                 budget_spent_gpu_hours REAL NOT NULL DEFAULT 0.0,
                 hypothesis TEXT,
                 patch_diff TEXT,
-                smoke_result TEXT
+                smoke_result TEXT,
+                model_id TEXT
             );
             "#,
         )
@@ -796,6 +962,7 @@ mod tests {
             hypothesis: None,
             patch_diff: None,
             smoke_result: None,
+            model_id: None,
         }
     }
 
@@ -896,10 +1063,11 @@ mod tests {
         append_thread_event(
             &log_path,
             &ThreadEvent::Message {
-                v: 2,
+                v: 3,
                 id: "m1".to_string(),
                 role: "user".to_string(),
                 content: "Why did run a3f9c12 diverge?".to_string(),
+                tool_call_id: None,
                 ts: 1_000,
             },
         )
@@ -982,6 +1150,145 @@ mod tests {
         assert_eq!(thread.state, ThreadState::Idle);
     }
 
+    /// `replay_thread_round_trips_tool_call_id`: a `Message` event
+    /// with `role: "tool"` and a `tool_call_id` must round-trip
+    /// through replay with the `tool_call_id` preserved. Without
+    /// this, the `agent_approve_action` IPC flow's
+    /// "execute the pending tool_call directly + push the result
+    /// to thread.messages" path would silently lose the
+    /// `tool_call_id` on the next `engine.run`, the LLM would
+    /// not see the result as a proper Tool message, and would
+    /// re-issue the same tool_call — the exact bug where
+    /// "approve apply_patch → nothing happens, another approval
+    /// dialog pops up".
+    #[test]
+    fn replay_thread_round_trips_tool_call_id() {
+        let tmp = tempdir().unwrap();
+        let log_path: PathBuf = tmp.path().join("events.jsonl");
+
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::Message {
+                v: 3,
+                id: "m_user".to_string(),
+                role: "user".to_string(),
+                content: "patch the file".to_string(),
+                tool_call_id: None,
+                ts: 1_000,
+            },
+        )
+        .unwrap();
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::Message {
+                v: 3,
+                id: "m_assistant".to_string(),
+                role: "assistant".to_string(),
+                content: "## Patch\nI'll apply this diff.".to_string(),
+                tool_call_id: None,
+                ts: 1_100,
+            },
+        )
+        .unwrap();
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::Message {
+                v: 3,
+                id: "m_tool".to_string(),
+                role: "tool".to_string(),
+                content: r#"{"Ok":{"summary":"patch applied (3 changes)"}}"#.to_string(),
+                tool_call_id: Some("call_apply_patch_42".to_string()),
+                ts: 1_200,
+            },
+        )
+        .unwrap();
+
+        let thread = replay_thread(&log_path, "t1".to_string(), AgentRole::Debugger, None).unwrap();
+        assert_eq!(thread.messages.len(), 3);
+
+        // User message — no tool_call_id.
+        assert_eq!(thread.messages[0].role, "user");
+        assert_eq!(thread.messages[0].tool_call_id, None);
+
+        // Assistant message — no tool_call_id (assistant text only;
+        // structured tool_calls live elsewhere in the LLM-facing
+        // history, not in thread.messages).
+        assert_eq!(thread.messages[1].role, "assistant");
+        assert_eq!(thread.messages[1].tool_call_id, None);
+
+        // Tool message — tool_call_id MUST round-trip so the LLM
+        // can attribute the result to the correct tool_calls[i].
+        assert_eq!(thread.messages[2].role, "tool");
+        assert_eq!(
+            thread.messages[2].tool_call_id.as_deref(),
+            Some("call_apply_patch_42"),
+        );
+    }
+
+    /// `replay_thread_v2_log_replays_with_default_tool_call_id`:
+    /// backward-compat — v2 logs (which predate the
+    /// `tool_call_id` field on Message events) must still
+    /// deserialize and replay cleanly. The field defaults to
+    /// `None`, so old tool messages come back as ordinary
+    /// messages with `tool_call_id: None`. The engine's
+    /// `build_messages` falls back to a generic user-role
+    /// placeholder for those (sub-optimal but not crashing).
+    #[test]
+    fn replay_thread_v2_log_replays_with_default_tool_call_id() {
+        let tmp = tempdir().unwrap();
+        let log_path: PathBuf = tmp.path().join("events.jsonl");
+
+        // Hand-craft a v2-shaped Message (no `tool_call_id`).
+        let raw = r#"{"type":"message","v":2,"id":"m_old","role":"tool","content":"legacy","ts":42}"#;
+        std::fs::write(&log_path, format!("{raw}\n")).unwrap();
+
+        let thread = replay_thread(&log_path, "t1".to_string(), AgentRole::Debugger, None).unwrap();
+        assert_eq!(thread.messages.len(), 1);
+        assert_eq!(thread.messages[0].role, "tool");
+        assert_eq!(thread.messages[0].content, "legacy");
+        assert_eq!(
+            thread.messages[0].tool_call_id, None,
+            "v2 logs must default tool_call_id to None",
+        );
+    }
+
+    /// `thread_event_message_serialization_omits_null_tool_call_id`:
+    /// when a Message has no `tool_call_id`, the wire format
+    /// must omit the field (not serialise it as `null`) so v3
+    /// logs read identically to v2 logs on the absence side.
+    /// This keeps log diffs minimal and avoids tripping the
+    /// "did this change?" test in the inbox audit.
+    #[test]
+    fn thread_event_message_serialization_omits_null_tool_call_id() {
+        let msg = ThreadEvent::Message {
+            v: 3,
+            id: "m1".to_string(),
+            role: "user".to_string(),
+            content: "hi".to_string(),
+            tool_call_id: None,
+            ts: 1_000,
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        assert!(
+            !json.contains("tool_call_id"),
+            "null tool_call_id must be omitted from wire format, got: {json}",
+        );
+
+        let with_id = ThreadEvent::Message {
+            v: 3,
+            id: "m2".to_string(),
+            role: "tool".to_string(),
+            content: "ok".to_string(),
+            tool_call_id: Some("call_1".to_string()),
+            ts: 1_100,
+        };
+        let json2 = serde_json::to_string(&with_id).unwrap();
+        assert!(
+            json2.contains(r#""tool_call_id":"call_1""#),
+            "non-null tool_call_id must be serialised, got: {json2}",
+        );
+    }
+
     /// `append_thread_event_jsonl_format_includes_version`:
     /// Serialised lines must include `{"v": N, "type": "..."}`
     /// per spec so future bumps don't break replay.
@@ -1000,12 +1307,12 @@ mod tests {
         let content = std::fs::read_to_string(&log_path).unwrap();
         let trimmed = content.trim();
         let parsed: serde_json::Value = serde_json::from_str(trimmed).unwrap();
-        assert_eq!(parsed["v"], 2);
+        assert_eq!(parsed["v"], 3);
         assert_eq!(parsed["type"], "state_transition");
     }
 
     /// `append_thread_event_jsonl_format_mode_switch`: a `ModeSwitch`
-    /// event serialises with `v: 2` (the current wire version) and
+    /// event serialises with `v: 3` (the current wire version) and
     /// the correct role strings.
     #[test]
     fn append_thread_event_jsonl_format_mode_switch() {
@@ -1018,7 +1325,7 @@ mod tests {
         let content = std::fs::read_to_string(&log_path).unwrap();
         let trimmed = content.trim();
         let parsed: serde_json::Value = serde_json::from_str(trimmed).unwrap();
-        assert_eq!(parsed["v"], 2);
+        assert_eq!(parsed["v"], 3);
         assert_eq!(parsed["type"], "mode_switch");
         assert_eq!(parsed["from"], "debugger");
         assert_eq!(parsed["to"], "planner");
@@ -1099,5 +1406,205 @@ mod tests {
         assert_eq!(v["type"], "mode_switch");
         assert_eq!(v["from"], "scaffolder");
         assert_eq!(v["to"], "critic");
+    }
+
+    /// `pending_approval_round_trip`: a `PendingApproval` event
+    /// must rehydrate `thread.pending_tool_call` on the next
+    /// `replay_thread` call so the IPC `approve_action` handler
+    /// can recover the call after a renderer restart.
+    ///
+    /// This is the regression test for the WS2-T7 "click approve
+    /// → nothing happens" loop where the in-memory field was
+    /// silently lost on every reload.
+    #[test]
+    fn pending_approval_round_trip() {
+        let tmp = tempdir().unwrap();
+        let log_path: PathBuf = tmp.path().join("events.jsonl");
+
+        let tc = crate::agent::llm::ToolCall {
+            id: "call_apply_patch_42".to_string(),
+            tool_type: "function".to_string(),
+            function: crate::agent::llm::ToolFunctionCall {
+                name: "apply_patch".to_string(),
+                arguments: r#"{"path":"foo.rs","patch":"@@ -1 +1 @@\n-old\n+new"}"#.to_string(),
+            },
+        };
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::state_transition(
+                ThreadState::Investigating,
+                ThreadState::AwaitingApproval,
+                1_000,
+            ),
+        )
+        .unwrap();
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::pending_approval(&tc, "Tool 'apply_patch' requires human approval.", 1_001),
+        )
+        .unwrap();
+
+        let replayed = replay_thread(
+            &log_path,
+            "t1".to_string(),
+            AgentRole::Debugger,
+            None,
+        )
+        .unwrap();
+
+        // Thread rehydrates into AwaitingApproval and the
+        // pending tool_call is fully reconstructed (id, name,
+        // arguments all match what we wrote).
+        assert_eq!(replayed.state, ThreadState::AwaitingApproval);
+        let pending = replayed
+            .pending_tool_call
+            .as_ref()
+            .expect("pending_tool_call must be rehydrated from PendingApproval event");
+        assert_eq!(pending.id, "call_apply_patch_42");
+        assert_eq!(pending.function.name, "apply_patch");
+        assert!(pending.function.arguments.contains("foo.rs"));
+        assert!(pending.function.arguments.contains("apply_patch")
+            || pending.function.arguments.contains("+new"));
+    }
+
+    /// `pending_approval_clears_on_state_transition`: once the
+    /// IPC handler resolves an approval it emits a state
+    /// transition to `Investigating`. Replay must clear
+    /// `thread.pending_tool_call` so the next reload does not
+    /// re-execute the same tool_call.
+    #[test]
+    fn pending_approval_clears_on_state_transition() {
+        let tmp = tempdir().unwrap();
+        let log_path: PathBuf = tmp.path().join("events.jsonl");
+
+        let tc = crate::agent::llm::ToolCall {
+            id: "call_apply_patch_42".to_string(),
+            tool_type: "function".to_string(),
+            function: crate::agent::llm::ToolFunctionCall {
+                name: "apply_patch".to_string(),
+                arguments: "{}".to_string(),
+            },
+        };
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::state_transition(
+                ThreadState::Investigating,
+                ThreadState::AwaitingApproval,
+                1_000,
+            ),
+        )
+        .unwrap();
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::pending_approval(&tc, "approval required", 1_001),
+        )
+        .unwrap();
+        // Simulate the IPC handler resolving the approval: emit
+        // a state transition back to Investigating. (In
+        // production the handler also pushes a tool-result
+        // message; we don't need it for this assertion.)
+        append_thread_event(
+            &log_path,
+            &ThreadEvent::state_transition(
+                ThreadState::AwaitingApproval,
+                ThreadState::Investigating,
+                1_002,
+            ),
+        )
+        .unwrap();
+
+        let replayed = replay_thread(
+            &log_path,
+            "t1".to_string(),
+            AgentRole::Debugger,
+            None,
+        )
+        .unwrap();
+
+        // After the resolution transition, the pending slot is
+        // cleared even though the PendingApproval event is still
+        // in the log.
+        assert_eq!(replayed.state, ThreadState::Investigating);
+        assert!(
+            replayed.pending_tool_call.is_none(),
+            "pending_tool_call must be cleared on state transition out of AwaitingApproval"
+        );
+    }
+
+    /// `model_id_round_trips_through_upsert_get`: the v3 column
+    /// must persist the user's selected model and surface it on
+    /// re-read. Before the fix, `ThreadRow` had no `model_id`
+    /// field and the column did not exist — every rehydrate landed
+    /// back at the hardcoded `"claude-sonnet-4"` seed in
+    /// `Thread::new`, so even a renderer that always re-sent
+    /// `modelId` would lose the value on renderer restart and the
+    /// IPC override was the only thing keeping the model correct.
+    /// With the column in place, rehydrate restores the user's
+    /// pick and the override becomes a pure belt-and-braces
+    /// safety net.
+    #[test]
+    fn model_id_round_trips_through_upsert_get() {
+        let conn = fresh_v2_db();
+        let mut row = make_row("t1", ThreadState::Idle);
+        row.model_id = Some("gpt-4o".to_string());
+        upsert_thread(&conn, &row).unwrap();
+
+        let fetched = get_thread(&conn, "t1").unwrap().unwrap();
+        assert_eq!(
+            fetched.model_id.as_deref(),
+            Some("gpt-4o"),
+            "v3 column must persist the user's model selection",
+        );
+    }
+
+    /// `model_id_round_trips_through_list`: same guarantee as the
+    /// upsert/get test but exercised through the list path that
+    /// the renderer's Workflow inbox uses.
+    #[test]
+    fn model_id_round_trips_through_list() {
+        let conn = fresh_v2_db();
+        let mut row = make_row("t1", ThreadState::Investigating);
+        row.model_id = Some("claude-3-5-sonnet-20241022".to_string());
+        upsert_thread(&conn, &row).unwrap();
+
+        let all = list_threads(&conn, "ws", None).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(
+            all[0].model_id.as_deref(),
+            Some("claude-3-5-sonnet-20241022"),
+        );
+    }
+
+    /// `from_thread_stores_empty_model_id_as_none`: the
+    /// `from_thread` builder must coerce an empty `model_id` to
+    /// `None` so a future caller that accidentally passes
+    /// `model_id = ""` does not write a literal empty string that
+    /// would later be checked by `row_to_thread` and silently
+    /// ignored (reverting the rehydrated thread to the seed
+    /// default in spirit, even if the column itself is non-null).
+    #[test]
+    fn from_thread_stores_empty_model_id_as_none() {
+        let dir = tempdir().unwrap();
+        let log_path = dir.path().join("events.jsonl");
+        let mut thread = Thread::new(
+            "t1".to_string(),
+            AgentRole::Debugger,
+            None,
+            log_path,
+        );
+        thread.model_id = "   ".to_string(); // whitespace-only
+
+        let row = ThreadRow::from_thread(
+            &thread,
+            "ws".to_string(),
+            "title".to_string(),
+            "summary".to_string(),
+            "active".to_string(),
+        );
+        assert!(
+            row.model_id.is_none(),
+            "whitespace-only model_id must be stored as None, got {:?}",
+            row.model_id,
+        );
     }
 }

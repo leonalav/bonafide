@@ -31,7 +31,11 @@ import { Composer, QuickSuggestions } from "./Composer"
 
 import { useWorkspaceRoot } from "../../ide/hooks"
 
-import { bonafide, type AgentEngineResult } from "../../ipc/tauri"
+import {
+  bonafide,
+  type AgentEngineResult,
+  type AgentToolArtifact,
+} from "../../ipc/tauri"
 
 import type { Run } from "../../data/runs"
 
@@ -53,6 +57,7 @@ import { ChatHeader } from "../chat/ChatHeader"
 import { ChatThread, type ChatThreadHandle } from "../chat/ChatThread"
 
 import { toCanonicalModeId, type ModeId } from "../../chats/types"
+import type { ChatThreadMode } from "../../chats/ChatStore"
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -108,10 +113,17 @@ function WelcomePanel({
   onStartChat,
 
   onOpenWorkflow,
+  /** Mode currently picked in the composer. The welcome panel
+   *  mirrors the live composer so the picker doesn't reset to
+   *  the default once the user lands in a thread. */
+  mode,
+  onModeChange,
 }: {
   onStartChat: (text: string, attachments: Attachment[]) => void
 
   onOpenWorkflow?: () => void
+  mode: ModeId
+  onModeChange: (mode: ModeId) => void
 }) {
   return (
     <div className="flex h-full min-h-0 min-w-0 max-w-full flex-col gap-5 overflow-hidden">
@@ -143,9 +155,16 @@ function WelcomePanel({
       <Composer
         onSubmit={onStartChat}
         onCancel={undefined}
-        mode="debugger"
+        mode={mode}
         builtinId="fable"
-        onModeChange={() => {}}
+        // CRITICAL FIX (PROD): the picker used to be a no-op in the
+        // welcome panel, so the welcome's quick-suggestions
+        // ("Sequence experiment plan", "Cross-reference papers")
+        // always routed to the Debugger agent regardless of which
+        // suggestion the user picked. Plumbing the live state
+        // through restores the "picking a mode routes your message
+        // through the matching agent" contract.
+        onModeChange={onModeChange}
         onBuiltinChange={() => {}}
       />
     </div>
@@ -382,7 +401,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
 
     if (!refreshed) return
 
-    sendMessage(refreshed, { effectiveModel })
+    sendMessage(refreshed, { effectiveModel, pickedMode: mode })
   }
 
   /**
@@ -404,7 +423,20 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
      *  forward to the Rust engine. Falls back to the thread's stored
      *  model so existing threads continue to use their pinned model
      *  even when the user switches the picker in between. */
-    options?: { effectiveModel?: string },
+    options?: {
+      effectiveModel?: string
+      /**
+       * Agent mode picked at the moment of submit. CRITICAL FIX
+       * (PROD): previously `role` was always read from
+       * `thread.mode`, which means a user who created the thread
+       * with Debugger and then switched the picker to Plan for
+       * the next message still hit the Debugger agent — the
+       * picked mode was silently ignored. The picker is the
+       * source of truth at submit time; the thread's stored
+       * mode is just the seed for the very first send.
+       */
+      pickedMode?: ChatThreadMode
+    },
   ) {
     // The caller passes the thread directly so the closure value of
     // `activeThread` doesn't go stale for the first message —
@@ -440,7 +472,13 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
     // The thread's stored `mode` IS the canonical `AgentRole`
     // (snake_case) — they share the same `MODE_META` enum. Cast
     // explicitly because TS infers them as separate named types.
-    const role = thread.mode as AgentRole
+    //
+    // CRITICAL FIX (PROD): when the user changes the mode picker
+    // mid-thread (e.g. from Debug to Plan), `options.pickedMode`
+    // carries the freshly-chosen value. Preferring it over
+    // `thread.mode` ensures the request is routed to the right
+    // agent — same routing contract as the picker UI promises.
+    const role = (options?.pickedMode ?? thread.mode) as AgentRole
 
     // Resolve the model string: prefer the caller's effective model
     // (which already prefers the selected endpoint's defaultModel
@@ -452,13 +490,17 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
     const assistantMsgId = `${Date.now().toString(36)}-r`
 
     // Append a placeholder so the user sees their turn followed by
-    // a waiting card; the engine result patches the content /
-    // error once it returns.
+    // a waiting card. We set `streaming: true` so the
+    // `ReasoningArtifact` renders its "thinking…" indicator the
+    // moment the request is sent — before the engine returns. The
+    // engine result patches the content / error / reasoning and
+    // clears `streaming` once it lands.
     appendMessage(threadId, {
       id: assistantMsgId,
       role: "assistant",
       content: "",
       ts: Date.now(),
+      streaming: true,
     })
 
     bonafide.agent
@@ -488,135 +530,17 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
           : undefined,
       })
       .then((output) => {
-        const text = renderEngineResult(output.result)
-        const error =
-          output.result.type === "llm_error"
-            ? output.result.message
-            : undefined
-        // Attach inline tool-call artifacts from the engine trace
-        // so each invocation shows up as a Terminal / File / Tool
-        // card under the assistant message. We map the IPC shape
-        // to the renderer's `Artifact` shape; they're isomorphic
-        // today but kept separate so the renderer doesn't have to
-        // import from the IPC module.
-        const toolArtifacts: Artifact[] = (output.toolArtifacts ?? []).map(
-          (a) => ({
-            id: a.id,
-            kind: a.kind,
-            name: a.name,
-            displayName: a.displayName,
-            ...(a.target ? { target: a.target } : {}),
-            ...(a.args ? { args: a.args } : {}),
-            ...(a.output ? { output: a.output } : {}),
-            ...(a.resultSummary ? { resultSummary: a.resultSummary } : {}),
-            status: a.status,
-            ts: a.ts,
-          }),
-        )
-
-        // If the engine paused for human approval, synthesize a
-        // dedicated approval artifact and wire Approve / Reject
-        // callbacks onto the message. The callbacks live on the
-        // message (rather than at the surface level) so they
-        // survive the assistant message being re-rendered with
-        // its updated artifacts list.
-        const approvalArtifact: Artifact | null =
-          output.result.type === "awaiting_approval"
-            ? {
-                id: output.result.toolCallId,
-                kind: "approval",
-                // The engine doesn't include the tool name in the
-                // awaiting_approval result; the friendly label is
-                // carried by `reason` (e.g. "Tool 'apply_patch'
-                // requires human approval."). We keep the toolCallId
-                // as `name` so debug logs make the link explicit.
-                name: output.result.toolCallId,
-                displayName: "Tool approval requested",
-                approvalReason: output.result.reason,
-                status: "pending",
-                ts: Date.now(),
-              }
-            : null
-
-        const artifacts = approvalArtifact
-          ? [...toolArtifacts, approvalArtifact]
-          : toolArtifacts
-
-        const onApproveArtifact =
-          approvalArtifact &&
-          ((artifactId: string) => {
-            // Patch the artifact's status in-place. We re-read
-            // the thread from the store so we mutate the live
-            // state without depending on a possibly-stale
-            // closure reference.
-            const thread = chatsStore.getThread(threadId)
-            if (!thread) return
-            const message = thread.messages.find((m) => m.id === assistantMsgId)
-            if (!message || !message.artifacts) return
-            const nextArtifacts = message.artifacts.map((a) =>
-              a.id === artifactId
-                ? {
-                    ...a,
-                    status: "completed" as const,
-                    decision: "approved" as const,
-                  }
-                : a,
-            )
-            chatsStore.updateMessage(threadId, assistantMsgId, {
-              artifacts: nextArtifacts,
-            })
-            // Hand off to the engine so the loop can resume. The
-            // IPC is fire-and-forget — we don't surface the
-            // result because the user already saw the resolved
-            // approval state in the artifact card.
-            if (workspaceRoot) {
-              void bonafide.agent
-                .approveAction(workspaceRoot, {
-                  threadId,
-                  toolCallId: artifactId,
-                  decision: "approve",
-                })
-                .catch(() => undefined)
-            }
-          })
-
-        const onRejectArtifact =
-          approvalArtifact &&
-          ((artifactId: string) => {
-            const thread = chatsStore.getThread(threadId)
-            if (!thread) return
-            const message = thread.messages.find((m) => m.id === assistantMsgId)
-            if (!message || !message.artifacts) return
-            const nextArtifacts = message.artifacts.map((a) =>
-              a.id === artifactId
-                ? {
-                    ...a,
-                    status: "failed" as const,
-                    decision: "rejected" as const,
-                  }
-                : a,
-            )
-            chatsStore.updateMessage(threadId, assistantMsgId, {
-              artifacts: nextArtifacts,
-            })
-            if (workspaceRoot) {
-              void bonafide.agent
-                .rejectAction(workspaceRoot, {
-                  threadId,
-                  toolCallId: artifactId,
-                  decision: "reject",
-                })
-                .catch(() => undefined)
-            }
-          })
-
-        updateMessage(threadId, assistantMsgId, {
-          content: text,
-          ...(error ? { error } : {}),
-          ...(artifacts.length > 0 ? { artifacts } : {}),
-          ...(onApproveArtifact ? { onApproveArtifact } : {}),
-          ...(onRejectArtifact ? { onRejectArtifact } : {}),
-        })
+        // CRITICAL FIX (PROD): route the initial engine response
+        // through `applyEngineResult` so the same code path handles
+        // the *initial* sendMessage response AND the post-approval
+        // resume response (see `buildApproveCallback` /
+        // `buildRejectCallback`). Before this fix the initial send
+        // and the approval resume diverged: the initial handler
+        // built its own artifacts + body inline, while the approval
+        // resume was fire-and-forget on the IPC and the chat never
+        // updated after the user clicked Approve — leaving the body
+        // stuck on the stale "🔐 Approval Required" markdown.
+        applyEngineResult(output.result, output.toolArtifacts ?? [])
       })
       .catch((err: unknown) => {
         const message =
@@ -632,6 +556,224 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
         // AbortController. Safe to call after error paths too.
         finishSend(threadId)
       })
+
+    // ── Helpers (closure over threadId / assistantMsgId / workspaceRoot)
+    // ──────────────────────────────────────────────────────────────────
+    //
+    // `applyEngineResult` is the single source of truth for updating
+    // the assistant message from an `EngineResult`. It is invoked
+    // (a) once after the initial `agent_send_message` resolves, and
+    // (b) again whenever the user approves / rejects a tool and the
+    // engine returns its next result. Centralising the logic here
+    // makes it impossible for the two paths to drift apart — the bug
+    // that motivated this refactor was exactly that drift.
+
+    function applyEngineResult(
+      result: AgentEngineResult | null,
+      toolArtifacts: AgentToolArtifact[],
+    ) {
+      // Map the IPC `ToolArtifact` shape to the renderer's `Artifact`
+      // shape. They're isomorphic today but kept separate so the
+      // renderer doesn't have to import from the IPC module.
+      const toolArtList: Artifact[] = toolArtifacts.map((a) => ({
+        id: a.id,
+        kind: a.kind,
+        name: a.name,
+        displayName: a.displayName,
+        ...(a.target ? { target: a.target } : {}),
+        ...(a.args ? { args: a.args } : {}),
+        ...(a.output ? { output: a.output } : {}),
+        ...(a.resultSummary ? { resultSummary: a.resultSummary } : {}),
+        status: a.status,
+        ts: a.ts,
+      }))
+
+      // `result === null` is the reject path: the engine doesn't re-run
+      // after a refusal, so there's no new content to surface. The
+      // approval artifact was already marked `failed` optimistically
+      // by `buildRejectCallback` before the IPC fired — preserve it.
+      // Always clear `streaming` so the "thinking…" indicator goes
+      // away even on the reject path.
+      if (result === null) {
+        chatsStore.updateMessage(threadId, assistantMsgId, {
+          content: "",
+          streaming: false,
+        })
+        return
+      }
+
+      const text = renderEngineResult(result)
+      const error =
+        result.type === "llm_error" ? result.message : undefined
+
+      // If the engine paused for human approval again (e.g. the LLM
+      // decided to call a *different* tool after the previous one was
+      // approved), synthesize a dedicated approval artifact and wire
+      // fresh Approve / Reject callbacks. `result.toolCallId` is
+      // guaranteed to be the camelCase field name now (the Rust
+      // `EngineResult::AwaitingApproval` enum has
+      // `#[serde(rename = "toolCallId")]` on its struct field).
+      const approvalArtifact: Artifact | null =
+        result.type === "awaiting_approval"
+          ? {
+              id: result.toolCallId,
+              kind: "approval",
+              name: result.toolCallId,
+              displayName: "Tool approval requested",
+              approvalReason: result.reason,
+              status: "pending",
+              ts: Date.now(),
+            }
+          : null
+
+      const artifacts = approvalArtifact
+        ? [...toolArtList, approvalArtifact]
+        : toolArtList
+
+      const onApproveArtifact = approvalArtifact
+        ? buildApproveCallback()
+        : undefined
+      const onRejectArtifact = approvalArtifact
+        ? buildRejectCallback()
+        : undefined
+
+      chatsStore.updateMessage(threadId, assistantMsgId, {
+        content: text,
+        // CRITICAL FIX (OUTPUT-GONE-STALE): always clear `streaming`
+        // when the engine result lands. Without this, the
+        // `ReasoningArtifact` would keep rendering the
+        // "thinking…" indicator even after the final response
+        // arrived, and the assistant card would look perpetually
+        // mid-flight. We pass `streaming: false` explicitly so the
+        // patch survives even if the message previously had
+        // `streaming: true`.
+        streaming: false,
+        ...(error ? { error } : {}),
+        ...(artifacts.length > 0 ? { artifacts } : {}),
+        ...(onApproveArtifact ? { onApproveArtifact } : {}),
+        ...(onRejectArtifact ? { onRejectArtifact } : {}),
+      })
+    }
+
+    function buildApproveCallback() {
+      return (artifactId: string) => {
+        // Optimistic update: flip the artifact to `completed` so the
+        // card shows the "Approved" pill *immediately*, before the IPC
+        // round-trip lands. We re-read the thread from the store so we
+        // mutate the live state without depending on a possibly-stale
+        // closure reference.
+        const t = chatsStore.getThread(threadId)
+        if (!t) return
+        const m = t.messages.find((msg) => msg.id === assistantMsgId)
+        if (!m || !m.artifacts) return
+        const nextArtifacts = m.artifacts.map((a) =>
+          a.id === artifactId
+            ? {
+                ...a,
+                status: "completed" as const,
+                decision: "approved" as const,
+              }
+            : a,
+        )
+        chatsStore.updateMessage(threadId, assistantMsgId, {
+          artifacts: nextArtifacts,
+        })
+
+        // Hand off to the engine so the loop can resume. CRITICAL FIX
+        // (PROD): consume the IPC response and route it back through
+        // `applyEngineResult` so the chat reflects whatever the engine
+        // did next — Completed (final answer), AwaitingApproval (a new
+        // tool needs approval), BudgetExceeded, MaxIterations, or
+        // LlmError. Before this fix the `.catch(() => undefined)`
+        // dropped the response on the floor, leaving the body stuck on
+        // the stale "🔐 Approval Required" markdown even after a
+        // successful resume.
+        //
+        // We also forward the endpoint payload so the backend builds
+        // the real OpenAiCompatibleClient on resume, not the noop
+        // fallback (which would surface a misleading "endpoint not
+        // configured" error after a successful first iteration).
+        if (workspaceRoot) {
+          bonafide.agent
+            .approveAction(workspaceRoot, {
+              threadId,
+              toolCallId: artifactId,
+              decision: "approve",
+              ...(selectedEndpoint
+                ? {
+                    endpoint: {
+                      id: selectedEndpoint.id,
+                      label: selectedEndpoint.label,
+                      baseUrl: selectedEndpoint.baseUrl,
+                      apiKey: selectedEndpoint.apiKey || null,
+                      defaultModel: selectedEndpoint.defaultModel,
+                    },
+                  }
+                : {}),
+            })
+            .then((output) => {
+              applyEngineResult(output.result, output.toolArtifacts)
+            })
+            .catch(() => undefined)
+        }
+      }
+    }
+
+    function buildRejectCallback() {
+      return (artifactId: string) => {
+        // Optimistic update: flip the artifact to `failed` so the
+        // card shows the "Rejected" pill immediately.
+        const t = chatsStore.getThread(threadId)
+        if (!t) return
+        const m = t.messages.find((msg) => msg.id === assistantMsgId)
+        if (!m || !m.artifacts) return
+        const nextArtifacts = m.artifacts.map((a) =>
+          a.id === artifactId
+            ? {
+                ...a,
+                status: "failed" as const,
+                decision: "rejected" as const,
+              }
+            : a,
+        )
+        chatsStore.updateMessage(threadId, assistantMsgId, {
+          artifacts: nextArtifacts,
+        })
+
+        // The reject IPC path returns `result: null` because the engine
+        // doesn't re-run after a refusal. `applyEngineResult` handles
+        // that case by clearing the body without disturbing the failed
+        // approval artifact.
+        //
+        // We still forward the endpoint payload so the contract is
+        // symmetric with `approveAction` (and so a future revision
+        // resume that wants to consult the LLM doesn't fall back to
+        // the noop client).
+        if (workspaceRoot) {
+          bonafide.agent
+            .rejectAction(workspaceRoot, {
+              threadId,
+              toolCallId: artifactId,
+              decision: "reject",
+              ...(selectedEndpoint
+                ? {
+                    endpoint: {
+                      id: selectedEndpoint.id,
+                      label: selectedEndpoint.label,
+                      baseUrl: selectedEndpoint.baseUrl,
+                      apiKey: selectedEndpoint.apiKey || null,
+                      defaultModel: selectedEndpoint.defaultModel,
+                    },
+                  }
+                : {}),
+            })
+            .then((output) => {
+              applyEngineResult(output.result, output.toolArtifacts)
+            })
+            .catch(() => undefined)
+        }
+      }
+    }
   }
 
   function handleSubmit(text: string, attachments: Attachment[] = []) {
@@ -680,7 +822,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
       // Re-read the thread so `sendMessage` sees the just-appended
       // user message in `thread.messages`.
       const refreshed = chatsStore.getThread(created.id) ?? created
-      sendMessage(refreshed, { effectiveModel })
+      sendMessage(refreshed, { effectiveModel, pickedMode: mode })
     } else {
       appendMessage(activeThread.id, {
         id: `${Date.now().toString(36)}-u`,
@@ -698,7 +840,7 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
       // `activeThread` closure reference may not reflect the freshly
       // appended message until the React re-render lands.
       const refreshed = chatsStore.getThread(activeThread.id) ?? activeThread
-      sendMessage(refreshed, { effectiveModel })
+      sendMessage(refreshed, { effectiveModel, pickedMode: mode })
     }
   }
 
@@ -723,6 +865,8 @@ function ChatSurface({ onOpenWorkflow }: { onOpenWorkflow?: () => void }) {
       <WelcomePanel
         onStartChat={handleSubmit}
         onOpenWorkflow={onOpenWorkflow}
+        mode={mode}
+        onModeChange={(m) => setMode(m)}
       />
     )
   }
@@ -972,6 +1116,18 @@ function RunSurface({
   // has a configured endpoint selected.
   const { selectedEndpoint } = useModelsStore()
 
+  // Same resolution rule as ChatSurface: prefer the custom endpoint's
+  // `defaultModel`, otherwise fall back to the built-in picker. The
+  // Rust override at `agent_send_message` only runs when `modelId`
+  // is `Some(_)`, so this MUST be forwarded on every send — omitting
+  // it leaves the thread at the hardcoded `"claude-sonnet-4"` seed
+  // in `Thread::new` (orchestrator.rs:238) regardless of the user's
+  // endpoint selection. That's the bug RunSurface had until now.
+  const builtinId = "fable" as const
+  const effectiveModel = selectedEndpoint
+    ? selectedEndpoint.defaultModel
+    : builtinId
+
   // Generate (or reuse) a thread id for this run. The Rust side stores
   // the row in SQLite keyed by `threadId` so subsequent submits reuse
   // the same conversation.
@@ -1115,6 +1271,14 @@ function RunSurface({
         role: "debugger",
 
         runId: run.commit,
+
+        // Forward the resolved model so the Rust engine uses the
+        // user's selected endpoint's `defaultModel` (or the built-in
+        // fallback) instead of the hardcoded `"claude-sonnet-4"` seed
+        // in `Thread::new`. Without this field the IPC override at
+        // `agent_send_message` is skipped and the thread stays on
+        // the default model regardless of endpoint selection.
+        modelId: effectiveModel,
 
         // Forward the configured endpoint so the Rust engine builds
         // a real OpenAiCompatibleClient instead of the noop stub.

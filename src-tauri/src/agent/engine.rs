@@ -8,7 +8,7 @@
 //! ## Loop overview (section 7.2)
 //!
 //! ```text
-//! loop (iterations ≤ max_iterations):
+//! loop:
 //!   1. REASON: llm_client.complete(build_messages(thread))
 //!   2. if response.tool_calls.is_empty():
 //!        → return EngineResult::Completed(response.content)
@@ -53,10 +53,11 @@ use crate::agent::llm::{
 };
 use crate::agent::modes::ModeRegistry;
 use crate::agent::orchestrator::{
-    append_event_log, AgentRole, Budget, Thread, ThreadState, TraceStep,
+    append_event_log, AgentRole, Budget, Message, Thread, ThreadState, TraceStep,
 };
 use crate::agent::threads::{
     append_thread_event, replay_thread, thread_state_to_string, update_thread_state,
+    ThreadEvent,
 };
 use crate::agent::tools::{ToolRegistry, ToolResult};
 
@@ -73,11 +74,29 @@ pub enum EngineResult {
     /// Loop terminated with a final assistant answer.
     Completed { content: String },
     /// A tool needs human approval before it can execute.
-    AwaitingApproval { tool_call_id: String, reason: String },
+    ///
+    /// CRITICAL FIX (PROD): the variant struct field `tool_call_id`
+    /// is **explicitly renamed** to `toolCallId` in JSON. The
+    /// renderer's TypeScript types (`AgentEngineResult` in
+    /// `src/ipc/tauri.ts`) declare the field as `toolCallId` (camelCase).
+    /// Serde's `rename_all = "snake_case"` at the enum level only
+    /// renames the variant tags (e.g. `awaiting_approval`), NOT the
+    /// struct-variant fields, which kept their original snake_case
+    /// names. That meant `output.result.toolCallId` was always
+    /// `undefined` on the renderer side — causing the body text to
+    /// render as "🔐 **Approval Required** / Tool call: `undefined`"
+    /// and (worse) the `onApproveArtifact` handler to forward
+    /// `toolCallId: undefined` to the IPC, which then failed to locate
+    /// the pending tool_call and the apply_patch never ran. The
+    /// explicit `#[serde(rename = "toolCallId")]` on the field fixes
+    /// both symptoms in one stroke.
+    AwaitingApproval {
+        #[serde(rename = "toolCallId")]
+        tool_call_id: String,
+        reason: String,
+    },
     /// The budget governor blocked the tool call.
     BudgetExceeded,
-    /// The loop hit the iteration cap without resolving.
-    MaxIterations,
     /// The LLM call itself failed.
     LlmError { message: String },
 }
@@ -141,7 +160,6 @@ pub struct AgentEngine {
     tools: Arc<ToolRegistry>,
     approval_gate: ApprovalGate,
     budget: Arc<dyn BudgetGovernor>,
-    max_iterations: u32,
     /// Per-mode protocol + behaviour-marker lookup. WS3-T1 wires
     /// this in so the engine reads markers from the active mode
     /// rather than the legacy hard-coded constants.
@@ -155,7 +173,6 @@ impl Default for AgentEngine {
             tools: Arc::new(ToolRegistry::default()),
             approval_gate: ApprovalGate::default(),
             budget: Arc::new(NoopBudgetGovernor::new()),
-            max_iterations: 20,
             mode_registry: Arc::new(ModeRegistry::default()),
         }
     }
@@ -188,7 +205,6 @@ impl AgentEngine {
             tools,
             approval_gate,
             budget,
-            max_iterations: 20,
             mode_registry: Arc::new(ModeRegistry::default()),
         }
     }
@@ -309,6 +325,20 @@ impl AgentEngine {
                     thread.state = replayed.state;
                     thread.messages = replayed.messages;
                     thread.trace = replayed.trace;
+                    // CRITICAL FIX (PROD): also restore
+                    // `pending_tool_call` from the replayed
+                    // thread. `replay_thread` correctly populates
+                    // this field from `PendingApproval` events in
+                    // the JSONL log, but the outer thread struct is
+                    // a separate copy — without this assignment
+                    // the in-memory field was silently dropped on
+                    // every `engine.run`, leaving the engine
+                    // looping back to `AwaitingApproval` forever
+                    // ("click APPROVE → nothing happens"). The
+                    // IPC `agent_approve_action` handler reads
+                    // this field directly to execute the pending
+                    // tool call when the user clicks APPROVE.
+                    thread.pending_tool_call = replayed.pending_tool_call;
                 }
                 Err(e) => {
                     log::warn!(
@@ -321,17 +351,6 @@ impl AgentEngine {
 
         loop {
             iterations += 1;
-
-            // ── 1. Loop guard: max iterations ─────────────────────────────────
-            if iterations > self.max_iterations {
-                self.emit_state_transition(
-                    thread,
-                    thread.state,
-                    ThreadState::Stopped,
-                    "max iterations reached",
-                );
-                return EngineResult::MaxIterations;
-            }
 
             // ── 2. First iteration: transition Idle → Investigating ─────────────
             if iterations == 1 && thread.state == ThreadState::Idle {
@@ -423,6 +442,41 @@ impl AgentEngine {
             }
 
             // ── 6. Process each tool call ─────────────────────────────────
+            //
+            // CRITICAL FIX (PROD): before iterating the tool calls,
+            // record the assistant's response (with its `tool_calls`
+            // field) as a `Message` in `thread.messages` and emit
+            // it to the JSONL event log. Without this, the next
+            // `engine.run` would replay the event log and the LLM
+            // would never see its own previous tool calls — it
+            // would either repeat them or fabricate fresh ones
+            // based on stale context. Pushing the assistant
+            // message preserves the tool-call chain so the LLM can
+            // pair each `tool_calls[i]` with the corresponding
+            // tool result message on the next iteration.
+            // CRITICAL FIX (PROD): persist the assistant message
+            // (with its `tool_calls` field) into the JSONL log so
+            // the LLM sees the tool-call pairing on the next
+            // iteration. Without this the OpenAI/Anthropic chat
+            // completions API rejects the pairing as invalid and
+            // silently re-issues the same tool_call (visible as
+            // another approval card).
+            if !resp.tool_calls.is_empty() {
+                let assistant_msg = Message {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    role: "assistant".to_string(),
+                    content: resp.content.clone(),
+                    tool_call_id: None,
+                    tool_calls: Some(resp.tool_calls.clone()),
+                    ts: chrono_millis(),
+                };
+                let _ = append_thread_event(
+                    &thread.event_log_path,
+                    &ThreadEvent::from_message(&assistant_msg),
+                );
+                thread.messages.push(assistant_msg);
+            }
+
             for tool_call in &resp.tool_calls {
                 // 6a. Budget check.
                 if !self.budget.can_proceed(tool_call, &thread.budget) {
@@ -461,7 +515,22 @@ impl AgentEngine {
                     // engine would re-prompt the LLM and the
                     // LLM would re-issue the same call,
                     // producing another approval request.
+                    //
+                    // CRITICAL: persist via the JSONL event log so
+                    // the IPC handler can recover the call after a
+                    // renderer restart. The in-memory field alone
+                    // was lost on every reload, which left the
+                    // engine looping back to `AwaitingApproval`
+                    // forever with no pending tool_call to execute.
                     thread.pending_tool_call = Some(tool_call.clone());
+                    let _ = append_thread_event(
+                        &thread.event_log_path,
+                        &ThreadEvent::pending_approval(
+                            tool_call,
+                            question.as_str(),
+                            chrono_millis(),
+                        ),
+                    );
                     return EngineResult::AwaitingApproval {
                         tool_call_id: tool_call.id.clone(),
                         reason: question,
@@ -507,13 +576,30 @@ impl AgentEngine {
                         // another approval request — exactly
                         // the "click approve → nothing
                         // happens" bug we're fixing.
+                        //
+                        // CRITICAL: persist via the JSONL event
+                        // log so the IPC handler can recover the
+                        // call after a renderer restart. The
+                        // in-memory field alone was lost on every
+                        // reload, which left the engine looping
+                        // back to `AwaitingApproval` forever
+                        // with no pending tool_call to execute.
+                        let reason = format!(
+                            "Tool '{}' requires human approval.",
+                            tool_call.function.name
+                        );
                         thread.pending_tool_call = Some(tool_call.clone());
+                        let _ = append_thread_event(
+                            &thread.event_log_path,
+                            &ThreadEvent::pending_approval(
+                                tool_call,
+                                reason.as_str(),
+                                chrono_millis(),
+                            ),
+                        );
                         return EngineResult::AwaitingApproval {
                             tool_call_id: tool_call.id.clone(),
-                            reason: format!(
-                                "Tool '{}' requires human approval.",
-                                tool_call.function.name
-                            ),
+                            reason,
                         };
                     }
                     Approval::AutoApprove => {
@@ -527,10 +613,9 @@ impl AgentEngine {
                 // or `PatchProposed` (the agent can re-apply to
                 // revise its own patch). All other states must
                 // gather context first — premature patches waste
-                // GPU hours. Escalate after max_hypothesis_iterations.
+                // GPU hours. Iteration cap removed per user request.
                 if tool_call.function.name == "apply_patch" {
                     let mode = self.mode_registry.for_role(thread.role);
-                    let max_iter = mode.max_hypothesis_iterations();
 
                     // Patch-before-hypothesis: blocked with a
                     // protocol-violation trace step.
@@ -560,23 +645,6 @@ impl AgentEngine {
                         // skipped.
                         self.emit_tool_call_event(thread, tool_call);
                         continue;
-                    }
-
-                    // Exhausted hypothesis budget: skip the patch
-                    // and emit an escalation trace step.
-                    if thread.hypothesis_iterations > max_iter {
-                        let step = TraceStep {
-                            step: iterations,
-                            content: format!(
-                                "Tool: apply_patch → (blocked: hypothesis budget \
-                                 exhausted — {} iterations > max {}); escalating",
-                                thread.hypothesis_iterations, max_iter
-                            ),
-                            ts: chrono_millis(),
-                        };
-                        thread.trace.push(step);
-                        self.emit_tool_call_event(thread, tool_call);
-                        return EngineResult::MaxIterations;
                     }
 
                     // Low-confidence patch: refuse to apply.
@@ -671,6 +739,42 @@ impl AgentEngine {
                 let artifact = build_artifact(tool_call, &result, chrono_millis());
                 thread.tool_artifacts.push(artifact);
 
+                // 6d-message. CRITICAL FIX (PROD): push the tool
+                // result as a proper `Message { role: "tool",
+                // tool_call_id }` into `thread.messages` AND emit
+                // it to the JSONL event log. The previous design
+                // only emitted a `ToolResult` summary event (a
+                // trace-step observation), so the LLM never saw
+                // the result as a proper tool message — its
+                // conversation history had a gap between the
+                // assistant's `tool_calls` and the next iteration,
+                // which is exactly the broken pattern the OpenAI
+                // chat-completions API documents as "messages
+                // must alternate roles". This both (a) fixes the
+                // `apply_patch` → approve → re-issue loop (the LLM
+                // now sees the patch result and continues
+                // appropriately), and (b) makes the conversation
+                // history valid for any LLM provider that enforces
+                // tool-call pairing (Anthropic, Gemini).
+                //
+                // We round-trip via `ThreadEvent::from_message` so
+                // `replay_thread` reconstructs the tool message
+                // on the next `engine.run` — without that the
+                // in-memory push is silently overwritten by replay.
+                let tool_msg = Message {
+                    id: uuid::Uuid::new_v4().to_string(),
+                    role: "tool".to_string(),
+                    content: result.summary(),
+                    tool_call_id: Some(tool_call.id.clone()),
+                    tool_calls: None,
+                    ts: chrono_millis(),
+                };
+                let _ = append_thread_event(
+                    &thread.event_log_path,
+                    &ThreadEvent::from_message(&tool_msg),
+                );
+                thread.messages.push(tool_msg);
+
                 // 6e. Record trace step.
                 let trace_content = self
                     .tools
@@ -712,37 +816,6 @@ impl AgentEngine {
                             );
                             if verdict.is_risky() {
                                 thread.patch_revisions += 1;
-                                let max_rev = self
-                                    .mode_registry
-                                    .for_role(thread.role)
-                                    .max_hypothesis_iterations();
-                                if thread.patch_revisions >= max_rev {
-                                    log::warn!(
-                                        "[engine] critic rejected {} times for thread {}; \
-                                         escalating",
-                                        thread.patch_revisions,
-                                        thread.id
-                                    );
-                                    self.emit_state_transition(
-                                        thread,
-                                        thread.state,
-                                        ThreadState::AwaitingApproval,
-                                        "critic revision budget exhausted",
-                                    );
-                                    // Remember which tool_call
-                                    // paused the loop so the
-                                    // IPC handler can execute
-                                    // it directly on resume.
-                                    thread.pending_tool_call = Some(tool_call.clone());
-                                    return EngineResult::AwaitingApproval {
-                                        tool_call_id: tool_call.id.clone(),
-                                        reason: format!(
-                                            "Critic rejected the patch {} times \
-                                             (score {}). Manual review needed.",
-                                            thread.patch_revisions, verdict.score
-                                        ),
-                                    };
-                                }
                                 let step = TraceStep {
                                     step: iterations,
                                     content: format!(
@@ -1015,6 +1088,13 @@ impl AgentEngine {
         const MAX_MESSAGES: usize = 20;
         const MAX_TRACE_OBSERVATIONS: usize = 3;
         const MAX_CHAR_PER_MSG: usize = 200; // ~8K / ~25 entries
+        // Tool results (e.g. `apply_patch` diffs, multi-line file
+        // contents, verification output) routinely exceed 200
+        // chars — that's the cap for *chat* turns, not for tool
+        // payloads. 4 KB gives a full patch + verification block
+        // headroom while still leaving room for the system prompt
+        // and a few recent user turns inside the total budget.
+        const MAX_CHAR_TOOL_MSG: usize = 4_000;
         // Total context budget. The system prompt is large (~5-6K
         // chars for the Debugger with few-shot examples), so the
         // total budget must accommodate it plus the recent
@@ -1031,7 +1111,32 @@ impl AgentEngine {
         out.push(ChatMessage::system(system_prompt));
 
         // Last 20 messages.
+        //
+        // CRITICAL: tool-result messages must round-trip as
+        // `Role::Tool` with their real `tool_call_id`, NOT be
+        // re-typed as `Role::User`. The previous routing dropped
+        // `tool_call_id` unconditionally and clamped content to
+        // `MAX_CHAR_PER_MSG` (200 chars), which for a tool like
+        // `apply_patch` — whose JSON result includes the full diff,
+        // a success flag, and verification output — chopped
+        // mid-field and produced invalid JSON the model couldn't
+        // interpret. The fall-through `_ => Role::User` arm
+        // silently mis-routed every tool result as if the human
+        // had typed it.
         for msg in thread.messages.iter().rev().take(MAX_MESSAGES).rev() {
+            if msg.role == "tool" {
+                if let Some(id) = &msg.tool_call_id {
+                    out.push(ChatMessage::tool(
+                        truncate(&msg.content, MAX_CHAR_TOOL_MSG),
+                        id.clone(),
+                    ));
+                    continue;
+                }
+                // Tool message without an id — fall through to a
+                // generic user message rather than silently
+                // dropping the result. Better to confuse the
+                // model than to lose the data.
+            }
             out.push(ChatMessage {
                 role: match msg.role.as_str() {
                     "user" => Role::User,
@@ -1051,9 +1156,44 @@ impl AgentEngine {
             out.push(ChatMessage::assistant(format!("[Hypothesis] {}", text)));
         }
 
-        // Last 3 tool observations.
-        for obs in thread.trace.iter().rev().take(MAX_TRACE_OBSERVATIONS).rev() {
-            out.push(ChatMessage::assistant(truncate(&obs.content, MAX_CHAR_PER_MSG)));
+        // CRITICAL FIX (OUTPUT-GONE-STALE): prior trace observations
+        // were pushed as `Role::Assistant` messages so the LLM saw
+        // its own prior tool traces (e.g. `Tool: read_file → 52
+        // lines from ...`) as if it had emitted them itself. The LLM
+        // would echo those lines back in its next response, leaving
+        // the renderer displaying a "stale" assistant message whose
+        // content was just a copy of the last tool summary instead
+        // of the model's actual analysis. Verified against
+        // `1766c822-...jsonl` where the final assistant content was
+        // literally `"Tool: read_file → 52 lines from A:\\rcg..."`.
+        //
+        // The fix: surface trace observations as a single System
+        // context note rather than as separate Assistant turns.
+        // The LLM still sees the prior trace for continuity, but
+        // doesn't mistake it for its own prior output, and won't
+        // regurgitate it as part of the next answer.
+        if !thread.trace.is_empty() {
+            let mut recent: Vec<&TraceStep> = thread
+                .trace
+                .iter()
+                .rev()
+                .take(MAX_TRACE_OBSERVATIONS)
+                .rev()
+                .collect();
+            let note = format!(
+                "Prior tool observations in this investigation:\n{}",
+                recent
+                    .drain(..)
+                    .map(|s| format!("- step {}: {}", s.step, s.content))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+            out.push(ChatMessage {
+                role: Role::System,
+                content: truncate(&note, MAX_CHAR_PER_MSG),
+                tool_call_id: None,
+                tool_calls: None,
+            });
         }
 
         // Truncate the total if it exceeds ~5K chars — but never drop
@@ -1090,10 +1230,11 @@ impl AgentEngine {
     /// Emit a ThreadEvent::Message to the JSONL log.
     fn emit_message_event(&self, thread: &Thread, role: &str, content: &str) {
         let event = crate::agent::threads::ThreadEvent::Message {
-            v: 1,
+            v: 3,
             id: uuid::Uuid::new_v4().to_string(),
             role: role.to_string(),
             content: content.to_string(),
+            tool_call_id: None,
             ts: chrono_millis(),
         };
         let _ = append_thread_event(&thread.event_log_path, &event);
@@ -1117,11 +1258,19 @@ impl AgentEngine {
         thread.state = to;
 
         // Emit to the legacy event log too (kept for Phase 0 compat).
+        // The legacy JSON now carries the wire `v` so `replay_thread`
+        // can parse it as a `ThreadEvent::StateTransition` (without
+        // this, the legacy line would fail to deserialize with
+        // "missing field `v`", breaking renderer-restart recovery).
+        // The `reason` field is intentionally omitted — it's not in
+        // the typed schema, and serde silently drops unknown fields
+        // during deserialization. The trace step above already
+        // records the reason in `thread.trace`.
         let json = serde_json::json!({
+            "v": crate::agent::threads::ThreadEvent::wire_version(),
             "type": "state_transition",
             "from": thread_state_to_string(from),
             "to": thread_state_to_string(to),
-            "reason": reason,
             "ts": ts,
         });
         let _ = append_event_log(&thread.event_log_path, &json.to_string());
@@ -1237,11 +1386,29 @@ fn escalation_label(level: EscalationLevel) -> &'static str {
 
 /// Truncate `s` to at most `max_len` characters. If truncation occurred,
 /// appends `…` so the caller can see the text was cut.
+/// Truncate `s` to at most `max_len` bytes, appending an
+/// ellipsis (`…`, 3 UTF-8 bytes) if anything was dropped.
+///
+/// Uses `char_indices()` to land on a UTF-8 char boundary — the
+/// previous `&s[..max_len]` form panicked whenever the byte
+/// index landed inside a multi-byte sequence, which is common
+/// in the system prompt (box-drawing characters).
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_string();
     }
-    format!("{}…", &s[..max_len.saturating_sub(1)])
+    // Reserve 3 bytes for the `…` marker (UTF-8 encoded).
+    let budget = max_len.saturating_sub(3);
+    let cut = s
+        .char_indices()
+        .take_while(|(i, _)| *i <= budget)
+        .last()
+        .map(|(i, c)| i + c.len_utf8())
+        .unwrap_or(0);
+    let mut out = String::with_capacity(cut + 3);
+    out.push_str(&s[..cut]);
+    out.push('…');
+    out
 }
 
 /// Return the current Unix time in milliseconds.
@@ -1336,7 +1503,7 @@ fn build_artifact(
         name: tool_call.function.name.clone(),
         display_name: display_name_for(&tool_call.function.name).to_string(),
         target,
-        args: Some(tool_call.function.arguments.clone()),
+        args: prettify_args(&tool_call.function.name, &tool_call.function.arguments),
         output,
         result_summary,
         status,
@@ -1344,10 +1511,45 @@ fn build_artifact(
     }
 }
 
+/// For tools whose argument shape is more useful in expanded form
+/// than as a JSON envelope, return a more readable representation
+/// that the renderer can show directly.
+///
+/// Today this only applies to `apply_patch`: the LLM sends
+/// `{"path": "...", "patch": "<diff>"}` and the renderer otherwise
+/// has to JSON-parse the raw wrapper before showing the diff in
+/// the card body. Returning just the `patch` body here means the
+/// user sees the actual diff when they expand an apply_patch card,
+/// not a JSON envelope around it.
+///
+/// Falls back to the raw JSON for any tool / shape we don't
+/// recognise so the artifact is never *worse* than before.
+fn prettify_args(name: &str, raw_args: &str) -> Option<String> {
+    if name != "apply_patch" {
+        return Some(raw_args.to_string());
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(raw_args) {
+        Ok(v) => v,
+        Err(_) => return Some(raw_args.to_string()),
+    };
+    let patch = parsed
+        .get("patch")
+        .and_then(|v| v.as_str())
+        .map(str::to_string);
+    // Path and any other fields stay in `target` (already set by
+    // `artifact_target`); we only replace `args` with the patch body
+    // so the expanded body shows the diff verbatim.
+    patch.or_else(|| Some(raw_args.to_string()))
+}
+
 /// Human-readable label for a tool. Falls back to the raw name if
 /// we don't have a prettier translation in the catalog.
 fn display_name_for(name: &str) -> &'static str {
     match name {
+        "read_file" => "Read file",
+        "read_directory" => "List directory",
+        "search_files" => "Search files",
+        "write_file" => "Write file",
         "read_file" => "Read file",
         "read_directory" => "List directory",
         "search_files" => "Search files",
@@ -1469,6 +1671,58 @@ mod tests {
     /// A mock LLM client that records the number of `complete` calls and
     /// returns a configurable response.
     #[derive(Debug, Clone)]
+    /// Like `CountingLlmClient` but stops returning tool_calls after `max_calls` iterations.
+    /// Used by tests that previously relied on `max_iterations` to cap the loop.
+    struct BoundedLlmClient {
+        pub calls: Arc<std::sync::Mutex<usize>>,
+        pub max_calls: usize,
+        pub tool_call_response: ChatResponse,
+        pub final_response: ChatResponse,
+    }
+
+    impl BoundedLlmClient {
+        fn new(
+            calls: Arc<std::sync::Mutex<usize>>,
+            max_calls: usize,
+            tool_call_name: &'static str,
+            final_content: &str,
+        ) -> Self {
+            Self {
+                calls,
+                max_calls,
+                tool_call_response: ChatResponse {
+                    content: String::new(),
+                    tool_calls: vec![tool_call(tool_call_name)],
+                    usage: None,
+                },
+                final_response: ChatResponse {
+                    content: final_content.to_string(),
+                    tool_calls: Vec::new(),
+                    usage: None,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl LlmClient for BoundedLlmClient {
+        async fn complete(
+            &self,
+            _req: ChatRequest,
+        ) -> Result<ChatResponse, LlmError> {
+            let n = {
+                let mut c = self.calls.lock().unwrap();
+                *c += 1;
+                *c
+            };
+            if n > self.max_calls {
+                Ok(self.final_response.clone())
+            } else {
+                Ok(self.tool_call_response.clone())
+            }
+        }
+    }
+
     struct CountingLlmClient {
         pub calls: Arc<std::sync::Mutex<usize>>,
         pub response: ChatResponse,
@@ -1489,6 +1743,45 @@ mod tests {
             *self.calls.lock().unwrap() += 1;
             Ok(self.response.clone())
         }
+    }
+
+    /// `prettify_args` for `apply_patch` should surface the patch
+    /// body (not the JSON envelope) so the artifact card body
+    /// shows the actual diff when expanded.
+    #[test]
+    fn prettify_args_strips_apply_patch_envelope() {
+        let raw = r#"{"path": "src/foo.rs", "patch": "@@ -1,1 +1,1 @@\n-old\n+new"}"#;
+        let out = prettify_args("apply_patch", raw).expect("Some");
+        assert_eq!(out, "@@ -1,1 +1,1 @@\n-old\n+new");
+    }
+
+    /// For tools other than `apply_patch`, `prettify_args` should
+    /// be a passthrough — we don't know the shape and the raw JSON
+    /// is the most honest representation.
+    #[test]
+    fn prettify_args_passes_through_other_tools() {
+        let raw = r#"{"path": "src/foo.rs", "content": "hello"}"#;
+        assert_eq!(
+            prettify_args("write_file", raw).as_deref(),
+            Some(raw),
+        );
+    }
+
+    /// If the `apply_patch` args are malformed JSON, fall back to
+    /// the raw string so we never *lose* the data the model sent.
+    #[test]
+    fn prettify_args_apply_patch_falls_back_on_bad_json() {
+        let raw = "{ not valid json";
+        assert_eq!(prettify_args("apply_patch", raw).as_deref(), Some(raw));
+    }
+
+    /// `prettify_args` with valid JSON but no `patch` field also
+    /// falls back — better to show the raw args than a confusing
+    /// empty body.
+    #[test]
+    fn prettify_args_apply_patch_falls_back_when_patch_missing() {
+        let raw = r#"{"path": "src/foo.rs"}"#;
+        assert_eq!(prettify_args("apply_patch", raw).as_deref(), Some(raw));
     }
 
     /// A mock BudgetGovernor that always permits.
@@ -1518,34 +1811,6 @@ mod tests {
                 arguments: "{}".to_string(),
             },
         }
-    }
-
-    // ── Test 1: loop terminates after max_iterations ─────────────────────────────
-
-    #[tokio::test]
-    async fn loop_terminates_after_max_iterations() {
-        let calls = Arc::new(std::sync::Mutex::new(0));
-        // Always return a non-empty tool_calls response so the loop keeps running.
-        let always_tool_call = ChatResponse {
-            content: String::new(),
-            tool_calls: vec![tool_call("read_file")],
-            usage: None,
-        };
-        let client = CountingLlmClient::new(calls.clone(), always_tool_call);
-        let mut engine = AgentEngine::new(
-            Arc::new(client),
-            Arc::new(ToolRegistry::default()),
-            ApprovalGate::default(),
-            Arc::new(PermittingBudget::default()),
-        );
-        engine.max_iterations = 5;
-
-        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
-        let result = engine.run(&mut thread).await;
-
-        assert!(matches!(result, EngineResult::MaxIterations));
-        let count = *calls.lock().unwrap();
-        assert_eq!(count, 5, "should call complete exactly max_iterations times");
     }
 
     // ── Test 2: final answer with no tool calls returns Completed ─────────────────
@@ -1651,7 +1916,6 @@ mod tests {
             ApprovalGate::default(), // Researcher: run_shell is Blocked
             Arc::new(PermittingBudget::default()),
         );
-        engine.max_iterations = 3;
 
         let mut thread = make_thread(AgentRole::Researcher, ThreadState::Investigating);
         // First iteration: tool is blocked, loop continues.
@@ -1692,19 +1956,19 @@ mod tests {
     #[tokio::test]
     async fn trace_step_appends_observation_per_iteration() {
         let calls = Arc::new(std::sync::Mutex::new(0));
-        let resp = ChatResponse {
-            content: String::new(),
-            tool_calls: vec![tool_call("read_file")],
-            usage: None,
-        };
-        let client = CountingLlmClient::new(calls.clone(), resp);
+        // Returns tool_calls for 3 iterations, then a final answer to stop the loop.
+        let client = BoundedLlmClient::new(
+            calls.clone(),
+            3,
+            "read_file",
+            "Done.",
+        );
         let mut engine = AgentEngine::new(
             Arc::new(client),
             Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(PermittingBudget::default()),
         );
-        engine.max_iterations = 3;
 
         let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
         engine.run(&mut thread).await;
@@ -1726,19 +1990,14 @@ mod tests {
     #[tokio::test]
     async fn append_event_log_writes_jsonl_per_iteration() {
         let calls = Arc::new(std::sync::Mutex::new(0));
-        let resp = ChatResponse {
-            content: String::new(),
-            tool_calls: vec![tool_call("read_file")],
-            usage: None,
-        };
-        let client = CountingLlmClient::new(calls.clone(), resp);
+        // Returns tool_calls for 2 iterations, then a final answer to stop the loop.
+        let client = BoundedLlmClient::new(calls.clone(), 2, "read_file", "Done.");
         let mut engine = AgentEngine::new(
             Arc::new(client),
             Arc::new(ToolRegistry::default()),
             ApprovalGate::default(),
             Arc::new(PermittingBudget::default()),
         );
-        engine.max_iterations = 2;
 
         let tmp = tempfile::tempdir().unwrap();
         let event_log_path = tmp.path().join("events.jsonl");
@@ -1806,6 +2065,7 @@ mod tests {
                 role: "user".to_string(),
                 content: "x".repeat(500),
                 tool_call_id: None,
+                tool_calls: None,
                 ts: i as i64,
             });
         }
@@ -1873,12 +2133,8 @@ mod tests {
     #[tokio::test]
     async fn budget_record_called_after_tool_execution() {
         let calls = Arc::new(std::sync::Mutex::new(0));
-        let resp = ChatResponse {
-            content: String::new(),
-            tool_calls: vec![tool_call("read_file")],
-            usage: None,
-        };
-        let client = CountingLlmClient::new(calls.clone(), resp);
+        // Returns tool_calls for 1 iteration, then a final answer.
+        let client = BoundedLlmClient::new(calls.clone(), 1, "read_file", "Done.");
 
         // A budget that records when `record` is called.
         #[derive(Debug, Default)]
@@ -1901,7 +2157,6 @@ mod tests {
             ApprovalGate::default(),
             budget,
         );
-        engine.max_iterations = 1;
 
         let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
         engine.run(&mut thread).await;
@@ -2240,6 +2495,7 @@ mod tests {
             role: "user".to_string(),
             content: "Why is run a3f9c12 diverging?".to_string(),
             tool_call_id: None,
+            tool_calls: None,
             ts: 0,
         });
         thread.hypothesis = Some(crate::agent::orchestrator::Hypothesis {
@@ -2273,6 +2529,108 @@ mod tests {
             .iter()
             .any(|m| m.role == Role::Assistant && m.content.contains("lr=1e-3"));
         assert!(has_trace, "trace observation must be present");
+    }
+
+    /// `build_messages_routes_tool_results_as_role_tool`: tool-result
+    /// messages must round-trip as `Role::Tool` with their real
+    /// `tool_call_id` preserved. The previous routing dropped
+    /// `tool_call_id` and silently fell through to `Role::User`,
+    /// which broke tool-result attribution and (combined with the
+    /// 200-char per-message cap) corrupted `apply_patch` results
+    /// beyond the model being able to parse them.
+    #[test]
+    fn build_messages_routes_tool_results_as_role_tool() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+
+        // A 500-char tool result — bigger than MAX_CHAR_PER_MSG
+        // (200) but smaller than MAX_CHAR_TOOL_MSG (4_000).
+        let mut long_content = String::with_capacity(500);
+        for _ in 0..50 {
+            long_content.push_str("0123456789");
+        }
+        assert_eq!(long_content.len(), 500);
+
+        thread.messages.push(crate::agent::orchestrator::Message {
+            id: "t1".to_string(),
+            role: "tool".to_string(),
+            content: long_content.clone(),
+            tool_call_id: Some("call_patch_42".to_string()),
+            tool_calls: None,
+            ts: 0,
+        });
+
+        let messages = engine.build_messages(&thread);
+
+        // Find the tool message.
+        let tool_msg = messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("a tool-result message must be present");
+
+        // Attribution must be preserved.
+        assert_eq!(
+            tool_msg.tool_call_id.as_deref(),
+            Some("call_patch_42"),
+            "tool_call_id must round-trip to the LLM-facing message",
+        );
+
+        // Content must NOT have been clamped to MAX_CHAR_PER_MSG
+        // (200 chars). It must have survived intact because it's
+        // well under MAX_CHAR_TOOL_MSG.
+        assert_eq!(
+            tool_msg.content.len(),
+            500,
+            "tool-result content must not be clamped to the chat-turn cap",
+        );
+        assert_eq!(tool_msg.content, long_content);
+
+        // No fake "User" copy of the tool result should exist —
+        // the old fall-through produced one and confused the model.
+        let leaked_as_user = messages
+            .iter()
+            .filter(|m| m.role == Role::User)
+            .any(|m| m.content == long_content);
+        assert!(
+            !leaked_as_user,
+            "tool result must not be re-typed as a User message",
+        );
+    }
+
+    /// `build_messages_clamps_oversized_tool_results`: a tool
+    /// result larger than MAX_CHAR_TOOL_MSG must still be
+    /// truncated (so the total context budget is preserved) — but
+    /// it must keep its `Role::Tool` + `tool_call_id` so the model
+    /// can still attribute it correctly.
+    #[test]
+    fn build_messages_clamps_oversized_tool_results() {
+        let engine = AgentEngine::default();
+        let mut thread = make_thread(AgentRole::Debugger, ThreadState::Investigating);
+
+        // 6 KB — well over MAX_CHAR_TOOL_MSG (4 KB).
+        let huge: String = "x".repeat(6_000);
+
+        thread.messages.push(crate::agent::orchestrator::Message {
+            id: "t1".to_string(),
+            role: "tool".to_string(),
+            content: huge,
+            tool_call_id: Some("call_huge".to_string()),
+            tool_calls: None,
+            ts: 0,
+        });
+
+        let messages = engine.build_messages(&thread);
+        let tool_msg = messages
+            .iter()
+            .find(|m| m.role == Role::Tool)
+            .expect("tool message must be present");
+
+        assert_eq!(tool_msg.tool_call_id.as_deref(), Some("call_huge"));
+        assert!(
+            tool_msg.content.len() <= 4_003,
+            "oversized tool result must be clamped to MAX_CHAR_TOOL_MSG (got {})",
+            tool_msg.content.len(),
+        );
     }
 
     // ── Hypothesis protocol enforcement tests (WS3 Priority 2) ────────
@@ -2334,5 +2692,290 @@ mod tests {
 
         assert!(matches!(result, EngineResult::Completed { .. }));
         assert_eq!(thread.state, ThreadState::Resolved);
+    }
+
+    // ── Regression: apply_patch approval → next LLM sees the tool result ─
+
+    /// `tool_result_message_round_trips_through_replay`: regression
+    /// guard for the production bug where approving a pending
+    /// `apply_patch` tool call resulted in another approval
+    /// dialog appearing instead of the agent continuing.
+    ///
+    /// Root cause: the IPC handler `agent_approve_action` would
+    /// (1) execute the pending tool_call directly via the
+    /// registry, (2) push the tool result onto `thread.messages`,
+    /// and (3) call `engine.run`. The engine's `run()` method
+    /// calls `replay_thread()` which **overwrites**
+    /// `thread.messages` from the JSONL event log — but the IPC
+    /// handler never wrote the tool result to the event log, so
+    /// the in-memory push was silently discarded. The LLM never
+    /// saw the apply_patch result, re-emitted the same
+    /// `apply_patch`, and the loop re-prompted the user.
+    ///
+    /// The fix: persist the tool result as a `ThreadEvent::Message`
+    /// event (with `tool_call_id`) to the JSONL log, AND extend
+    /// the Message event to carry `tool_call_id` so replay can
+    /// reconstruct the tool message with its identity intact.
+    /// This test simulates the full IPC handler flow end-to-end.
+    #[tokio::test]
+    async fn tool_result_message_round_trips_through_replay() {
+        use std::path::PathBuf;
+        use tempfile::tempdir;
+
+        // Record every LLM call's messages so we can verify the
+        // tool result is present in the conversation history sent
+        // to the model.
+        #[derive(Debug, Clone)]
+        struct RecordingLlm {
+            calls: Arc<std::sync::Mutex<Vec<Vec<crate::agent::llm::ChatMessage>>>>,
+            responses: Vec<ChatResponse>,
+        }
+
+        #[async_trait::async_trait]
+        impl LlmClient for RecordingLlm {
+            async fn complete(
+                &self,
+                req: ChatRequest,
+            ) -> Result<ChatResponse, LlmError> {
+                let mut guard = self.calls.lock().unwrap();
+                guard.push(req.messages);
+                let idx = guard.len().saturating_sub(1);
+                Ok(self.responses[idx.min(self.responses.len() - 1)].clone())
+            }
+        }
+
+        let tmp = tempdir().unwrap();
+        let event_log_path = tmp.path().join("events.jsonl");
+        let mut thread = Thread::new(
+            "reg-thread".to_string(),
+            AgentRole::Debugger,
+            None,
+            event_log_path.clone(),
+        );
+        // Real workspace root so apply_patch can read/write the file.
+        thread.set_workspace_root(PathBuf::from(tmp.path()));
+
+        // Pre-create the file that apply_patch will patch.
+        let target = tmp.path().join("hello.txt");
+        std::fs::write(&target, "line1\nline2\nline3\n").unwrap();
+
+        // Pre-set protocol state to HypothesisFormed so the
+        // apply_patch protocol gate (in the engine) passes when
+        // it eventually runs.
+        thread.state = ThreadState::HypothesisFormed;
+        thread.hypothesis = Some(crate::agent::orchestrator::Hypothesis {
+            verdict: "test_verdict".to_string(),
+            statement: "the file needs patching".to_string(),
+            evidence: vec![],
+            confidence: 0.95,
+            ruled_out: vec![],
+        });
+
+        // The pending apply_patch tool call the engine would have
+        // queued when it hit `NeedApproval` for Debugger. This is
+        // exactly what `engine.run` stores on the thread when it
+        // pauses for approval — see `Approval::NeedApproval` arm
+        // in `engine.rs`.
+        let pending_tool_call = ToolCall {
+            id: "call_patch_99".to_string(),
+            tool_type: "function".to_string(),
+            function: crate::agent::llm::ToolFunctionCall {
+                name: "apply_patch".to_string(),
+                arguments: format!(
+                    r#"{{"path":"hello.txt","patch":"@@ -1,3 +1,3 @@\n-line1\n+line1-patched\n line2\n line3\n"}}"#,
+                ),
+            },
+        };
+        thread.pending_tool_call = Some(pending_tool_call.clone());
+        thread.state = ThreadState::AwaitingApproval;
+
+        // ── Simulate the IPC handler's "approve" branch ────────────────
+        // This is the exact sequence from `agent_approve_action`
+        // in `ipc.rs`. Before the fix, this code only pushed to
+        // `thread.messages` (line A); the fix adds line B — the
+        // `append_thread_event` call — so replay reconstructs the
+        // tool message on the next `engine.run`.
+        //
+        // CRITICAL: the registry needs the same workspace_root
+        // the thread is configured with so `apply_patch` can
+        // resolve `path: "hello.txt"` to the file we created
+        // above. `ToolRegistry::default()` uses an empty path,
+        // which would make apply_patch fail with "read failed"
+        // — masking the actual fix.
+        let registry = ToolRegistry::new(
+            crate::agent::approval::ApprovalGate::default(),
+            PathBuf::from(tmp.path()),
+        );
+        if let Some(pending) = thread.pending_tool_call.take() {
+            // Pop the synthetic paused tool message if present.
+            if let Some(last) = thread.messages.last() {
+                if last.role == "tool"
+                    && last.tool_call_id.as_deref() == Some(pending.id.as_str())
+                {
+                    thread.messages.pop();
+                }
+            }
+
+            // (A) Execute the pending tool directly via the registry.
+            let result = registry.execute(&pending).await;
+
+            // (B) PERSIST to the JSONL event log — this is the fix.
+            let tool_msg = crate::agent::orchestrator::Message {
+                id: uuid::Uuid::new_v4().to_string(),
+                role: "tool".to_string(),
+                content: serde_json::to_string(&result)
+                    .unwrap_or_else(|_| format!("{:?}", result)),
+                tool_call_id: Some(pending.id.clone()),
+                tool_calls: None,
+                ts: 0,
+            };
+            let _ = crate::agent::threads::append_thread_event(
+                &thread.event_log_path,
+                &crate::agent::threads::ThreadEvent::from_message(&tool_msg),
+            );
+            thread.messages.push(tool_msg);
+
+            // The handler transitions back to Investigating so the
+            // engine can continue from a non-terminal state.
+            thread.state = ThreadState::Investigating;
+        }
+        // ── End IPC handler simulation ────────────────────────────────
+
+        // Now run the engine. The LLM should see the apply_patch
+        // tool result in its history and respond with a final
+        // answer.
+        let calls: Arc<std::sync::Mutex<Vec<Vec<ChatMessage>>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let final_resp = ChatResponse {
+            content: "Done. ## Resolved".to_string(),
+            tool_calls: Vec::new(),
+            usage: None,
+        };
+        let client = RecordingLlm {
+            calls: calls.clone(),
+            responses: vec![final_resp],
+        };
+
+        // Use a registry whose workspace_root matches the temp
+        // dir so the engine's tools can resolve paths.
+        let mut engine = AgentEngine::new(
+            Arc::new(client),
+            Arc::new(ToolRegistry::new(
+                crate::agent::approval::ApprovalGate::default(),
+                PathBuf::from(tmp.path()),
+            )),
+            ApprovalGate::default(),
+            Arc::new(PermittingBudget::default()),
+        );
+
+        let result = engine.run(&mut thread).await;
+
+        // 1. The engine must complete normally — no approval loop.
+        //    Before the fix, this returned AwaitingApproval because
+        //    the LLM didn't see the apply_patch result and re-issued
+        //    the same tool_call.
+        assert!(
+            matches!(result, EngineResult::Completed { .. }),
+            "expected Completed after the IPC approve flow; got {result:?}",
+        );
+
+        // 2. The LLM was called at least once with a messages list
+        //    that includes the tool result.
+        let captured = calls.lock().unwrap();
+        assert!(
+            !captured.is_empty(),
+            "engine should have called the LLM at least once",
+        );
+
+        // 3. The LLM call's messages MUST include the tool result
+        //    message with the matching tool_call_id. This is the
+        //    regression assertion: before the fix, the tool message
+        //    was lost on replay and the LLM had no tool result in
+        //    its history, so the next LLM call would either re-issue
+        //    `apply_patch` (looping) or proceed blind.
+        let first_call_msgs = &captured[0];
+        let tool_msgs: Vec<&ChatMessage> = first_call_msgs
+            .iter()
+            .filter(|m| m.role == Role::Tool)
+            .collect();
+        assert!(
+            !tool_msgs.is_empty(),
+            "LLM call MUST include a Role::Tool message with the apply_patch result; \
+             got {} messages total, all roles: {:?}",
+            first_call_msgs.len(),
+            first_call_msgs.iter().map(|m| m.role.clone()).collect::<Vec<_>>(),
+        );
+        let patch_tool_msg = tool_msgs
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("call_patch_99"))
+            .expect("the apply_patch tool message must be present in the LLM's history");
+        assert!(
+            patch_tool_msg.content.contains("patch applied"),
+            "tool message content must include the success summary; got: {}",
+            patch_tool_msg.content,
+        );
+
+        // 4. The thread.messages must contain the tool message
+        //    with tool_call_id preserved after the engine.run.
+        let in_memory_tool: Vec<&crate::agent::orchestrator::Message> = thread
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .collect();
+        assert_eq!(
+            in_memory_tool.len(),
+            1,
+            "thread.messages must contain exactly one tool message",
+        );
+        assert_eq!(
+            in_memory_tool[0].tool_call_id.as_deref(),
+            Some("call_patch_99"),
+        );
+
+        // 5. The event log must contain the tool result Message
+        //    event with tool_call_id — proves the JSONL log
+        //    round-trip works (otherwise the next renderer
+        //    restart would also lose the tool result).
+        let log_content = std::fs::read_to_string(&event_log_path).unwrap();
+        assert!(
+            log_content.contains(r#""tool_call_id":"call_patch_99""#),
+            "event log must contain the tool_call_id for the apply_patch tool result; \
+             got log:\n{log_content}",
+        );
+        assert!(
+            log_content.contains(r#""role":"tool""#),
+            "event log must contain a Message event with role=\"tool\"; got:\n{log_content}",
+        );
+
+        // 6. Replay the log fresh and assert the tool message
+        //    survives the round-trip with its tool_call_id intact.
+        //    This is what the NEXT engine.run invocation sees.
+        let replayed = crate::agent::threads::replay_thread(
+            &event_log_path,
+            "reg-thread".to_string(),
+            AgentRole::Debugger,
+            None,
+        )
+        .unwrap();
+        let replayed_tool_msgs: Vec<&crate::agent::orchestrator::Message> = replayed
+            .messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .collect();
+        assert_eq!(
+            replayed_tool_msgs.len(),
+            1,
+            "replay must reconstruct exactly one tool message",
+        );
+        assert_eq!(
+            replayed_tool_msgs[0].tool_call_id.as_deref(),
+            Some("call_patch_99"),
+            "replayed tool message must preserve tool_call_id",
+        );
+        assert!(
+            replayed_tool_msgs[0].content.contains("patch applied"),
+            "replayed tool message must preserve content; got: {}",
+            replayed_tool_msgs[0].content,
+        );
     }
 }
